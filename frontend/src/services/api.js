@@ -75,6 +75,10 @@ export const authApi = {
   changePassword: (payload) => api.post("/auth/change-password/", payload),
 };
 
+export const dashboardApi = {
+  stats: () => api.get("/dashboard/stats/"),
+};
+
 // ---------------------------------------------------------------------------
 // ACADEMIC CALENDAR
 // ---------------------------------------------------------------------------

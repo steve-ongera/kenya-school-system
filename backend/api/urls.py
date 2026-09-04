@@ -37,6 +37,7 @@ urlpatterns = [
     path("auth/change-password/", views.ChangePasswordView.as_view(), name="change-password"),
     # student admission (creates User + StudentProfile + Enrollment)
     path("students/admit/", views.AdmitStudentView.as_view(), name="admit-student"),
+    path("dashboard/stats/", views.DashboardStatsView.as_view(), name="dashboard-stats"),
     # subject selection for one enrollment
     path(
         "enrollments/<int:enrollment_id>/subjects/",

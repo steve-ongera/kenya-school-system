@@ -9,6 +9,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django_filters.rest_framework import DjangoFilterBackend
+from datetime import date
+from django.db.models import Count, Sum
+from django.db.models.functions import TruncMonth, TruncYear
+
 
 from . import models, serializers, services, utils
 
@@ -490,3 +494,145 @@ class PaymentViewSet(viewsets.ModelViewSet):
             recorded_by=request.user,
         )
         return Response(serializers.PaymentSerializer(payment).data, status=201)
+
+
+
+def _months_back(n):
+    """Return the first-of-month date for each of the last n months, oldest first."""
+    today = date.today()
+    months = []
+    for i in range(n - 1, -1, -1):
+        y, m = today.year, today.month - i
+        while m <= 0:
+            m += 12
+            y -= 1
+        months.append(date(y, m, 1))
+    return months
+
+
+class DashboardStatsView(APIView):
+    """
+    Aggregated numbers for the admin dashboard landing page:
+    stat cards, 12-month revenue trend, class population for the current
+    year, gender split, 5-year admission trend, and a recent-students table.
+    """
+
+    permission_classes = [utils.IsAdmin]
+
+    def get(self, request):
+        current_year = models.AcademicYear.objects.filter(is_current=True).first()
+
+        active_enrollments = (
+            models.Enrollment.objects.filter(
+                academic_year=current_year, status=models.Enrollment.Status.ACTIVE
+            )
+            if current_year
+            else models.Enrollment.objects.none()
+        )
+
+        # ---- 5 stat cards ---------------------------------------------
+        total_students = active_enrollments.count()
+        total_classes = (
+            models.ClassRoom.objects.filter(academic_year=current_year).count() if current_year else 0
+        )
+        total_teachers = models.User.objects.filter(
+            role=models.User.Role.TEACHER, is_active_staff=True
+        ).count()
+
+        revenue_this_year = models.Payment.objects.filter(
+            invoice__enrollment__academic_year=current_year
+        ).aggregate(total=Sum("amount"))["total"] or 0
+
+        fee_totals = models.Invoice.objects.filter(enrollment__academic_year=current_year).aggregate(
+            due=Sum("amount_due"), paid=Sum("amount_paid")
+        )
+        outstanding_balance = (fee_totals["due"] or 0) - (fee_totals["paid"] or 0)
+
+        stat_cards = {
+            "total_students": total_students,
+            "total_classes": total_classes,
+            "total_teachers": total_teachers,
+            "revenue_this_year": float(revenue_this_year),
+            "outstanding_balance": float(outstanding_balance),
+        }
+
+        # ---- revenue trend, last 12 months ------------------------------
+        month_starts = _months_back(12)
+        raw_revenue = (
+            models.Payment.objects.filter(paid_at__date__gte=month_starts[0])
+            .annotate(month=TruncMonth("paid_at"))
+            .values("month")
+            .annotate(total=Sum("amount"))
+        )
+        revenue_by_month = {r["month"].strftime("%Y-%m"): float(r["total"]) for r in raw_revenue}
+        revenue_trend = [
+            {
+                "month": d.strftime("%Y-%m"),
+                "label": d.strftime("%b %Y"),
+                "revenue": revenue_by_month.get(d.strftime("%Y-%m"), 0),
+            }
+            for d in month_starts
+        ]
+
+        # ---- class population, current academic year --------------------
+        raw_class_pop = (
+            active_enrollments.values("classroom__grade_level__name", "classroom__stream__name")
+            .annotate(count=Count("id"))
+            .order_by("-count")
+        )
+        class_population = [
+            {
+                "classroom": f'{c["classroom__grade_level__name"]} {c["classroom__stream__name"]}',
+                "count": c["count"],
+            }
+            for c in raw_class_pop
+        ]
+
+        # ---- gender population, current academic year --------------------
+        raw_gender = active_enrollments.values("student__gender").annotate(count=Count("id"))
+        gender_population = {"male": 0, "female": 0}
+        for g in raw_gender:
+            key = "male" if g["student__gender"] == models.StudentProfile.Gender.MALE else "female"
+            gender_population[key] = g["count"]
+
+        # ---- admission trend, last 5 years --------------------------------
+        this_calendar_year = date.today().year
+        raw_admissions = (
+            models.StudentProfile.objects.filter(date_admitted__year__gte=this_calendar_year - 4)
+            .annotate(year=TruncYear("date_admitted"))
+            .values("year")
+            .annotate(count=Count("id"))
+        )
+        admissions_by_year = {r["year"].year: r["count"] for r in raw_admissions}
+        admission_trend = [
+            {"year": y, "count": admissions_by_year.get(y, 0)}
+            for y in range(this_calendar_year - 4, this_calendar_year + 1)
+        ]
+
+        # ---- recent students summary table --------------------------------
+        recent = models.StudentProfile.objects.select_related("user").order_by("-date_admitted")[:10]
+        recent_students = []
+        for s in recent:
+            enr = s.current_enrollment
+            recent_students.append(
+                {
+                    "id": s.id,
+                    "admission_no": s.admission_no,
+                    "name": s.user.get_full_name(),
+                    "gender": s.get_gender_display(),
+                    "classroom": str(enr.classroom) if enr else "-",
+                    "status": enr.status if enr else "-",
+                    "date_admitted": s.date_admitted,
+                }
+            )
+
+        return Response(
+            {
+                "stat_cards": stat_cards,
+                "revenue_trend": revenue_trend,
+                "class_population": class_population,
+                "gender_population": gender_population,
+                "admission_trend": admission_trend,
+                "recent_students": recent_students,
+            }
+        )
