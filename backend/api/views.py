@@ -641,6 +641,7 @@ class DashboardStatsView(APIView):
 
 # add to imports at top
 from django.db.models import Avg, F
+from django.db.models import Avg, F, FloatField, ExpressionWrapper
 
 class ReportsOverviewView(APIView):
     """
@@ -687,10 +688,21 @@ class ReportsOverviewView(APIView):
         # ---- average performance by subject (current term) ----
         subject_perf = (
             models.ExamResult.objects.filter(
-                exam__term=current_term, is_absent=False, marks_obtained__isnull=False
+                exam__term=current_term,
+                is_absent=False,
+                marks_obtained__isnull=False,
+                max_marks__isnull=False,
+                max_marks__gt=0,
             )
             .values("subject__name")
-            .annotate(avg_pct=Avg(F("marks_obtained") * 100.0 / F("max_marks")))
+            .annotate(
+                avg_pct=Avg(
+                    ExpressionWrapper(
+                        F("marks_obtained") * 100.0 / F("max_marks"),
+                        output_field=FloatField(),
+                    )
+                )
+            )
             .order_by("-avg_pct")[:12]
         )
         subject_performance = [
