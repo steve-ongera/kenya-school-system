@@ -1,6 +1,7 @@
 // components/Sidebar.jsx
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import logo from "../assets/moi_forces.png"; // Adjust path as needed
 
 const NAV_BY_ROLE = {
   ADMIN: [
@@ -54,6 +55,8 @@ const NAV_BY_ROLE = {
  * Labels are only hidden when collapsed AND on desktop — on mobile the
  * drawer always shows full labels, matching the CSS's mobile override
  * of `.app-sidebar--collapsed`.
+ * 
+ * Navigation scrolls internally when items exceed available height.
  */
 export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
   const { user } = useAuth();
@@ -74,29 +77,129 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
     <>
       <aside className={sidebarClass}>
         <div className="app-sidebar__brand">
-          <i className="bi bi-mortarboard-fill"></i>
-          {showLabels && <span>MOI HIGH SCHOOL</span>}
+          {showLabels ? (
+            // Expanded sidebar - show logo and text
+            <div style={{ 
+              display: "flex", 
+              alignItems: "center", 
+              gap: "0.75rem",
+              width: "100%"
+            }}>
+              <div style={{
+                width: "36px",
+                height: "36px",
+                borderRadius: "4px",
+                background: "#ffffff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+                padding: "4px"
+              }}>
+                <img 
+                  src={logo} 
+                  alt="Moi Forces Logo" 
+                  style={{ 
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "contain",
+                  }} 
+                />
+              </div>
+              <span style={{ 
+                fontSize: "1rem",
+                fontWeight: 700,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis"
+              }}>
+                MOI HIGH SCHOOL
+              </span>
+            </div>
+          ) : (
+            // Collapsed sidebar - show only logo with white background
+            <div style={{
+              width: "36px",
+              height: "36px",
+              borderRadius: "4px",
+              background: "#ffffff",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              margin: "0 auto",
+              padding: "4px"
+            }}>
+              <img 
+                src={logo} 
+                alt="Moi Forces Logo" 
+                style={{ 
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "contain",
+                }} 
+              />
+            </div>
+          )}
         </div>
 
-        {/* overflow hidden on this nav (see main.css note) so the sidebar
-            never scrolls internally, including its brand/header row */}
-        <nav className="app-sidebar__nav app-sidebar__nav--no-scroll">
-          {items.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to.split("/").length === 2}
-              className={({ isActive }) =>
-                `app-sidebar__link ${isActive ? "app-sidebar__link--active" : ""}`
-              }
-              onClick={!isDesktop ? onClose : undefined}
-              title={!showLabels ? item.label : undefined}
-            >
-              <i className={`bi ${item.icon}`}></i>
-              {showLabels && <span>{item.label}</span>}
-            </NavLink>
-          ))}
+        {/* Navigation with internal scroll */}
+        <nav className="app-sidebar__nav">
+          {items.length === 0 ? (
+            <div style={{ 
+              padding: "1rem", 
+              color: "rgba(255,255,255,0.4)", 
+              fontSize: "var(--fs-xs)", 
+              textAlign: "center" 
+            }}>
+              No items available
+            </div>
+          ) : (
+            items.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.to.split("/").length === 2}
+                className={({ isActive }) =>
+                  `app-sidebar__link ${isActive ? "app-sidebar__link--active" : ""}`
+                }
+                onClick={!isDesktop ? onClose : undefined}
+                title={!showLabels ? item.label : undefined}
+              >
+                <i className={`bi ${item.icon}`}></i>
+                {showLabels && <span>{item.label}</span>}
+              </NavLink>
+            ))
+          )}
         </nav>
+
+        {/* Footer - School name and version only */}
+        {showLabels && (
+          <div className="app-sidebar__footer" style={{ 
+            display: "flex", 
+            flexDirection: "column",
+            alignItems: "center",
+            gap: "0.15rem",
+            padding: "0.7rem 1rem",
+            textAlign: "center",
+            borderTop: "1px solid rgba(255,255,255,0.08)",
+          }}>
+            <div style={{ 
+              fontSize: "0.65rem", 
+              color: "rgba(255,255,255,0.4)",
+              letterSpacing: "0.04em",
+              fontWeight: 500,
+            }}>
+              Moi High School
+            </div>
+            <div style={{ 
+              fontSize: "0.55rem", 
+              color: "rgba(255,255,255,0.25)",
+              letterSpacing: "0.06em",
+            }}>
+              v2.1.0
+            </div>
+          </div>
+        )}
       </aside>
 
       {!isDesktop && mobileOpen && (

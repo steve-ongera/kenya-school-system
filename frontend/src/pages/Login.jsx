@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import logo from "../assets/moi_forces.png"; // Adjust path as needed
 
 const HOME_BY_ROLE = {
   ADMIN: "/admin",
@@ -44,7 +45,7 @@ export default function Login() {
     }}>
       {/* Login Card */}
       <div className="login-card" style={{
-        maxWidth: "400px",
+        maxWidth: "420px",
         width: "100%",
         padding: "2.5rem",
         background: "#ffffff",
@@ -52,44 +53,57 @@ export default function Login() {
         boxShadow: "0 8px 40px rgba(11, 37, 69, 0.08)",
         border: "1px solid var(--border-color)"
       }}>
-        <div className="login-card__brand" style={{ marginBottom: "0.5rem" }}>
-          <div style={{
-            width: "52px",
-            height: "52px",
-            borderRadius: "var(--radius-md)",
-            background: "var(--blue-50)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center"
+        {/* Logo - Centered */}
+        <div style={{ 
+          display: "flex", 
+          justifyContent: "center", 
+          marginBottom: "1rem"
+        }}>
+          <img 
+            src={logo} 
+            alt="Moi Forces Academy Logo" 
+            style={{ 
+              width: "100px",
+              height: "100px",
+              objectFit: "contain",
+              borderRadius: "var(--radius-md)",
+            }} 
+          />
+        </div>
+
+        <div className="login-card__brand" style={{ 
+          marginBottom: "0.5rem",
+          textAlign: "center",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center"
+        }}>
+          <h1 style={{ 
+            fontSize: "1.5rem", 
+            fontWeight: 700, 
+            color: "var(--blue-900)",
+            margin: 0,
+            fontFamily: "var(--font-display)"
           }}>
-            <i className="bi bi-mortarboard-fill" style={{ fontSize: "1.8rem", color: "var(--blue-700)" }}></i>
-          </div>
-          <div style={{ marginLeft: "0.5rem" }}>
-            <h1 style={{ 
-              fontSize: "1.5rem", 
-              fontWeight: 700, 
-              color: "var(--blue-900)",
-              margin: 0,
-              fontFamily: "var(--font-display)"
-            }}>
-              Masomo System
-            </h1>
-            <p style={{ 
-              fontSize: "0.72rem", 
-              color: "var(--ink-400)",
-              margin: 0,
-              letterSpacing: "0.06em",
-              textTransform: "uppercase"
-            }}>
-              School Management System
-            </p>
-          </div>
+            Masomo System
+          </h1>
+          <p style={{ 
+            fontSize: "0.72rem", 
+            color: "var(--ink-400)",
+            margin: "0.2rem 0 0 0",
+            letterSpacing: "0.06em",
+            textTransform: "uppercase"
+          }}>
+            School Management System
+          </p>
         </div>
 
         <p className="login-card__subtitle" style={{ 
           color: "var(--ink-600)",
           marginBottom: "1.75rem",
-          fontSize: "var(--fs-sm)"
+          marginTop: "0.5rem",
+          fontSize: "var(--fs-sm)",
+          textAlign: "center"
         }}>
           Sign in to your school portal
         </p>
@@ -182,7 +196,7 @@ export default function Login() {
           fontSize: "var(--fs-xs)",
           color: "var(--ink-400)"
         }}>
-          <span>© {new Date().getFullYear()} Shule MS. All rights reserved.</span>
+          <span>© {new Date().getFullYear()} Innovationhub Softwares. All rights reserved.</span>
         </div>
       </div>
     </div>
