@@ -1,3 +1,4 @@
+// components/Sidebar.jsx
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 
@@ -40,19 +41,42 @@ const NAV_BY_ROLE = {
   ],
 };
 
-export default function Sidebar({ collapsed, onClose }) {
+/**
+ * Sidebar driven entirely by useSidebar():
+ * - Desktop: always visible; `collapsed` switches full <-> icon-rail.
+ * - Mobile/tablet: off-canvas drawer; `mobileOpen` slides it in via
+ *   the `.app-sidebar--open` class already defined in main.css.
+ *
+ * Labels are only hidden when collapsed AND on desktop — on mobile the
+ * drawer always shows full labels, matching the CSS's mobile override
+ * of `.app-sidebar--collapsed`.
+ */
+export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
   const { user } = useAuth();
   const items = user ? NAV_BY_ROLE[user.role] || [] : [];
 
+  const isIconRail = isDesktop && collapsed;
+  const showLabels = !isIconRail;
+
+  const sidebarClass = [
+    "app-sidebar",
+    isIconRail ? "app-sidebar--collapsed" : "",
+    !isDesktop && mobileOpen ? "app-sidebar--open" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <>
-      <aside className={`app-sidebar ${collapsed ? "app-sidebar--collapsed" : ""}`}>
+      <aside className={sidebarClass}>
         <div className="app-sidebar__brand">
           <i className="bi bi-mortarboard-fill"></i>
-          {!collapsed && <span>Shule MS</span>}
+          {showLabels && <span>MOI HIGH SCHOOL</span>}
         </div>
 
-        <nav className="app-sidebar__nav">
+        {/* overflow hidden on this nav (see main.css note) so the sidebar
+            never scrolls internally, including its brand/header row */}
+        <nav className="app-sidebar__nav app-sidebar__nav--no-scroll">
           {items.map((item) => (
             <NavLink
               key={item.to}
@@ -61,15 +85,19 @@ export default function Sidebar({ collapsed, onClose }) {
               className={({ isActive }) =>
                 `app-sidebar__link ${isActive ? "app-sidebar__link--active" : ""}`
               }
-              onClick={onClose}
+              onClick={!isDesktop ? onClose : undefined}
+              title={!showLabels ? item.label : undefined}
             >
               <i className={`bi ${item.icon}`}></i>
-              {!collapsed && <span>{item.label}</span>}
+              {showLabels && <span>{item.label}</span>}
             </NavLink>
           ))}
         </nav>
       </aside>
-      {!collapsed && <div className="app-sidebar__backdrop d-lg-none" onClick={onClose} />}
+
+      {!isDesktop && mobileOpen && (
+        <div className="app-sidebar__backdrop" onClick={onClose} />
+      )}
     </>
   );
 }

@@ -1,3 +1,4 @@
+// src/pages/admin/Dashboard.jsx
 import { useEffect, useState } from "react";
 import { studentsApi, calendarApi } from "../../services/api";
 
@@ -12,12 +13,12 @@ export default function AdminDashboard() {
       ]);
       setStats({
         students: studentsRes.data.count ?? studentsRes.data.length ?? 0,
-        years: yearsRes.data,
+        years: yearsRes.data.results ?? yearsRes.data ?? [],
       });
     })();
   }, []);
 
-  const currentYear = stats.years.find((y) => y.is_current);
+  const currentYear = (stats.years ?? []).find((y) => y.is_current);
 
   return (
     <div>
