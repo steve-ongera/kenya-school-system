@@ -14,6 +14,10 @@ const NAV_BY_ROLE = {
     { to: "/admin/promotions", icon: "bi-arrow-up-circle", label: "Promotions" },
     { to: "/admin/fees", icon: "bi-cash-coin", label: "Fee Structures" },
     { to: "/admin/users", icon: "bi-shield-lock", label: "User Accounts" },
+    { to: "/admin/reports", icon: "bi-graph-up", label: "Reports & Analytics" },
+    { to: "/admin/calendar", icon: "bi-calendar-week", label: "Academic Calendar" },
+    { to: "/admin/parents", icon: "bi-person-hearts", label: "Parents & Guardians" },
+    { to: "/admin/settings", icon: "bi-gear", label: "School Settings" },
   ],
   TEACHER: [
     { to: "/teacher", icon: "bi-speedometer2", label: "Dashboard" },

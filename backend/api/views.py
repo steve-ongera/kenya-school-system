@@ -636,3 +636,99 @@ class DashboardStatsView(APIView):
                 "recent_students": recent_students,
             }
         )
+        
+        
+
+# add to imports at top
+from django.db.models import Avg, F
+
+class ReportsOverviewView(APIView):
+    """
+    Aggregated data behind the admin Reports & Analytics page:
+    fee collection by grade, curriculum split, subject performance,
+    pass rates by grade, and enrollment trend across academic years.
+    """
+    permission_classes = [utils.IsAdmin]
+
+    def get(self, request):
+        current_year = models.AcademicYear.objects.filter(is_current=True).first()
+        current_term = models.Term.objects.filter(is_current=True).first()
+
+        # ---- fee collection rate by grade level (current year) ----
+        fee_rows = (
+            models.Invoice.objects.filter(enrollment__academic_year=current_year)
+            .values("fee_structure__grade_level__name")
+            .annotate(due=Sum("amount_due"), paid=Sum("amount_paid"))
+        )
+        fee_collection = [
+            {
+                "grade": r["fee_structure__grade_level__name"],
+                "due": float(r["due"] or 0),
+                "paid": float(r["paid"] or 0),
+                "collection_rate": round(float(r["paid"] or 0) / float(r["due"]) * 100, 1) if r["due"] else 0,
+            }
+            for r in fee_rows
+        ]
+
+        # ---- curriculum split (CBC vs 8-4-4), active students ----
+        curriculum_rows = (
+            models.StudentProfile.objects.filter(is_active=True)
+            .values("curriculum_type")
+            .annotate(count=Count("id"))
+        )
+        curriculum_split = [
+            {
+                "curriculum": dict(models.CurriculumType.choices).get(r["curriculum_type"], r["curriculum_type"]),
+                "count": r["count"],
+            }
+            for r in curriculum_rows
+        ]
+
+        # ---- average performance by subject (current term) ----
+        subject_perf = (
+            models.ExamResult.objects.filter(
+                exam__term=current_term, is_absent=False, marks_obtained__isnull=False
+            )
+            .values("subject__name")
+            .annotate(avg_pct=Avg(F("marks_obtained") * 100.0 / F("max_marks")))
+            .order_by("-avg_pct")[:12]
+        )
+        subject_performance = [
+            {"subject": r["subject__name"], "average": round(r["avg_pct"] or 0, 1)} for r in subject_perf
+        ]
+
+        # ---- pass rate by grade level (current term) ----
+        pass_rows_qs = models.ExamResult.objects.filter(
+            exam__term=current_term, is_absent=False, marks_obtained__isnull=False
+        ).select_related("enrollment__classroom__grade_level__promotion_rule")
+        pass_data = {}
+        for res in pass_rows_qs.iterator():
+            grade = res.enrollment.classroom.grade_level
+            rule = getattr(grade, "promotion_rule", None)
+            pass_mark = float(rule.pass_mark_percentage) if rule else 30.0
+            bucket = pass_data.setdefault(grade.name, {"passed": 0, "total": 0})
+            bucket["total"] += 1
+            if res.percentage is not None and res.percentage >= pass_mark:
+                bucket["passed"] += 1
+        pass_rates = [
+            {"grade": g, "pass_rate": round(v["passed"] / v["total"] * 100, 1) if v["total"] else 0}
+            for g, v in pass_data.items()
+        ]
+
+        # ---- enrollment trend across academic years ----
+        enrollment_trend_rows = (
+            models.Enrollment.objects.values("academic_year__year")
+            .annotate(count=Count("id"))
+            .order_by("academic_year__year")
+        )
+        enrollment_trend = [
+            {"year": r["academic_year__year"], "count": r["count"]} for r in enrollment_trend_rows
+        ]
+
+        return Response({
+            "fee_collection": fee_collection,
+            "curriculum_split": curriculum_split,
+            "subject_performance": subject_performance,
+            "pass_rates": pass_rates,
+            "enrollment_trend": enrollment_trend,
+        })
