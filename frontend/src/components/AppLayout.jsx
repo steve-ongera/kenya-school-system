@@ -1,16 +1,22 @@
-import { useState } from "react";
+// components/AppLayout.jsx
 import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Navbar from "./Navbar";
+import { useSidebar } from "../hooks/useSidebar";
 
 export default function AppLayout() {
-  const [collapsed, setCollapsed] = useState(false);
+  const { isDesktop, collapsed, mobileOpen, toggleSidebar, closeMobileSidebar } = useSidebar();
 
   return (
     <div className="app-shell">
-      <Sidebar collapsed={collapsed} onClose={() => setCollapsed(true)} />
+      <Sidebar
+        isDesktop={isDesktop}
+        collapsed={collapsed}
+        mobileOpen={mobileOpen}
+        onClose={closeMobileSidebar}
+      />
       <div className="app-shell__main">
-        <Navbar onToggleSidebar={() => setCollapsed((c) => !c)} />
+        <Navbar onToggleSidebar={toggleSidebar} />
         <main className="app-shell__content">
           <Outlet />
         </main>
