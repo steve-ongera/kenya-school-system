@@ -38,6 +38,7 @@ urlpatterns = [
     # student admission (creates User + StudentProfile + Enrollment)
     path("students/admit/", views.AdmitStudentView.as_view(), name="admit-student"),
     path("dashboard/stats/", views.DashboardStatsView.as_view(), name="dashboard-stats"),
+    path("reports/overview/", views.ReportsOverviewView.as_view(), name="reports-overview"),
     # subject selection for one enrollment
     path(
         "enrollments/<int:enrollment_id>/subjects/",

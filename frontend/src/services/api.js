@@ -79,12 +79,46 @@ export const dashboardApi = {
   stats: () => api.get("/dashboard/stats/"),
 };
 
+// extend the existing calendarApi with write operations
+
+
+// ---------------------------------------------------------------------------
+// REPORTS
+// ---------------------------------------------------------------------------
+export const reportsApi = {
+  overview: () => api.get("/reports/overview/"),
+};
+
+// ---------------------------------------------------------------------------
+// SCHOOL SETTINGS
+// ---------------------------------------------------------------------------
+export const schoolApi = {
+  list: () => api.get("/schools/"),
+  create: (payload) => api.post("/schools/", payload),
+  update: (id, payload) => api.patch(`/schools/${id}/`, payload),
+};
+
+// ---------------------------------------------------------------------------
+// PARENTS / GUARDIANS
+// ---------------------------------------------------------------------------
+export const guardiansApi = {
+  list: (params) => api.get("/parents/", { params }),
+  create: (payload) => api.post("/parents/", payload),
+  links: (params) => api.get("/parent-links/", { params }),
+  linkStudent: (payload) => api.post("/parent-links/", payload),
+  unlink: (id) => api.delete(`/parent-links/${id}/`),
+};
+
 // ---------------------------------------------------------------------------
 // ACADEMIC CALENDAR
 // ---------------------------------------------------------------------------
 export const calendarApi = {
   academicYears: () => api.get("/academic-years/"),
+  createAcademicYear: (payload) => api.post("/academic-years/", payload),
+  updateAcademicYear: (id, payload) => api.patch(`/academic-years/${id}/`, payload),
   terms: (params) => api.get("/terms/", { params }),
+  createTerm: (payload) => api.post("/terms/", payload),
+  updateTerm: (id, payload) => api.patch(`/terms/${id}/`, payload),
 };
 
 // ---------------------------------------------------------------------------

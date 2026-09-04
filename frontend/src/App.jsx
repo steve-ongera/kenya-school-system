@@ -16,6 +16,12 @@ import AdminPromotions from "./pages/admin/Promotions";
 import AdminFees from "./pages/admin/Fees";
 import AdminUsers from "./pages/admin/Users";
 
+// add near other admin imports
+import AdminReports from "./pages/admin/Reports";
+import AdminCalendar from "./pages/admin/Calendar";
+import AdminSettings from "./pages/admin/Settings";
+import AdminParents from "./pages/admin/Parents";
+
 // teacher
 import TeacherDashboard from "./pages/teacher/Dashboard";
 import TeacherClasses from "./pages/teacher/Classes";
@@ -62,6 +68,11 @@ export default function App() {
           <Route path="/admin/promotions" element={<RoleSection role="ADMIN"><AdminPromotions /></RoleSection>} />
           <Route path="/admin/fees" element={<RoleSection role="ADMIN"><AdminFees /></RoleSection>} />
           <Route path="/admin/users" element={<RoleSection role="ADMIN"><AdminUsers /></RoleSection>} />
+
+          <Route path="/admin/reports" element={<RoleSection role="ADMIN"><AdminReports /></RoleSection>} />
+          <Route path="/admin/calendar" element={<RoleSection role="ADMIN"><AdminCalendar /></RoleSection>} />
+          <Route path="/admin/settings" element={<RoleSection role="ADMIN"><AdminSettings /></RoleSection>} />
+          <Route path="/admin/parents" element={<RoleSection role="ADMIN"><AdminParents /></RoleSection>} />
 
           {/* TEACHER */}
           <Route path="/teacher" element={<RoleSection role="TEACHER"><TeacherDashboard /></RoleSection>} />
