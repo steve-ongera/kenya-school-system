@@ -19,30 +19,45 @@ const NAV_BY_ROLE = {
     { to: "/admin/calendar", icon: "bi-calendar-week", label: "Academic Calendar" },
     { to: "/admin/parents", icon: "bi-person-hearts", label: "Parents & Guardians" },
     { to: "/admin/settings", icon: "bi-gear", label: "School Settings" },
+    // Profile and Change Password for Admin
+    { to: "/profile", icon: "bi-person", label: "My Profile" },
+    { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
   ],
   TEACHER: [
     { to: "/teacher", icon: "bi-speedometer2", label: "Dashboard" },
     { to: "/teacher/classes", icon: "bi-door-open", label: "My Classes" },
     { to: "/teacher/marks", icon: "bi-pencil-square", label: "Enter Marks" },
     { to: "/teacher/rankings", icon: "bi-bar-chart-line", label: "Class Rankings" },
+    // Profile and Change Password for Teacher
+    { to: "/profile", icon: "bi-person", label: "My Profile" },
+    { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
   ],
   STUDENT: [
     { to: "/student", icon: "bi-speedometer2", label: "Dashboard" },
     { to: "/student/results", icon: "bi-journal-text", label: "My Results" },
     { to: "/student/subjects", icon: "bi-journal-bookmark", label: "My Subjects" },
     { to: "/student/fees", icon: "bi-cash-coin", label: "Fee Statement" },
+    // Profile and Change Password for Student
+    { to: "/profile", icon: "bi-person", label: "My Profile" },
+    { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
   ],
   PARENT: [
     { to: "/parent", icon: "bi-speedometer2", label: "Dashboard" },
     { to: "/parent/children", icon: "bi-people", label: "My Children" },
     { to: "/parent/results", icon: "bi-journal-text", label: "Results" },
     { to: "/parent/fees", icon: "bi-cash-coin", label: "Fee Statements" },
+    // Profile and Change Password for Parent
+    { to: "/profile", icon: "bi-person", label: "My Profile" },
+    { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
   ],
   FINANCE: [
     { to: "/finance", icon: "bi-speedometer2", label: "Dashboard" },
     { to: "/finance/structures", icon: "bi-receipt", label: "Fee Structures" },
     { to: "/finance/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
     { to: "/finance/payments", icon: "bi-cash-coin", label: "Payments" },
+    // Profile and Change Password for Finance
+    { to: "/profile", icon: "bi-person", label: "My Profile" },
+    { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
   ],
 };
 
