@@ -50,5 +50,11 @@ urlpatterns = [
     path("my-allocations/", views.MyAllocationsView.as_view(), name="my-allocations"),
     # ranking trigger
     path("rank/", views.RankView.as_view(), name="rank"),
+    # student/parent self-service fee payment (STK push, DEBUG-bypassed locally)
+    path("payments/initiate/", views.InitiatePaymentView.as_view(), name="initiate-payment"),
+    path("payments/mpesa-callback/", views.MpesaCallbackView.as_view(), name="mpesa-callback"),
+    path("payments/status/<str:checkout_request_id>/", views.PaymentStatusView.as_view(), name="payment-status"),
+    path("payments/<int:payment_id>/receipt/", views.ReceiptView.as_view(), name="payment-receipt"),
+    path("receipts/verify/<str:receipt_no>/", views.VerifyReceiptView.as_view(), name="verify-receipt"),
     path("", include(router.urls)),
 ]
