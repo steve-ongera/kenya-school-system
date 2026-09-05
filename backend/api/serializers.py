@@ -1,5 +1,6 @@
 from django.contrib.auth import password_validation
 from rest_framework import serializers
+from decimal import Decimal
 
 from . import models, services
 
@@ -398,37 +399,76 @@ class FeeStructureItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.FeeStructureItem
         fields = "__all__"
-
-
+ 
+ 
 class FeeStructureSerializer(serializers.ModelSerializer):
     items = FeeStructureItemSerializer(many=True, required=False)
     grade_level_name = serializers.CharField(source="grade_level.name", read_only=True)
     term_label = serializers.CharField(source="term.__str__", read_only=True)
-
+ 
     class Meta:
         model = models.FeeStructure
         fields = "__all__"
-
+ 
     def create(self, validated_data):
         items_data = validated_data.pop("items", [])
         fee_structure = models.FeeStructure.objects.create(**validated_data)
         for item in items_data:
             models.FeeStructureItem.objects.create(fee_structure=fee_structure, **item)
         return fee_structure
-
-
+ 
+ 
 class InvoiceSerializer(serializers.ModelSerializer):
     student_name = serializers.CharField(source="enrollment.student.user.get_full_name", read_only=True)
     admission_no = serializers.CharField(source="enrollment.student.admission_no", read_only=True)
+    term_label = serializers.CharField(source="fee_structure.term.__str__", read_only=True)
+    grade_level_name = serializers.CharField(source="fee_structure.grade_level.name", read_only=True)
     balance = serializers.ReadOnlyField()
-
+    term_charge = serializers.ReadOnlyField()
+    payments = serializers.SerializerMethodField()
+ 
     class Meta:
         model = models.Invoice
         fields = "__all__"
-
-
+ 
+    def get_payments(self, obj):
+        return PaymentSerializer(obj.payments.order_by("-paid_at"), many=True).data
+ 
+ 
 class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.Payment
         fields = "__all__"
-        read_only_fields = ["recorded_by"]
+        read_only_fields = ["recorded_by", "receipt_no"]
+ 
+ 
+class InitiatePaymentSerializer(serializers.Serializer):
+    """Used by students/parents/finance to pay an invoice - partial or full, via STK push (or the DEBUG bypass)."""
+ 
+    invoice_id = serializers.IntegerField()
+    phone_number = serializers.CharField(max_length=15)
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("1"))
+ 
+    def validate_phone_number(self, value):
+        cleaned = value.strip().replace(" ", "").replace("+", "")
+        if cleaned.startswith("0") and len(cleaned) == 10:
+            cleaned = "254" + cleaned[1:]
+        if not (cleaned.startswith("254") and len(cleaned) == 12 and cleaned.isdigit()):
+            raise serializers.ValidationError(
+                "Enter a valid Kenyan phone number, e.g. 07XXXXXXXX or 2547XXXXXXXX."
+            )
+        return cleaned
+ 
+ 
+class ReceiptSerializer(serializers.Serializer):
+    """Shape returned by GET /payments/{id}/receipt/ and the public verify endpoint."""
+ 
+    receipt_no = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    method = serializers.CharField()
+    reference = serializers.CharField()
+    paid_at = serializers.DateTimeField()
+    student_name = serializers.CharField()
+    admission_no = serializers.CharField()
+    term = serializers.CharField()
+    qr_code_base64 = serializers.CharField(required=False)

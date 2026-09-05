@@ -119,3 +119,25 @@ CORS_ALLOWED_ORIGINS = os.environ.get(
     "CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
 ).split(",")
 CORS_ALLOW_CREDENTIALS = True
+
+
+# ---------------------------------------------------------------------------
+# FEES / M-PESA (Safaricom Daraja STK Push)
+# ---------------------------------------------------------------------------
+# The frontend origin used to build the QR-code verification link printed on
+# every receipt, e.g. https://school.example.com/verify-receipt/<receipt_no>
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+ 
+# When DEBUG=True, services.initiate_payment() bypasses Safaricom entirely
+# and completes payments immediately - no credentials needed for local dev.
+# Set DEBUG=False and fill these in for a real deployment:
+#   - sandbox testing: https://sandbox.safaricom.co.ke
+#   - production:      https://api.safaricom.co.ke
+MPESA_BASE_URL = os.environ.get("MPESA_BASE_URL", "https://sandbox.safaricom.co.ke")
+MPESA_CONSUMER_KEY = os.environ.get("MPESA_CONSUMER_KEY", "")
+MPESA_CONSUMER_SECRET = os.environ.get("MPESA_CONSUMER_SECRET", "")
+MPESA_SHORTCODE = os.environ.get("MPESA_SHORTCODE", "174379")
+MPESA_PASSKEY = os.environ.get("MPESA_PASSKEY", "")
+MPESA_CALLBACK_URL = os.environ.get(
+    "MPESA_CALLBACK_URL", "https://yourschool.example.com/api/v1/payments/mpesa-callback/"
+)
