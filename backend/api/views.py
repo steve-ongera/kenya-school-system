@@ -501,12 +501,14 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 
 
 class PaymentViewSet(viewsets.ModelViewSet):
+    """Direct/manual payment recording, used by Finance for cash/bank/cheque. Students/parents use InitiatePaymentView instead."""
+ 
     queryset = models.Payment.objects.select_related("invoice").all()
     serializer_class = serializers.PaymentSerializer
     permission_classes = [utils.IsAdminOrFinance]
     filterset_fields = ["invoice", "method"]
     filter_backends = [DjangoFilterBackend]
-
+ 
     def create(self, request, *args, **kwargs):
         invoice = generics.get_object_or_404(models.Invoice, pk=request.data.get("invoice"))
         payment = services.record_payment(
@@ -517,7 +519,157 @@ class PaymentViewSet(viewsets.ModelViewSet):
             recorded_by=request.user,
         )
         return Response(serializers.PaymentSerializer(payment).data, status=201)
-
+ 
+# ---------------------------------------------------------------------------
+# STUDENT/PARENT SELF-SERVICE FEE PAYMENT (STK push, with DEBUG bypass)
+# ---------------------------------------------------------------------------
+def _can_access_invoice(user, invoice):
+    if user.role in (models.User.Role.ADMIN, models.User.Role.FINANCE):
+        return True
+    student = invoice.enrollment.student
+    if user.role == models.User.Role.STUDENT:
+        return student.user_id == user.id
+    if user.role == models.User.Role.PARENT:
+        return models.ParentStudentLink.objects.filter(parent__user=user, student=student).exists()
+    return False
+ 
+ 
+class InitiatePaymentView(APIView):
+    """
+    POST { invoice_id, phone_number, amount }
+    Partial payments are fine - amount does not need to equal the balance.
+    Overpaying is also fine; the surplus becomes a credit that automatically
+    reduces the student's NEXT term invoice (see services.generate_invoice).
+    """
+ 
+    permission_classes = [IsAuthenticated]
+ 
+    def post(self, request):
+        serializer = serializers.InitiatePaymentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        invoice = generics.get_object_or_404(models.Invoice, pk=serializer.validated_data["invoice_id"])
+ 
+        if not _can_access_invoice(request.user, invoice):
+            return Response({"detail": "You cannot pay this invoice."}, status=403)
+ 
+        try:
+            result = services.initiate_payment(
+                invoice,
+                serializer.validated_data["phone_number"],
+                serializer.validated_data["amount"],
+                initiated_by=request.user,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+ 
+        if result["status"] == "COMPLETED":
+            payment = result["payment"]
+            invoice.refresh_from_db()
+            return Response(
+                {
+                    "status": "COMPLETED",
+                    "payment": serializers.PaymentSerializer(payment).data,
+                    "invoice": serializers.InvoiceSerializer(invoice).data,
+                },
+                status=201,
+            )
+ 
+        return Response(
+            {"status": "PENDING", "checkout_request_id": result["stk_request"].checkout_request_id},
+            status=202,
+        )
+ 
+ 
+class PaymentStatusView(APIView):
+    """Frontend polls this while an STK push is PENDING (production mode only)."""
+ 
+    permission_classes = [IsAuthenticated]
+ 
+    def get(self, request, checkout_request_id):
+        stk_request = generics.get_object_or_404(
+            models.MpesaSTKPushRequest, checkout_request_id=checkout_request_id
+        )
+        if not _can_access_invoice(request.user, stk_request.invoice):
+            return Response({"detail": "Not your payment."}, status=403)
+ 
+        payment = None
+        if stk_request.status == models.MpesaSTKPushRequest.Status.COMPLETED:
+            payment = models.Payment.objects.filter(
+                invoice=stk_request.invoice, method=models.Payment.Method.MPESA
+            ).order_by("-paid_at").first()
+ 
+        return Response(
+            {
+                "status": stk_request.status,
+                "result_description": stk_request.result_description,
+                "payment": serializers.PaymentSerializer(payment).data if payment else None,
+            }
+        )
+ 
+ 
+class MpesaCallbackView(APIView):
+    """Webhook Safaricom calls once the customer completes (or cancels) the STK push. Not used while DEBUG=True."""
+ 
+    permission_classes = [AllowAny]
+    authentication_classes = []
+ 
+    def post(self, request):
+        services.handle_mpesa_callback(request.data)
+        # Safaricom just needs a 200 + this exact shape to stop retrying.
+        return Response({"ResultCode": 0, "ResultDesc": "Accepted"})
+ 
+ 
+class ReceiptView(APIView):
+    """GET a printable receipt (with QR code) for one payment. Only the payer, their parent, or staff can view it."""
+ 
+    permission_classes = [IsAuthenticated]
+ 
+    def get(self, request, payment_id):
+        payment = generics.get_object_or_404(models.Payment, pk=payment_id)
+        if not _can_access_invoice(request.user, payment.invoice):
+            return Response({"detail": "Not your receipt."}, status=403)
+ 
+        student = payment.invoice.enrollment.student
+        data = {
+            "receipt_no": payment.receipt_no,
+            "amount": payment.amount,
+            "method": payment.method,
+            "reference": payment.reference,
+            "paid_at": payment.paid_at,
+            "student_name": student.user.get_full_name(),
+            "admission_no": student.admission_no,
+            "term": str(payment.invoice.fee_structure.term),
+            "qr_code_base64": services.generate_receipt_qr_base64(payment),
+        }
+        return Response(serializers.ReceiptSerializer(data).data)
+ 
+ 
+class VerifyReceiptView(APIView):
+    """Public endpoint the QR code links to - anyone can confirm a printed receipt is genuine without logging in."""
+ 
+    permission_classes = [AllowAny]
+ 
+    def get(self, request, receipt_no):
+        payment = models.Payment.objects.filter(receipt_no=receipt_no).select_related(
+            "invoice__enrollment__student__user", "invoice__fee_structure__term"
+        ).first()
+        if not payment:
+            return Response({"valid": False, "detail": "No receipt found with this number."}, status=404)
+ 
+        student = payment.invoice.enrollment.student
+        return Response(
+            {
+                "valid": True,
+                "receipt_no": payment.receipt_no,
+                "amount": payment.amount,
+                "method": payment.method,
+                "paid_at": payment.paid_at,
+                "student_name": student.user.get_full_name(),
+                "admission_no": student.admission_no,
+                "term": str(payment.invoice.fee_structure.term),
+            }
+        )
+ 
 
 
 def _months_back(n):
