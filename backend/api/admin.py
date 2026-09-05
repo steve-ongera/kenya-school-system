@@ -10,7 +10,7 @@ Organized to mirror models.py:
   6. Teacher Allocation
   7. Exams, Results, Grading, Ranking
   8. Promotion Rules
-  9. Fees
+  9. Fees (incl. M-Pesa STK push trail)
 
 Performance notes: several tables here (ExamResult, Enrollment, Invoice,
 Payment) can run into the tens of thousands of rows across 4 years of data,
@@ -26,10 +26,10 @@ from django.utils.html import format_html
 from api.models import (
     AcademicYear, ClassRoom, Enrollment, Exam, ExamResult, ExamType,
     FeeStructure, FeeStructureItem, GradeLevel, GradeSubject, GradingScale,
-    Invoice, ParentGuardianProfile, ParentStudentLink, Payment, PromotionRule,
-    School, Stream, StudentProfile, StudentSubjectSelection, Subject,
-    SubjectPaper, SubjectSelectionRule, Term, TeacherSubjectAllocation,
-    TermPositionRanking, User,
+    Invoice, MpesaSTKPushRequest, ParentGuardianProfile, ParentStudentLink,
+    Payment, PromotionRule, School, Stream, StudentProfile,
+    StudentSubjectSelection, Subject, SubjectPaper, SubjectSelectionRule,
+    Term, TeacherSubjectAllocation, TermPositionRanking, User,
 )
 
 admin.site.site_header = "Kilele Ridge Secondary School Administration"
@@ -50,6 +50,10 @@ def _badge(text, color):
 STATUS_COLORS = {
     "ACTIVE": "#2e7d32", "PROMOTED": "#1565c0", "REPEATED": "#ef6c00",
     "GRADUATED": "#6a1b9a", "TRANSFERRED_OUT": "#757575", "DROPPED": "#c62828",
+}
+
+STK_STATUS_COLORS = {
+    "PENDING": "#ef6c00", "COMPLETED": "#2e7d32", "FAILED": "#c62828", "CANCELLED": "#757575",
 }
 
 
@@ -436,7 +440,7 @@ class PromotionRuleAdmin(admin.ModelAdmin):
 
 
 # ---------------------------------------------------------------------------
-# 9. FEES
+# 9. FEES (incl. M-Pesa STK push trail)
 # ---------------------------------------------------------------------------
 class FeeStructureItemInline(admin.TabularInline):
     model = FeeStructureItem
@@ -472,16 +476,35 @@ class PaymentInline(admin.TabularInline):
     autocomplete_fields = ("recorded_by",)
 
 
+class MpesaSTKPushRequestInline(admin.TabularInline):
+    """
+    Read-only trail of Daraja push attempts against this invoice. These are
+    system-generated (initiated via services.initiate_payment(), updated by
+    the callback view), so they're not meant to be hand-edited from here.
+    """
+    model = MpesaSTKPushRequest
+    extra = 0
+    fields = ("phone_number", "amount", "status", "checkout_request_id", "result_description", "created_at")
+    readonly_fields = ("phone_number", "amount", "status", "checkout_request_id", "result_description", "created_at")
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
-    list_display = ("__str__", "enrollment", "fee_structure", "amount_due", "amount_paid", "balance_display")
+    list_display = (
+        "__str__", "enrollment", "fee_structure", "brought_forward",
+        "amount_due", "amount_paid", "balance_display",
+    )
     list_filter = ("fee_structure__term__academic_year", "fee_structure__grade_level")
     search_fields = ("enrollment__student__admission_no", "enrollment__student__user__first_name", "enrollment__student__user__last_name")
     autocomplete_fields = ("enrollment", "fee_structure")
     list_select_related = ("enrollment__student", "fee_structure__grade_level", "fee_structure__term")
     list_per_page = 50
     show_full_result_count = False
-    inlines = [PaymentInline]
+    inlines = [PaymentInline, MpesaSTKPushRequestInline]
 
     @admin.display(description="Balance")
     def balance_display(self, obj):
@@ -503,3 +526,27 @@ class PaymentAdmin(admin.ModelAdmin):
     list_per_page = 50
     show_full_result_count = False
     date_hierarchy = "paid_at"
+
+
+@admin.register(MpesaSTKPushRequest)
+class MpesaSTKPushRequestAdmin(admin.ModelAdmin):
+    list_display = (
+        "checkout_request_id", "invoice", "phone_number", "amount",
+        "status_badge", "initiated_by", "created_at",
+    )
+    list_filter = ("status", "created_at")
+    search_fields = (
+        "checkout_request_id", "merchant_request_id", "phone_number",
+        "invoice__enrollment__student__admission_no",
+        "invoice__enrollment__student__user__first_name", "invoice__enrollment__student__user__last_name",
+    )
+    autocomplete_fields = ("invoice", "initiated_by")
+    list_select_related = ("invoice__enrollment__student", "initiated_by")
+    list_per_page = 50
+    show_full_result_count = False
+    date_hierarchy = "created_at"
+    readonly_fields = ("created_at", "updated_at")
+
+    @admin.display(description="Status")
+    def status_badge(self, obj):
+        return _badge(obj.get_status_display(), STK_STATUS_COLORS.get(obj.status, "#616161"))

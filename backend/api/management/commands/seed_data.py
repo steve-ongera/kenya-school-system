@@ -28,9 +28,10 @@ from django.utils import timezone
 from api.models import (
     AcademicYear, ClassRoom, CurriculumType, Enrollment, Exam, ExamResult,
     ExamType, FeeStructure, FeeStructureItem, GradeLevel, GradeSubject,
-    GradingScale, Invoice, ParentGuardianProfile, ParentStudentLink, Payment,
-    PromotionRule, School, StudentProfile, StudentSubjectSelection, Stream,
-    Subject, SubjectPaper, SubjectSelectionRule, Term, TeacherSubjectAllocation,
+    GradingScale, Invoice, MpesaSTKPushRequest, ParentGuardianProfile,
+    ParentStudentLink, Payment, PromotionRule, School, StudentProfile,
+    StudentSubjectSelection, Stream, Subject, SubjectPaper,
+    SubjectSelectionRule, Term, TeacherSubjectAllocation,
     TermPositionRanking, User,
 )
 
@@ -140,6 +141,7 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------
     def _flush(self):
         self.stdout.write("Flushing previously seeded data...")
+        MpesaSTKPushRequest.objects.all().delete()
         Payment.objects.all().delete()
         Invoice.objects.all().delete()
         FeeStructureItem.objects.all().delete()
@@ -1019,7 +1021,7 @@ class Command(BaseCommand):
                     TermPositionRanking.objects.bulk_create(rankings, ignore_conflicts=True, batch_size=2000)
 
     # ------------------------------------------------------------------
-    # Fees, invoices & payments
+    # Fees, invoices, payments & M-Pesa STK push trail
     # ------------------------------------------------------------------
     def _create_fee_structures(self):
         self.stdout.write("Creating fee structures & invoices...")
@@ -1047,65 +1049,165 @@ class Command(BaseCommand):
         return fee_structures
 
     def _create_invoices_and_payments(self, enrollments_by_year, fee_structures):
+        """
+        Invoices must be generated in true chronological order (across years,
+        not just within one), because Invoice.brought_forward is the running
+        balance carried in from every previous term for that STUDENT - not
+        just their previous Enrollment row. `running_balance` tracks that
+        per student_id as we walk terms forward in time.
+        """
+        self.stdout.write("Creating invoices, payments & M-Pesa STK push trail...")
         finance_officers = self.finance_officers
-        for year, terms in self.terms_by_year.items():
+        running_balance = {}  # student_id -> Decimal balance carried into the next invoice
+        stk_source_payments = []  # (invoice, chunk_amount, mpesa_reference, paid_at) for current-term M-Pesa payments
+
+        all_terms_in_order = [
+            (year, term) for year in sorted(self.years) for term in self.terms_by_year[year]
+        ]
+
+        for year, term in all_terms_in_order:
             academic_year = self.years[year]
-            enrollments = list(Enrollment.objects.filter(academic_year=academic_year).select_related(
-                "classroom__grade_level",
-            ))
+            enrollments = list(Enrollment.objects.filter(
+                academic_year=academic_year,
+            ).select_related("classroom__grade_level"))
+
             invoices_batch = []
-            invoice_keys = []
-            for term in terms:
-                for enr in enrollments:
-                    fs = fee_structures.get((enr.classroom.grade_level_id, term.id))
-                    if not fs:
-                        continue
-                    invoices_batch.append(Invoice(
-                        enrollment=enr, fee_structure=fs, amount_due=fs.total_amount, amount_paid=0,
-                    ))
-                    invoice_keys.append((enr.id, fs.id))
+            for enr in enrollments:
+                fs = fee_structures.get((enr.classroom.grade_level_id, term.id))
+                if not fs:
+                    continue
+                brought_forward = running_balance.get(enr.student_id, Decimal("0"))
+                amount_due = (fs.total_amount + brought_forward).quantize(Decimal("1"))
+                invoices_batch.append(Invoice(
+                    enrollment=enr, fee_structure=fs,
+                    brought_forward=brought_forward,
+                    amount_due=amount_due, amount_paid=0,
+                ))
             Invoice.objects.bulk_create(invoices_batch, ignore_conflicts=True, batch_size=2000)
 
-            created_invoices = Invoice.objects.filter(
-                enrollment__academic_year=academic_year,
-            ).select_related("fee_structure")
+            created_invoices = list(Invoice.objects.filter(
+                enrollment__academic_year=academic_year, fee_structure__term=term,
+            ).select_related("fee_structure", "enrollment"))
+
             payments_batch = []
             invoices_to_update = []
             for inv in created_invoices:
                 is_current_term = inv.fee_structure.term.is_current
-                pay_fraction = 1.0 if not is_current_term else random.choice([0.0, 0.4, 0.7, 1.0])
-                if pay_fraction <= 0:
-                    continue
-                target = (inv.amount_due * Decimal(str(pay_fraction))).quantize(Decimal("1"))
-                num_payments = 1 if target < 5000 else random.choice([1, 2])
-                remaining = target
-                for i in range(num_payments):
-                    if remaining <= 0:
-                        break
-                    chunk = remaining if i == num_payments - 1 else (remaining // 2)
-                    if chunk <= 0:
-                        continue
-                    method = random.choices(
-                        [Payment.Method.MPESA, Payment.Method.BANK, Payment.Method.CASH, Payment.Method.CHEQUE],
-                        weights=[70, 15, 10, 5],
-                    )[0]
-                    reference = (
-                        "".join(random.choice(MPESA_PREFIXES) for _ in range(3)) + str(random.randint(100000, 999999))
-                        if method == Payment.Method.MPESA else f"REF{random.randint(100000, 999999)}"
-                    )
-                    paid_at = timezone.make_aware(timezone.datetime.combine(
-                        inv.fee_structure.term.start_date + timedelta(days=random.randint(1, 20)),
-                        timezone.datetime.min.time(),
-                    )) if hasattr(timezone, "make_aware") else timezone.now()
-                    payments_batch.append(Payment(
-                        invoice=inv, amount=chunk, method=method, reference=reference,
-                        recorded_by=random.choice(finance_officers), paid_at=paid_at,
-                    ))
-                    remaining -= chunk
+                # a student carrying arrears into this invoice gets chased
+                # harder than one who's only facing this term's fresh charge.
+                if inv.brought_forward > 0:
+                    pay_fraction = 1.0 if not is_current_term else random.choice([0.3, 0.6, 0.85, 1.0])
+                else:
+                    pay_fraction = 1.0 if not is_current_term else random.choice([0.0, 0.4, 0.7, 1.0])
+                target = max((inv.amount_due * Decimal(str(pay_fraction))).quantize(Decimal("1")), Decimal("0"))
+
+                if target > 0:
+                    num_payments = 1 if target < 5000 else random.choice([1, 2])
+                    remaining = target
+                    for i in range(num_payments):
+                        if remaining <= 0:
+                            break
+                        chunk = remaining if i == num_payments - 1 else (remaining // 2)
+                        if chunk <= 0:
+                            continue
+                        method = random.choices(
+                            [Payment.Method.MPESA, Payment.Method.BANK, Payment.Method.CASH, Payment.Method.CHEQUE],
+                            weights=[70, 15, 10, 5],
+                        )[0]
+                        reference = (
+                            "".join(random.choice(MPESA_PREFIXES) for _ in range(3)) + str(random.randint(100000, 999999))
+                            if method == Payment.Method.MPESA else f"REF{random.randint(100000, 999999)}"
+                        )
+                        paid_at = timezone.make_aware(timezone.datetime.combine(
+                            term.start_date + timedelta(days=random.randint(1, 20)),
+                            timezone.datetime.min.time(),
+                        )) if hasattr(timezone, "make_aware") else timezone.now()
+                        payments_batch.append(Payment(
+                            invoice=inv, amount=chunk, method=method, reference=reference,
+                            recorded_by=random.choice(finance_officers), paid_at=paid_at,
+                        ))
+                        # Only the CURRENT term's M-Pesa payments get a matching
+                        # STK push trail - historical terms were seeded straight
+                        # into Payment, mirroring how DEBUG=True bypasses STK
+                        # push entirely (see MpesaSTKPushRequest docstring).
+                        if method == Payment.Method.MPESA and is_current_term:
+                            stk_source_payments.append((inv, chunk, reference, paid_at))
+                        remaining -= chunk
+
                 inv.amount_paid = target
                 invoices_to_update.append(inv)
+                # whatever's left unpaid on this invoice rolls forward as the
+                # brought_forward on this student's NEXT term's invoice.
+                running_balance[inv.enrollment.student_id] = inv.amount_due - inv.amount_paid
+
             Payment.objects.bulk_create(payments_batch, batch_size=2000)
             Invoice.objects.bulk_update(invoices_to_update, ["amount_paid"], batch_size=2000)
+
+        self._create_mpesa_stk_requests(stk_source_payments)
+
+    def _create_mpesa_stk_requests(self, stk_source_payments):
+        """
+        Seeds the Daraja STK push trail (initiation -> callback) for the
+        CURRENT term's M-Pesa payments only - per the model's docstring,
+        MpesaSTKPushRequest is only used when settings.DEBUG is False;
+        historical terms are treated as having bypassed it, same as DEBUG
+        mode does. Also sprinkles in a few failed/cancelled/pending attempts
+        that never became a Payment, so the table isn't only happy-path rows.
+        """
+        if not stk_source_payments:
+            return
+        self.stdout.write("Seeding M-Pesa STK push requests for current-term payments...")
+        used_checkout_ids = set()
+
+        def new_checkout_id():
+            while True:
+                cid = "ws_CO_" + "".join(random.choice("0123456789") for _ in range(12))
+                if cid not in used_checkout_ids:
+                    used_checkout_ids.add(cid)
+                    return cid
+
+        def new_merchant_id():
+            return f"{random.randint(10000, 99999)}-{random.randint(100000, 999999)}-1"
+
+        rows = []
+        touched_invoices = set()
+        for inv, chunk, mpesa_reference, paid_at in stk_source_payments:
+            touched_invoices.add(inv.id)
+            rows.append(MpesaSTKPushRequest(
+                invoice=inv,
+                phone_number=self._rand_phone(),
+                amount=chunk,
+                checkout_request_id=new_checkout_id(),
+                merchant_request_id=new_merchant_id(),
+                status=MpesaSTKPushRequest.Status.COMPLETED,
+                result_description="The service request is processed successfully.",
+                initiated_by=random.choice(self.finance_officers),
+            ))
+
+        # a scattering of attempts that never resulted in a recorded Payment:
+        # failed, cancelled, or still awaiting the Daraja callback.
+        failure_pool = [
+            (MpesaSTKPushRequest.Status.FAILED, "The balance is insufficient for the transaction."),
+            (MpesaSTKPushRequest.Status.CANCELLED, "Request cancelled by user."),
+            (MpesaSTKPushRequest.Status.PENDING, ""),
+        ]
+        invoices_by_id = {inv.id: inv for inv, _, _, _ in stk_source_payments}
+        for inv_id in touched_invoices:
+            if random.random() < 0.15:
+                inv = invoices_by_id[inv_id]
+                status, description = random.choice(failure_pool)
+                rows.append(MpesaSTKPushRequest(
+                    invoice=inv,
+                    phone_number=self._rand_phone(),
+                    amount=(inv.amount_due * Decimal("0.5")).quantize(Decimal("1")),
+                    checkout_request_id=new_checkout_id(),
+                    merchant_request_id=new_merchant_id(),
+                    status=status,
+                    result_description=description,
+                    initiated_by=random.choice(self.finance_officers),
+                ))
+
+        MpesaSTKPushRequest.objects.bulk_create(rows, ignore_conflicts=True, batch_size=2000)
 
     # ------------------------------------------------------------------
     def _print_summary(self, elapsed):
@@ -1126,10 +1228,12 @@ class Command(BaseCommand):
             ("Term rankings", TermPositionRanking.objects.count()),
             ("Fee structures", FeeStructure.objects.count()),
             ("Invoices", Invoice.objects.count()),
+            ("  with arrears brought forward", Invoice.objects.filter(brought_forward__gt=0).count()),
             ("Payments", Payment.objects.count()),
+            ("M-Pesa STK push requests", MpesaSTKPushRequest.objects.count()),
         ]
         for label, count in counts:
-            self.stdout.write(f"  {label:<20} {count}")
+            self.stdout.write(f"  {label:<28} {count}")
         self.stdout.write(self.style.SUCCESS("\nAll accounts use password: password123"))
         self.stdout.write("  Sample admin login:   admin001")
         self.stdout.write("  Sample teacher login: teacher001")
