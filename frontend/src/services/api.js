@@ -188,4 +188,17 @@ export const financeApi = {
   recordPayment: (payload) => api.post("/payments/", payload),
 };
 
+// ---------------------------------------------------------------------------
+// STUDENT/PARENT SELF-SERVICE FEE PAYMENT (STK push, DEBUG-bypassed locally)
+// ---------------------------------------------------------------------------
+export const paymentsApi = {
+  // amount can be less than the balance (partial) or more (creates a credit
+  // that automatically applies to the student's next term invoice)
+  initiate: (payload) => api.post("/payments/initiate/", payload),
+  status: (checkoutRequestId) => api.get(`/payments/status/${checkoutRequestId}/`),
+  receipt: (paymentId) => api.get(`/payments/${paymentId}/receipt/`),
+  // public - no auth required, used by the QR-code verification page
+  verifyReceipt: (receiptNo) => api.get(`/receipts/verify/${receiptNo}/`),
+};
+
 export default api;
