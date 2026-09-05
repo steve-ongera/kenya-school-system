@@ -2,10 +2,16 @@
 Service layer - business rules live here, NOT in views/serializers.
 Views should stay thin: parse request -> call a service -> return response.
 """
+import base64
+import io
 from decimal import Decimal
 
+import qrcode
+import requests
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Sum, Avg, Count, Q
+from django.utils import timezone
 
 from . import models
 
@@ -252,26 +258,198 @@ def bulk_promote_classroom(classroom: models.ClassRoom, target_classroom: models
 
 
 # ---------------------------------------------------------------------------
-# FEES
+# FEES - carry-forward ledger, STK push (with DEBUG bypass), receipts
 # ---------------------------------------------------------------------------
-def generate_invoice(enrollment: models.Enrollment, term: models.Term):
+def get_outstanding_balance(student: models.StudentProfile) -> Decimal:
+    """
+    Sums balance (amount_due - amount_paid) across EVERY invoice this
+    student has ever had, across every enrollment/classroom/academic year.
+    Positive = still owes money overall. Negative = has a credit/prepaid
+    balance that will reduce what's due on their next invoice.
+    """
+    invoices = models.Invoice.objects.filter(enrollment__student=student)
+    total_due = invoices.aggregate(s=Sum("amount_due"))["s"] or Decimal("0")
+    total_paid = invoices.aggregate(s=Sum("amount_paid"))["s"] or Decimal("0")
+    return total_due - total_paid
+
+
+def generate_invoice(enrollment: models.Enrollment, term: models.Term) -> models.Invoice:
+    """
+    Creates this term's invoice, automatically folding in whatever the
+    student's running balance was from ALL previous terms:
+      - Unpaid arrears (positive balance) get ADDED to this term's fee.
+      - A credit/prepaid balance (negative, from an earlier overpayment)
+        gets SUBTRACTED from this term's fee - "pushed to next term
+        automatically when it's active", exactly as requested.
+    Calling this twice for the same enrollment/fee_structure is safe - it
+    just returns the existing invoice rather than recomputing brought_forward.
+    """
     fee_structure = models.FeeStructure.objects.filter(
         grade_level=enrollment.classroom.grade_level, term=term
     ).first()
     if not fee_structure:
         raise ValueError("No fee structure defined for this grade/term yet.")
-    invoice, _ = models.Invoice.objects.get_or_create(
+
+    existing = models.Invoice.objects.filter(enrollment=enrollment, fee_structure=fee_structure).first()
+    if existing:
+        return existing
+
+    brought_forward = get_outstanding_balance(enrollment.student)
+    invoice = models.Invoice.objects.create(
         enrollment=enrollment,
         fee_structure=fee_structure,
-        defaults={"amount_due": fee_structure.total_amount},
+        brought_forward=brought_forward,
+        amount_due=fee_structure.total_amount + brought_forward,
     )
     return invoice
 
 
+def generate_receipt_no() -> str:
+    """RCT-<year>-00001, sequential per calendar year, independent of admission numbers."""
+    prefix = f"RCT-{timezone.now().year}-"
+    last = models.Payment.objects.filter(receipt_no__startswith=prefix).order_by("-receipt_no").first()
+    next_seq = 1
+    if last:
+        try:
+            next_seq = int(last.receipt_no.split("-")[-1]) + 1
+        except ValueError:
+            pass
+    return f"{prefix}{next_seq:05d}"
+
+
 def record_payment(invoice: models.Invoice, amount: Decimal, method: str, reference: str, recorded_by):
+    """
+    Records a payment against an invoice. Deliberately does NOT clamp the
+    amount to the outstanding balance - a student paying more than they owe
+    is allowed, and simply leaves the invoice with a negative `balance`
+    (a credit), which get_outstanding_balance() picks up and
+    generate_invoice() then carries forward to the next term automatically.
+    """
     payment = models.Payment.objects.create(
-        invoice=invoice, amount=amount, method=method, reference=reference, recorded_by=recorded_by
+        invoice=invoice, amount=amount, method=method, reference=reference,
+        recorded_by=recorded_by, receipt_no=generate_receipt_no(),
     )
     invoice.amount_paid = invoice.payments.aggregate(total=Sum("amount"))["total"] or 0
     invoice.save(update_fields=["amount_paid"])
     return payment
+
+
+def _get_mpesa_access_token() -> str:
+    response = requests.get(
+        f"{settings.MPESA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials",
+        auth=(settings.MPESA_CONSUMER_KEY, settings.MPESA_CONSUMER_SECRET),
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()["access_token"]
+
+
+def initiate_payment(invoice: models.Invoice, phone_number: str, amount: Decimal, initiated_by):
+    """
+    Single entry point a student/parent/finance officer calls to pay fees.
+
+    - DEBUG=True (local dev / demos): bypasses Safaricom completely and
+      completes the payment immediately, so the whole flow (including the
+      receipt + QR code) can be exercised without real M-Pesa credentials.
+    - DEBUG=False (production): sends a genuine STK push via the Safaricom
+      Daraja API. The Payment row is only created once Safaricom calls back
+      to handle_mpesa_callback() - this function returns a PENDING result
+      and the frontend polls /payments/status/<checkout_request_id>/.
+    """
+    if amount <= 0:
+        raise ValueError("Payment amount must be greater than zero.")
+
+    if settings.DEBUG:
+        payment = record_payment(
+            invoice, amount, models.Payment.Method.MPESA,
+            reference="DEBUG-BYPASS", recorded_by=initiated_by,
+        )
+        return {"status": "COMPLETED", "payment": payment}
+
+    # ---- production: real Safaricom Daraja STK Push ----
+    access_token = _get_mpesa_access_token()
+    timestamp = timezone.now().strftime("%Y%m%d%H%M%S")
+    password = base64.b64encode(
+        f"{settings.MPESA_SHORTCODE}{settings.MPESA_PASSKEY}{timestamp}".encode()
+    ).decode()
+
+    payload = {
+        "BusinessShortCode": settings.MPESA_SHORTCODE,
+        "Password": password,
+        "Timestamp": timestamp,
+        "TransactionType": "CustomerPayBillOnline",
+        "Amount": int(amount),
+        "PartyA": phone_number,
+        "PartyB": settings.MPESA_SHORTCODE,
+        "PhoneNumber": phone_number,
+        "CallBackURL": settings.MPESA_CALLBACK_URL,
+        "AccountReference": f"FEES-{invoice.id}",
+        "TransactionDesc": f"School fees - {invoice.enrollment.student.admission_no}",
+    }
+    response = requests.post(
+        f"{settings.MPESA_BASE_URL}/mpesa/stkpush/v1/processrequest",
+        json=payload,
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=30,
+    )
+    data = response.json()
+
+    stk_request = models.MpesaSTKPushRequest.objects.create(
+        invoice=invoice,
+        phone_number=phone_number,
+        amount=amount,
+        checkout_request_id=data.get("CheckoutRequestID"),
+        merchant_request_id=data.get("MerchantRequestID", ""),
+        status=models.MpesaSTKPushRequest.Status.PENDING,
+        initiated_by=initiated_by,
+    )
+    return {"status": "PENDING", "stk_request": stk_request, "raw_response": data}
+
+
+@transaction.atomic
+def handle_mpesa_callback(payload: dict):
+    """
+    Processes Safaricom's STK push callback:
+    { "Body": { "stkCallback": {
+          "CheckoutRequestID": "...", "ResultCode": 0,
+          "CallbackMetadata": { "Item": [{"Name": "Amount", ...}, {"Name": "MpesaReceiptNumber", ...}] }
+    }}}
+    ResultCode 0 = success; anything else = failed/cancelled by the user.
+    """
+    callback = payload.get("Body", {}).get("stkCallback", {})
+    checkout_id = callback.get("CheckoutRequestID")
+    result_code = callback.get("ResultCode")
+
+    stk_request = models.MpesaSTKPushRequest.objects.filter(checkout_request_id=checkout_id).first()
+    if not stk_request or stk_request.status != models.MpesaSTKPushRequest.Status.PENDING:
+        return None
+
+    if result_code == 0:
+        items = {i.get("Name"): i.get("Value") for i in callback.get("CallbackMetadata", {}).get("Item", [])}
+        mpesa_receipt = items.get("MpesaReceiptNumber", "")
+        amount = items.get("Amount", stk_request.amount)
+        payment = record_payment(
+            stk_request.invoice, Decimal(str(amount)), models.Payment.Method.MPESA,
+            reference=mpesa_receipt, recorded_by=stk_request.initiated_by,
+        )
+        stk_request.status = models.MpesaSTKPushRequest.Status.COMPLETED
+        stk_request.save(update_fields=["status"])
+        return payment
+
+    stk_request.status = models.MpesaSTKPushRequest.Status.FAILED
+    stk_request.result_description = callback.get("ResultDesc", "")
+    stk_request.save(update_fields=["status", "result_description"])
+    return None
+
+
+def generate_receipt_qr_base64(payment: models.Payment) -> str:
+    """
+    Encodes a QR code linking to the public receipt-verification page, so
+    anyone (a bursar, an auditor, the parent themselves) can scan a printed
+    receipt and confirm it's genuine without trusting the paper alone.
+    """
+    verify_url = f"{settings.FRONTEND_URL}/verify-receipt/{payment.receipt_no}"
+    img = qrcode.make(verify_url)
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode()
