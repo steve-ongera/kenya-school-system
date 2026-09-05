@@ -60,7 +60,7 @@ export default function AdminTeacherAllocation() {
       await api.post("/teacher-allocations/", form);
       setForm({ teacher: "", subject: "", classroom: "", academic_year: "" });
       await loadAll();
-      setMessage("✅ Allocation saved. This teacher can now enter marks for this subject/classroom.");
+      setMessage(" Allocation saved. This teacher can now enter marks for this subject/classroom.");
       setMessageType("success");
     } catch (err) {
       setMessage(err.response?.data ? JSON.stringify(err.response.data) : "Could not save allocation.");

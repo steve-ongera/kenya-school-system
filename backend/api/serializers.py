@@ -39,6 +39,62 @@ class UserCreateSerializer(serializers.ModelSerializer):
         return user
 
 
+class StudentProfileMiniSerializer(serializers.ModelSerializer):
+    """Read-only slice of StudentProfile exposed on the unified /profile/me/ endpoint."""
+
+    class Meta:
+        model = models.StudentProfile
+        fields = ["admission_no", "gender", "date_of_birth", "curriculum_type", "upi_number"]
+
+
+class ProfileSerializer(serializers.ModelSerializer):
+    """
+    Read view of 'my own profile', for ANY role. Nests the student-specific
+    fields (admission_no, gender, dob, curriculum) when the user is a student,
+    so one endpoint serves every portal.
+    """
+
+    student_profile = serializers.SerializerMethodField()
+
+    class Meta:
+        model = models.User
+        fields = [
+            "id", "username", "first_name", "last_name", "role",
+            "email", "phone_number", "national_id", "student_profile",
+        ]
+        read_only_fields = fields
+
+    def get_student_profile(self, obj):
+        profile = getattr(obj, "student_profile", None)
+        return StudentProfileMiniSerializer(profile).data if profile else None
+
+
+class ProfileUpdateSerializer(serializers.Serializer):
+    """
+    Self-service update: only NON-CRITICAL fields. Deliberately excludes
+    username, role, admission_no, first_name/last_name - those are admin-only
+    changes (see UserViewSet / StudentEnrollSerializer).
+    """
+
+    email = serializers.EmailField(required=False, allow_blank=True)
+    phone_number = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    national_id = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    # only meaningful for students - service layer ignores these for other roles
+    gender = serializers.ChoiceField(choices=models.StudentProfile.Gender.choices, required=False)
+    date_of_birth = serializers.DateField(required=False, allow_null=True)
+
+    def validate_national_id(self, value):
+        if not value:
+            return value
+        request = self.context.get("request")
+        qs = models.User.objects.filter(national_id=value)
+        if request is not None:
+            qs = qs.exclude(pk=request.user.pk)
+        if qs.exists():
+            raise serializers.ValidationError("This national ID is already registered to another account.")
+        return value
+
+
 class ChangePasswordSerializer(serializers.Serializer):
     old_password = serializers.CharField()
     new_password = serializers.CharField()

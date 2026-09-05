@@ -75,6 +75,15 @@ export const authApi = {
   changePassword: (payload) => api.post("/auth/change-password/", payload),
 };
 
+
+// ---------------------------------------------------------------------------
+// PROFILE (any role - self-service, non-critical fields only)
+// ---------------------------------------------------------------------------
+export const profileApi = {
+  me: () => api.get("/profile/me/"),
+  update: (payload) => api.patch("/profile/me/", payload),
+};
+
 export const dashboardApi = {
   stats: () => api.get("/dashboard/stats/"),
 };

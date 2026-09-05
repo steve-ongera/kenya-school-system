@@ -42,14 +42,37 @@ class LoginView(APIView):
 
 class MeView(APIView):
     permission_classes = [IsAuthenticated]
-
+ 
     def get(self, request):
         return Response(serializers.UserSerializer(request.user).data)
-
-
+ 
+ 
+class ProfileView(APIView):
+    """
+    Unified 'my profile' endpoint for every role.
+    GET  -> full profile (incl. nested student_profile if applicable)
+    PATCH -> self-service edit of non-critical fields only (see
+             ProfileUpdateSerializer / services.update_profile).
+    """
+ 
+    permission_classes = [IsAuthenticated]
+ 
+    def get(self, request):
+        return Response(serializers.ProfileSerializer(request.user).data)
+ 
+    def patch(self, request):
+        serializer = serializers.ProfileUpdateSerializer(
+            data=request.data, partial=True, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        user = services.update_profile(request.user, serializer.validated_data)
+        user.refresh_from_db()
+        return Response(serializers.ProfileSerializer(user).data)
+ 
+ 
 class ChangePasswordView(APIView):
     permission_classes = [IsAuthenticated]
-
+ 
     def post(self, request):
         serializer = serializers.ChangePasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -59,8 +82,8 @@ class ChangePasswordView(APIView):
         user.set_password(serializer.validated_data["new_password"])
         user.save()
         return Response({"detail": "Password updated."})
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # USERS (admin manages staff/parent accounts here; students via StudentEnroll)
 # ---------------------------------------------------------------------------
@@ -70,10 +93,10 @@ class UserViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["role"]
     search_fields = ["first_name", "last_name", "username", "email"]
-
+ 
     def get_serializer_class(self):
         return serializers.UserCreateSerializer if self.action == "create" else serializers.UserSerializer
-
+ 
 
 # ---------------------------------------------------------------------------
 # SCHOOL / CALENDAR

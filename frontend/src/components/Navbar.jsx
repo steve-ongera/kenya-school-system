@@ -191,6 +191,11 @@ export default function Navbar({ onToggleSidebar }) {
           {openMenu === "profile" && (
             <div className="app-navbar__dropdown" style={{ width: 220 }}>
               <div className="app-navbar__profile-menu">
+                <li>
+                  <button className="dropdown-item" onClick={() => navigate("/profile")}>
+                    <i className="bi bi-person me-2"></i>My profile
+                  </button>
+                </li>
                 <button
                   className="app-navbar__profile-menu-item"
                   onClick={() => {

@@ -46,7 +46,7 @@ export default function AdminStudents() {
     setLoading(true);
     try {
       const { data } = await studentsApi.admit(form);
-      setMessage(`✅ Admitted successfully. Admission No: ${data.admission_no}`);
+      setMessage(` Admitted successfully. Admission No: ${data.admission_no}`);
       setMessageType("success");
       setShowForm(false);
       setForm({ first_name: "", last_name: "", gender: "M", curriculum_type: "CBC", classroom_id: "" });

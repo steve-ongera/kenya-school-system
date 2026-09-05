@@ -36,6 +36,34 @@ def generate_admission_no(year: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# SELF-SERVICE PROFILE UPDATES
+# ---------------------------------------------------------------------------
+def update_profile(user: models.User, data: dict) -> models.User:
+    """
+    Applies a self-service profile edit. Only ever touches:
+      - User: email, phone_number, national_id
+      - StudentProfile (if the user is a student): gender, date_of_birth
+    Never touches username, role, admission_no, or names - those stay
+    admin-controlled so identity/records can't be self-edited.
+    """
+    user_fields = [f for f in ("email", "phone_number", "national_id") if f in data]
+    if user_fields:
+        for field in user_fields:
+            setattr(user, field, data[field])
+        user.save(update_fields=user_fields)
+
+    student_profile = getattr(user, "student_profile", None)
+    if student_profile:
+        student_fields = [f for f in ("gender", "date_of_birth") if f in data]
+        if student_fields:
+            for field in student_fields:
+                setattr(student_profile, field, data[field])
+            student_profile.save(update_fields=student_fields)
+
+    return user
+
+
+# ---------------------------------------------------------------------------
 # SUBJECT SELECTION VALIDATION
 # ---------------------------------------------------------------------------
 def validate_subject_selection(grade_level: models.GradeLevel, subject_ids: list[int]):
