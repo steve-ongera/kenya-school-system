@@ -569,40 +569,91 @@ class FeeStructureItem(models.Model):
 
 
 class Invoice(models.Model):
+    """
+    One invoice per (enrollment, fee_structure) - i.e. per student per term.
+    `brought_forward` is the balance carried in from ALL previous terms at
+    the moment this invoice was generated: positive = arrears the student
+    still owed, negative = credit/overpayment that reduces what's due this
+    term. See services.generate_invoice() / services.get_outstanding_balance().
+    """
+ 
     enrollment = models.ForeignKey(Enrollment, on_delete=models.CASCADE, related_name="invoices")
     fee_structure = models.ForeignKey(FeeStructure, on_delete=models.CASCADE, related_name="invoices")
+    brought_forward = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Balance carried in from previous terms. Positive=arrears, negative=credit.",
+    )
     amount_due = models.DecimalField(max_digits=10, decimal_places=2)
     amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     issued_at = models.DateTimeField(auto_now_add=True)
-
+ 
     class Meta:
         db_table = "invoices"
         unique_together = ("enrollment", "fee_structure")
-
+ 
     @property
     def balance(self):
+        """Positive = still owing. Negative = this invoice is itself in credit (rare, but possible on a big overpayment)."""
         return self.amount_due - self.amount_paid
-
+ 
+    @property
+    def term_charge(self):
+        """This term's fee alone, excluding whatever was brought forward."""
+        return self.amount_due - self.brought_forward
+ 
     def __str__(self):
         return f"Invoice {self.id} - {self.enrollment.student.admission_no}"
-
-
+ 
+ 
 class Payment(models.Model):
     class Method(models.TextChoices):
         MPESA = "MPESA", "M-Pesa"
         BANK = "BANK", "Bank"
         CASH = "CASH", "Cash"
         CHEQUE = "CHEQUE", "Cheque"
-
+ 
     invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="payments")
+    receipt_no = models.CharField(max_length=30, null=True, editable=False)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     method = models.CharField(max_length=10, choices=Method.choices)
-    reference = models.CharField(max_length=60, blank=True)
+    reference = models.CharField(max_length=60, blank=True, help_text="M-Pesa code, bank slip no, etc.")
     recorded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="payments_recorded")
     paid_at = models.DateTimeField(default=timezone.now)
-
+ 
     class Meta:
         db_table = "payments"
-
+ 
     def __str__(self):
-        return f"KES {self.amount} - {self.invoice.enrollment.student.admission_no}"
+        return f"KES {self.amount} - {self.invoice.enrollment.student.admission_no} ({self.receipt_no})"
+ 
+ 
+class MpesaSTKPushRequest(models.Model):
+    """
+    Tracks a real Safaricom Daraja STK push from initiation to callback.
+    Only used when settings.DEBUG is False - see services.initiate_payment().
+    In DEBUG, payments bypass this entirely and are recorded immediately.
+    """
+ 
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        COMPLETED = "COMPLETED", "Completed"
+        FAILED = "FAILED", "Failed"
+        CANCELLED = "CANCELLED", "Cancelled"
+ 
+    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="stk_requests")
+    phone_number = models.CharField(max_length=15)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    checkout_request_id = models.CharField(max_length=60, unique=True, null=True, blank=True)
+    merchant_request_id = models.CharField(max_length=60, blank=True)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    result_description = models.CharField(max_length=200, blank=True)
+    initiated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="stk_requests_initiated")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+ 
+    class Meta:
+        db_table = "mpesa_stk_push_requests"
+ 
+    def __str__(self):
+        return f"STK {self.checkout_request_id} - KES {self.amount} [{self.status}]"
+ 
