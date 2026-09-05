@@ -361,20 +361,6 @@ export default function Profile() {
         </div>
       </div>
 
-      {/* Info Note */}
-      <div className="card mt-3" style={{ background: "var(--bg-app)" }}>
-        <div className="card-body" style={{ padding: "0.75rem 1.25rem" }}>
-          <div style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem", fontSize: "var(--fs-sm)" }}>
-            <i className="bi bi-info-circle" style={{ color: "var(--blue-700)", fontSize: "1.1rem", marginTop: "0.1rem" }}></i>
-            <span style={{ color: "var(--ink-600)" }}>
-              <strong>Note:</strong> Your name, username, role
-              {profile.student_profile ? " and admission number" : ""} are managed by the school
-              administration and cannot be changed here. To update these details, please contact
-              the school administration.
-            </span>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
