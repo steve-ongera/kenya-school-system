@@ -4,7 +4,6 @@ import ReceiptCard from "../../components/Receiptcard";
 import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
 
-
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_TRIES = 20; // ~1 minute
 
@@ -23,6 +22,7 @@ export default function StudentFees() {
   // receipt viewer state
   const [receipt, setReceipt] = useState(null);
   const [receiptLoading, setReceiptLoading] = useState(false);
+  const [showReceiptModal, setShowReceiptModal] = useState(false);
 
   const loadInvoices = async () => {
     setLoading(true);
@@ -111,12 +111,21 @@ export default function StudentFees() {
 
   const viewReceipt = async (paymentId) => {
     setReceiptLoading(true);
+    setShowReceiptModal(true);
     try {
       const { data } = await paymentsApi.receipt(paymentId);
       setReceipt(data);
+    } catch (error) {
+      console.error("Failed to load receipt:", error);
     } finally {
       setReceiptLoading(false);
     }
+  };
+
+  const closeReceiptModal = () => {
+    setShowReceiptModal(false);
+    setReceipt(null);
+    setReceiptLoading(false);
   };
 
   // Get all payments from invoices
@@ -345,134 +354,151 @@ export default function StudentFees() {
 
       {/* Payment Modal */}
       {payInvoice && (
-        <div className="simple-modal-backdrop" onClick={payStatus === "SUBMITTING" || payStatus === "PENDING" ? undefined : closePayModal}>
-          <div className="simple-modal" onClick={(e) => e.stopPropagation()}>
-            {payStatus === "COMPLETED" ? (
-              <div className="text-center py-3">
-                <i className="bi bi-check-circle-fill text-success" style={{ fontSize: "3rem" }}></i>
-                <h5 className="mt-3" style={{ fontWeight: 700 }}>Payment Successful</h5>
-                <p className="text-muted">Your fee statement has been updated.</p>
-                <button className="btn btn-primary" onClick={closePayModal}>
-                  <i className="bi bi-check2 me-2"></i>Close
-                </button>
-              </div>
-            ) : payStatus === "FAILED" ? (
-              <div className="text-center py-3">
-                <i className="bi bi-x-circle-fill text-danger" style={{ fontSize: "3rem" }}></i>
-                <h5 className="mt-3" style={{ fontWeight: 700 }}>Payment Failed</h5>
-                <p className="text-danger">{payError}</p>
-                <button className="btn btn-primary" onClick={() => setPayStatus("")}>
-                  <i className="bi bi-arrow-repeat me-2"></i>Try Again
-                </button>
-              </div>
-            ) : payStatus === "PENDING" ? (
-              <div className="text-center py-3">
-                <div className="spinner-border text-primary mb-3" role="status" style={{ width: "3rem", height: "3rem" }}></div>
-                <h5 style={{ fontWeight: 700 }}>Check your phone</h5>
-                <p className="text-muted">
-                  An M-Pesa prompt has been sent to <strong>{phone}</strong>. Enter your PIN to
-                  complete the payment of <strong>KES {Number(amount).toLocaleString()}</strong>.
-                </p>
-                <div className="text-muted small">
-                  <i className="bi bi-clock me-1"></i>
-                  Waiting for confirmation...
-                </div>
-              </div>
-            ) : (
-              <form onSubmit={submitPayment}>
-                <h5 className="mb-1" style={{ fontWeight: 700, color: "var(--ink-900)" }}>
-                  <i className="bi bi-credit-card me-2" style={{ color: "var(--blue-700)" }}></i>
-                  Pay School Fees
-                </h5>
-                <p className="text-muted small mb-3">
-                  {payInvoice.term_label} — {payInvoice.grade_level_name}
-                </p>
-
-                {payError && (
-                  <div className="alert alert-danger py-2">
-                    <i className="bi bi-exclamation-circle me-2"></i>
-                    {payError}
-                  </div>
-                )}
-
-                <div className="mb-3">
-                  <label className="form-label">Amount (KES)</label>
-                  <input
-                    type="number" 
-                    min="1" 
-                    step="1" 
-                    className="form-control" 
-                    required
-                    value={amount} 
-                    onChange={(e) => setAmount(e.target.value)}
-                    placeholder="Enter amount to pay"
-                  />
-                  <div className="form-text-hint">
-                    Balance owed: <strong>KES {Number(payInvoice.balance).toLocaleString()}</strong>. 
-                    You may pay less (partial) or more (the extra becomes a credit for next term).
-                  </div>
-                </div>
-
-                <div className="mb-3">
-                  <label className="form-label">
-                    <i className="bi bi-phone me-1" style={{ color: "var(--blue-700)" }}></i>
-                    M-Pesa Phone Number
-                  </label>
-                  <input
-                    className="form-control" 
-                    required 
-                    placeholder="07XXXXXXXX"
-                    value={phone} 
-                    onChange={(e) => setPhone(e.target.value)}
-                  />
-                </div>
-
-                <div className="d-flex gap-2">
-                  <button type="submit" className="btn btn-primary flex-fill" disabled={payStatus === "SUBMITTING"}>
-                    {payStatus === "SUBMITTING" ? (
-                      <>
-                        <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                        Sending...
-                      </>
-                    ) : (
-                      <>
-                        <i className="bi bi-send me-2"></i>
-                        Pay with M-Pesa
-                      </>
-                    )}
-                  </button>
-                  <button type="button" className="btn btn-outline-secondary" onClick={closePayModal}>
-                    Cancel
+        <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }} tabIndex="-1" role="dialog">
+          <div className="modal-dialog modal-dialog-centered" role="document">
+            <div className="modal-content">
+              {payStatus === "COMPLETED" ? (
+                <div className="modal-body text-center py-4">
+                  <i className="bi bi-check-circle-fill text-success" style={{ fontSize: "3rem" }}></i>
+                  <h5 className="mt-3" style={{ fontWeight: 700 }}>Payment Successful</h5>
+                  <p className="text-muted">Your fee statement has been updated.</p>
+                  <button className="btn btn-primary" onClick={closePayModal}>
+                    <i className="bi bi-check2 me-2"></i>Close
                   </button>
                 </div>
-              </form>
-            )}
+              ) : payStatus === "FAILED" ? (
+                <div className="modal-body text-center py-4">
+                  <i className="bi bi-x-circle-fill text-danger" style={{ fontSize: "3rem" }}></i>
+                  <h5 className="mt-3" style={{ fontWeight: 700 }}>Payment Failed</h5>
+                  <p className="text-danger">{payError}</p>
+                  <button className="btn btn-primary" onClick={() => setPayStatus("")}>
+                    <i className="bi bi-arrow-repeat me-2"></i>Try Again
+                  </button>
+                </div>
+              ) : payStatus === "PENDING" ? (
+                <div className="modal-body text-center py-4">
+                  <div className="spinner-border text-primary mb-3" role="status" style={{ width: "3rem", height: "3rem" }}></div>
+                  <h5 style={{ fontWeight: 700 }}>Check your phone</h5>
+                  <p className="text-muted">
+                    An M-Pesa prompt has been sent to <strong>{phone}</strong>. Enter your PIN to
+                    complete the payment of <strong>KES {Number(amount).toLocaleString()}</strong>.
+                  </p>
+                  <div className="text-muted small">
+                    <i className="bi bi-clock me-1"></i>
+                    Waiting for confirmation...
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="modal-header">
+                    <h5 className="modal-title" style={{ fontWeight: 700, color: "var(--ink-900)" }}>
+                      <i className="bi bi-credit-card me-2" style={{ color: "var(--blue-700)" }}></i>
+                      Pay School Fees
+                    </h5>
+                    <button type="button" className="btn-close" onClick={closePayModal}></button>
+                  </div>
+                  <form onSubmit={submitPayment}>
+                    <div className="modal-body">
+                      <p className="text-muted small mb-3">
+                        {payInvoice.term_label} — {payInvoice.grade_level_name}
+                      </p>
+
+                      {payError && (
+                        <div className="alert alert-danger py-2">
+                          <i className="bi bi-exclamation-circle me-2"></i>
+                          {payError}
+                        </div>
+                      )}
+
+                      <div className="mb-3">
+                        <label className="form-label">Amount (KES)</label>
+                        <input
+                          type="number" 
+                          min="1" 
+                          step="1" 
+                          className="form-control" 
+                          required
+                          value={amount} 
+                          onChange={(e) => setAmount(e.target.value)}
+                          placeholder="Enter amount to pay"
+                        />
+                        <div className="form-text-hint">
+                          Balance owed: <strong>KES {Number(payInvoice.balance).toLocaleString()}</strong>. 
+                          You may pay less (partial) or more (the extra becomes a credit for next term).
+                        </div>
+                      </div>
+
+                      <div className="mb-3">
+                        <label className="form-label">
+                          <i className="bi bi-phone me-1" style={{ color: "var(--blue-700)" }}></i>
+                          M-Pesa Phone Number
+                        </label>
+                        <input
+                          className="form-control" 
+                          required 
+                          placeholder="07XXXXXXXX"
+                          value={phone} 
+                          onChange={(e) => setPhone(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <div className="modal-footer">
+                      <button type="button" className="btn btn-outline-secondary" onClick={closePayModal}>
+                        Cancel
+                      </button>
+                      <button type="submit" className="btn btn-primary" disabled={payStatus === "SUBMITTING"}>
+                        {payStatus === "SUBMITTING" ? (
+                          <>
+                            <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                            Sending...
+                          </>
+                        ) : (
+                          <>
+                            <i className="bi bi-send me-2"></i>
+                            Pay with M-Pesa
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
 
-      {/* Receipt Modal */}
-      {(receipt || receiptLoading) && (
-        <div className="simple-modal-backdrop" onClick={() => setReceipt(null)}>
-          <div className="simple-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "500px" }}>
-            {receiptLoading ? (
-              <div className="text-center py-4">
-                <div className="spinner-border text-primary" role="status" style={{ width: "3rem", height: "3rem" }}></div>
-                <p className="mt-2 text-muted">Loading receipt...</p>
+      {/* Receipt Modal - Bootstrap Modal */}
+      {showReceiptModal && (
+        <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }} tabIndex="-1" role="dialog" onClick={closeReceiptModal}>
+          <div className="modal-dialog modal-dialog-centered" style={{ maxWidth: "500px" }} role="document" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title" style={{ fontWeight: 700, color: "var(--ink-900)" }}>
+                  <i className="bi bi-receipt me-2" style={{ color: "var(--blue-700)" }}></i>
+                  Payment Receipt
+                </h5>
+                <button type="button" className="btn-close" onClick={closeReceiptModal}></button>
               </div>
-            ) : (
-              <>
-                <ReceiptCard receipt={receipt} />
-                <div className="d-flex gap-2 mt-3">
-                  <button className="btn btn-primary flex-fill" onClick={() => window.print()}>
-                    <i className="bi bi-printer me-2"></i>Print
-                  </button>
-                  <button className="btn btn-outline-secondary" onClick={() => setReceipt(null)}>
-                    Close
-                  </button>
-                </div>
-              </>
-            )}
+              <div className="modal-body">
+                {receiptLoading ? (
+                  <div className="text-center py-4">
+                    <div className="spinner-border text-primary" role="status" style={{ width: "3rem", height: "3rem" }}></div>
+                    <p className="mt-2 text-muted">Loading receipt...</p>
+                  </div>
+                ) : (
+                  <ReceiptCard receipt={receipt} />
+                )}
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-outline-secondary" onClick={closeReceiptModal}>
+                  Close
+                </button>
+                <button type="button" className="btn btn-primary" onClick={() => window.print()}>
+                  <i className="bi bi-printer me-2"></i>Print
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
