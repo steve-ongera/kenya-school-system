@@ -67,7 +67,7 @@ export default function AdminFees() {
       setForm({ grade_level: "", term: "", total_amount: "" });
       setItems([{ name: "Tuition", amount: "" }]);
       await loadAll();
-      setMessage("✅ Fee structure saved successfully.");
+      setMessage(" Fee structure saved successfully.");
       setMessageType("success");
     } catch (err) {
       setMessage(err.response?.data ? JSON.stringify(err.response.data) : "Could not save fee structure.");

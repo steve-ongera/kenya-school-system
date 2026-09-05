@@ -65,7 +65,7 @@ export default function AdminClassrooms() {
       await api.post("/grade-levels/", { ...gradeForm, level_order: Number(gradeForm.level_order) });
       setGradeForm({ name: "", curriculum_type: "CBC", education_level: "JSS", level_order: "" });
       await loadAll();
-      setMessage("✅ Grade level created successfully.");
+      setMessage(" Grade level created successfully.");
       setMessageType("success");
       setActiveForm(null);
     } catch (err) {
@@ -84,7 +84,7 @@ export default function AdminClassrooms() {
       await api.post("/streams/", streamForm);
       setStreamForm({ name: "" });
       await loadAll();
-      setMessage("✅ Stream created successfully.");
+      setMessage(" Stream created successfully.");
       setMessageType("success");
       setActiveForm(null);
     } catch {
@@ -103,7 +103,7 @@ export default function AdminClassrooms() {
       await api.post("/classrooms/", classForm);
       setClassForm({ grade_level: "", stream: "", academic_year: "" });
       await loadAll();
-      setMessage("✅ Classroom created successfully.");
+      setMessage(" Classroom created successfully.");
       setMessageType("success");
       setActiveForm(null);
     } catch (err) {

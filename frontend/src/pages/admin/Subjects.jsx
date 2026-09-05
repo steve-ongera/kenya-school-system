@@ -71,7 +71,7 @@ export default function AdminSubjects() {
       await api.post("/subjects/", subjectForm);
       setSubjectForm({ name: "", code: "", curriculum_type: "CBC", has_papers: false });
       await loadAll();
-      setMessage("✅ Subject created successfully.");
+      setMessage(" Subject created successfully.");
       setMessageType("success");
     } catch (err) {
       setMessage(err.response?.data ? JSON.stringify(err.response.data) : "Could not create subject.");
@@ -89,7 +89,7 @@ export default function AdminSubjects() {
       await api.post("/grade-subjects/", linkForm);
       setLinkForm({ grade_level: "", subject: "", is_compulsory: true });
       await loadAll();
-      setMessage("✅ Subject linked to grade successfully.");
+      setMessage(" Subject linked to grade successfully.");
       setMessageType("success");
     } catch (err) {
       setMessage(err.response?.data ? JSON.stringify(err.response.data) : "Could not link subject.");
@@ -106,7 +106,7 @@ export default function AdminSubjects() {
     try {
       await api.post("/selection-rules/", ruleForm);
       setRuleForm({ grade_level: "", min_optional_subjects: 0, max_optional_subjects: 0, min_total_subjects: 7, max_total_subjects: 9 });
-      setMessage("✅ Selection rule saved successfully.");
+      setMessage(" Selection rule saved successfully.");
       setMessageType("success");
     } catch (err) {
       setMessage(err.response?.data ? JSON.stringify(err.response.data) : "Could not save rule.");

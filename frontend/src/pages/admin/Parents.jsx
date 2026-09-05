@@ -42,7 +42,7 @@ export default function AdminParents() {
       await guardiansApi.linkStudent(linkForm);
       setLinkForm({ parent: "", student: "", relationship: "GUARDIAN" });
       await load();
-      setSuccess("✅ Guardian linked to student successfully.");
+      setSuccess(" Guardian linked to student successfully.");
     } catch (err) {
       setError(err.response?.data ? JSON.stringify(err.response.data) : "Failed to link.");
     } finally {

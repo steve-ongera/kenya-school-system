@@ -70,7 +70,7 @@ export default function TeacherMarkEntry() {
         max_marks: Number(maxMarks),
         rows,
       });
-      setMessage(`✅ Saved ${data.saved.length} mark(s).${data.errors.length ? ` ${data.errors.length} error(s).` : ""}`);
+      setMessage(` Saved ${data.saved.length} mark(s).${data.errors.length ? ` ${data.errors.length} error(s).` : ""}`);
       setMessageType(data.errors.length ? "warning" : "success");
     } catch (err) {
       setMessage(err.response?.data?.detail || "Could not save marks.");

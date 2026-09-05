@@ -51,7 +51,7 @@ export default function AdminUsers() {
       await api.post("/users/", form);
       setForm({ username: "", first_name: "", last_name: "", email: "", phone_number: "", role: "TEACHER", password: "" });
       await loadUsers(roleFilter);
-      setMessage("✅ Account created successfully.");
+      setMessage(" Account created successfully.");
       setMessageType("success");
     } catch (err) {
       setMessage(err.response?.data ? JSON.stringify(err.response.data) : "Could not create account.");

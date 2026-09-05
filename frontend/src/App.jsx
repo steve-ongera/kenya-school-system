@@ -3,6 +3,8 @@ import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import AppLayout from "./components/AppLayout";
 import Login from "./pages/Login";
+import Profile from "./pages/Profile";
+import ChangePassword from "./pages/ChangePassword";
 
 // admin
 import AdminDashboard from "./pages/admin/Dashboard";
@@ -57,6 +59,9 @@ export default function App() {
         <Route path="/login" element={<Login />} />
 
         <Route element={<AppLayout />}>
+          {/* shared - any authenticated role */}
+          <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+          <Route path="/change-password" element={<ProtectedRoute><ChangePassword /></ProtectedRoute>} />
           {/* ADMIN */}
           <Route path="/admin" element={<RoleSection role="ADMIN"><AdminDashboard /></RoleSection>} />
           <Route path="/admin/students" element={<RoleSection role="ADMIN"><AdminStudents /></RoleSection>} />

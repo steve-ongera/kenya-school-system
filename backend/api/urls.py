@@ -35,6 +35,7 @@ urlpatterns = [
     path("auth/login/", views.LoginView.as_view(), name="login"),
     path("auth/me/", views.MeView.as_view(), name="me"),
     path("auth/change-password/", views.ChangePasswordView.as_view(), name="change-password"),
+    path("profile/me/", views.ProfileView.as_view(), name="profile-me"),
     # student admission (creates User + StudentProfile + Enrollment)
     path("students/admit/", views.AdmitStudentView.as_view(), name="admit-student"),
     path("dashboard/stats/", views.DashboardStatsView.as_view(), name="dashboard-stats"),

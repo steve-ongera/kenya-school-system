@@ -36,7 +36,7 @@ export default function AdminCalendar() {
       await calendarApi.createAcademicYear(yearForm);
       setYearForm({ year: "", start_date: "", end_date: "", is_current: false });
       await load();
-      setSuccess("✅ Academic year created successfully.");
+      setSuccess(" Academic year created successfully.");
     } catch (err) {
       setError(err.response?.data ? JSON.stringify(err.response.data) : "Failed to save academic year.");
     } finally {
@@ -53,7 +53,7 @@ export default function AdminCalendar() {
       await calendarApi.createTerm(termForm);
       setTermForm({ academic_year: "", term_number: 1, start_date: "", end_date: "", is_current: false });
       await load();
-      setSuccess("✅ Term created successfully.");
+      setSuccess(" Term created successfully.");
     } catch (err) {
       setError(err.response?.data ? JSON.stringify(err.response.data) : "Failed to save term.");
     } finally {
@@ -67,7 +67,7 @@ export default function AdminCalendar() {
       if (is_year) await calendarApi.updateAcademicYear(id, { is_current: true });
       else await calendarApi.updateTerm(id, { is_current: true });
       await load();
-      setSuccess(`✅ ${is_year ? 'Academic year' : 'Term'} set as current.`);
+      setSuccess(` ${is_year ? 'Academic year' : 'Term'} set as current.`);
     } catch (err) {
       setError("Failed to update status.");
     } finally {
