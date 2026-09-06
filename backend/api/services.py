@@ -75,6 +75,27 @@ def update_profile(user: models.User, data: dict) -> models.User:
 
 
 # ---------------------------------------------------------------------------
+# PASSWORD MANAGEMENT (students)
+# ---------------------------------------------------------------------------
+def reset_student_password(student: models.StudentProfile, new_password: str = None) -> str:
+    """
+    Resets a student's login password.
+
+    If new_password is omitted/blank, resets back to the same simple
+    default used on admission - "password123" (see
+    StudentEnrollSerializer.create()). This makes the same function double
+    as a plain "forgot password" reset with no extra endpoint needed.
+
+    Returns the password that was actually set, so the caller (the admin
+    UI) can display it once for the admin to share with the student.
+    """
+    password = new_password or "password123"
+    student.user.set_password(password)
+    student.user.save(update_fields=["password"])
+    return password
+
+
+# ---------------------------------------------------------------------------
 # SUBJECT SELECTION VALIDATION
 # ---------------------------------------------------------------------------
 def validate_subject_selection(grade_level: models.GradeLevel, subject_ids: list[int]):
@@ -458,27 +479,3 @@ def generate_receipt_qr_base64(payment: models.Payment) -> str:
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode()
-
-
-# ===========================================================================
-# ADD THIS TO services.py — e.g. right after update_profile()
-# ===========================================================================
-
-
-def reset_student_password(student: models.StudentProfile, new_password: str = None) -> str:
-    """
-    Resets a student's login password.
-
-    If new_password is omitted/blank, resets back to the same default used
-    on admission — the admission number itself (see
-    StudentEnrollSerializer.create(), which uses admission_no.replace("/", "-")
-    as both username and initial password). This makes the same function
-    double as a plain "forgot password" reset.
-
-    Returns the password that was actually set, so the caller (the admin
-    UI) can display it once for the admin to share with the student.
-    """
-    password = new_password or student.admission_no.replace("/", "-")
-    student.user.set_password(password)
-    student.user.save(update_fields=["password"])
-    return password
