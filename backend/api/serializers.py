@@ -148,6 +148,7 @@ class ClassRoomSerializer(serializers.ModelSerializer):
     stream_name = serializers.CharField(source="stream.name", read_only=True)
     class_teacher_name = serializers.CharField(source="class_teacher.get_full_name", read_only=True)
     student_count = serializers.SerializerMethodField()
+    academic_year_is_current = serializers.BooleanField(source="academic_year.is_current", read_only=True)
 
     class Meta:
         model = models.ClassRoom
@@ -155,7 +156,6 @@ class ClassRoomSerializer(serializers.ModelSerializer):
 
     def get_student_count(self, obj):
         return obj.enrollments.filter(status=models.Enrollment.Status.ACTIVE).count()
-
 
 # ---------------------------------------------------------------------------
 # STUDENTS / GUARDIANS / ENROLLMENT
@@ -178,11 +178,37 @@ class StudentEnrollSerializer(serializers.Serializer):
 
     first_name = serializers.CharField()
     last_name = serializers.CharField()
+    email = serializers.EmailField(required=False, allow_blank=True)
+    phone_number = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    national_id = serializers.CharField(required=False, allow_blank=True, max_length=20)
     gender = serializers.ChoiceField(choices=models.StudentProfile.Gender.choices)
     date_of_birth = serializers.DateField(required=False, allow_null=True)
     curriculum_type = serializers.ChoiceField(choices=models.CurriculumType.choices)
     classroom_id = serializers.PrimaryKeyRelatedField(queryset=models.ClassRoom.objects.all())
     upi_number = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_national_id(self, value):
+        if not value:
+            return value
+        if models.User.objects.filter(national_id=value).exists():
+            raise serializers.ValidationError("This national ID is already registered to another account.")
+        return value
+
+    def validate_classroom_id(self, value):
+        """
+        Guards against admitting a student into a classroom from a
+        non-current academic year (e.g. 2023) - which silently produces a
+        student whose current_classroom never shows up anywhere, since
+        StudentProfile.current_enrollment filters on
+        academic_year__is_current=True. Catching it here means this can't
+        happen again even if the frontend dropdown ever regresses.
+        """
+        if not value.academic_year.is_current:
+            raise serializers.ValidationError(
+                f"'{value}' belongs to {value.academic_year.year}, which is not the current "
+                "academic year. Choose a classroom from the current academic year."
+            )
+        return value
 
     def create(self, validated_data):
         classroom = validated_data.pop("classroom_id")
@@ -193,9 +219,12 @@ class StudentEnrollSerializer(serializers.Serializer):
             username=admission_no.replace("/", "-"),
             first_name=validated_data["first_name"],
             last_name=validated_data["last_name"],
+            email=validated_data.get("email", ""),
+            phone_number=validated_data.get("phone_number", ""),
+            national_id=validated_data.get("national_id") or None,
             role=models.User.Role.STUDENT,
         )
-        user.set_password(admission_no.replace("/", "-"))  # default password = username; must change on first login
+        user.set_password(admission_no.replace("/", "-"))
         user.save()
 
         profile = models.StudentProfile.objects.create(
@@ -211,6 +240,23 @@ class StudentEnrollSerializer(serializers.Serializer):
         )
         return profile
 
+    def to_representation(self, instance):
+        enrollment = instance.current_enrollment
+        return {
+            "id": instance.id,
+            "admission_no": instance.admission_no,
+            "username": instance.user.username,
+            "full_name": instance.user.get_full_name(),
+            "email": instance.user.email,
+            "phone_number": instance.user.phone_number,
+            "national_id": instance.user.national_id,
+            "gender": instance.gender,
+            "date_of_birth": instance.date_of_birth,
+            "curriculum_type": instance.curriculum_type,
+            "upi_number": instance.upi_number,
+            "current_classroom": str(enrollment.classroom) if enrollment else None,
+        }
+        
 
 class ParentGuardianProfileSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(source="user.get_full_name", read_only=True)
