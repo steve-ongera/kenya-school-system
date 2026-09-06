@@ -22,11 +22,16 @@ from . import models
 def generate_admission_no(year: int) -> str:
     """
     Generates a sequential admission number scoped to the intake year,
-    e.g. 2026/0001. Deliberately independent of the User.id (uuid) or any
+    e.g. 2026-0001. Deliberately independent of the User.id (uuid) or any
     login credential - admission numbers are printed on report forms and
     must stay short, sequential and human-readable.
+
+    Uses a hyphen (not a slash) on purpose: this value is also used
+    directly, unchanged, as the student's login username (see
+    StudentEnrollSerializer.create()) - Django's default username
+    validator accepts "-" but rejects "/".
     """
-    prefix = f"{year}/"
+    prefix = f"{year}-"
     last = (
         models.StudentProfile.objects.filter(admission_no__startswith=prefix)
         .order_by("-admission_no")
@@ -35,7 +40,7 @@ def generate_admission_no(year: int) -> str:
     next_seq = 1
     if last:
         try:
-            next_seq = int(last.admission_no.split("/")[-1]) + 1
+            next_seq = int(last.admission_no.split("-")[-1]) + 1
         except ValueError:
             pass
     return f"{prefix}{next_seq:04d}"
@@ -453,3 +458,27 @@ def generate_receipt_qr_base64(payment: models.Payment) -> str:
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode()
+
+
+# ===========================================================================
+# ADD THIS TO services.py — e.g. right after update_profile()
+# ===========================================================================
+
+
+def reset_student_password(student: models.StudentProfile, new_password: str = None) -> str:
+    """
+    Resets a student's login password.
+
+    If new_password is omitted/blank, resets back to the same default used
+    on admission — the admission number itself (see
+    StudentEnrollSerializer.create(), which uses admission_no.replace("/", "-")
+    as both username and initial password). This makes the same function
+    double as a plain "forgot password" reset.
+
+    Returns the password that was actually set, so the caller (the admin
+    UI) can display it once for the admin to share with the student.
+    """
+    password = new_password or student.admission_no.replace("/", "-")
+    student.user.set_password(password)
+    student.user.save(update_fields=["password"])
+    return password

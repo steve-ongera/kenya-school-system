@@ -472,3 +472,92 @@ class ReceiptSerializer(serializers.Serializer):
     admission_no = serializers.CharField()
     term = serializers.CharField()
     qr_code_base64 = serializers.CharField(required=False)
+    
+    
+    
+    
+# ===========================================================================
+# ADD THESE TO serializers.py
+# (password_validation is already imported at the top of the file)
+#
+# Where to put them: right after your existing StudentProfileSerializer.
+# They do NOT replace StudentProfileSerializer — that one still powers the
+# list view. These power the View/Edit modals and the reset-password action.
+# ===========================================================================
+
+
+class StudentUserSerializer(serializers.ModelSerializer):
+    """
+    Nested user-account fields, editable alongside a StudentProfile.
+    `username` is deliberately read-only here: it's set once, at admission,
+    to equal admission_no (see StudentEnrollSerializer.create()), and must
+    never drift out of sync with it. If it ever needs to change, that has
+    to happen together with admission_no via a dedicated admin action, not
+    through this general-purpose edit form.
+    """
+
+    class Meta:
+        model = models.User
+        fields = ["username", "email", "first_name", "last_name", "phone_number", "national_id"]
+        read_only_fields = ["username"]
+
+
+class StudentProfileDetailSerializer(serializers.ModelSerializer):
+    """
+    Full view used by the admin View/Edit modals: the student profile
+    together with its linked user account, nested under `user`.
+
+    GET   -> everything needed to populate a "view" or "edit" modal.
+    PATCH -> updates both StudentProfile fields AND the nested User fields
+             in one call, so the admin can edit "the student" as one unit
+             instead of juggling two separate forms/requests.
+
+    Password is intentionally NOT settable here — use
+    /students/{id}/reset_password/ instead, so password changes always go
+    through one auditable, single-purpose path.
+    """
+
+    user = StudentUserSerializer()
+    full_name = serializers.CharField(source="user.get_full_name", read_only=True)
+    current_classroom = serializers.SerializerMethodField()
+
+    class Meta:
+        model = models.StudentProfile
+        fields = [
+            "id", "user", "admission_no", "full_name", "gender", "date_of_birth",
+            "curriculum_type", "date_admitted", "upi_number", "is_active", "current_classroom",
+        ]
+        read_only_fields = ["admission_no", "date_admitted"]
+
+    def get_current_classroom(self, obj):
+        enrollment = obj.current_enrollment
+        return str(enrollment.classroom) if enrollment else None
+
+    def update(self, instance, validated_data):
+        user_data = validated_data.pop("user", None)
+        if user_data:
+            user = instance.user
+            for field in ("email", "first_name", "last_name", "phone_number", "national_id"):
+                if field in user_data:
+                    setattr(user, field, user_data[field])
+            user.save()
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        return instance
+
+
+class ResetStudentPasswordSerializer(serializers.Serializer):
+    """
+    POST body for /students/{id}/reset_password/.
+    Leave new_password blank to reset back to the default used on
+    admission (the admission number itself) — doubles as a plain
+    "forgot password" reset with no extra endpoint needed.
+    """
+
+    new_password = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_new_password(self, value):
+        if value:
+            password_validation.validate_password(value)
+        return value

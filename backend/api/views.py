@@ -1,4 +1,5 @@
 from decimal import Decimal
+from rest_framework.pagination import PageNumberPagination
 
 from django.contrib.auth import authenticate
 from django.db import transaction
@@ -149,13 +150,25 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
 # ---------------------------------------------------------------------------
 # STUDENTS / GUARDIANS / ENROLLMENT
 # ---------------------------------------------------------------------------
+class StudentPagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 500
+
 class StudentProfileViewSet(viewsets.ModelViewSet):
     queryset = models.StudentProfile.objects.select_related("user").all()
-    serializer_class = serializers.StudentProfileSerializer
     permission_classes = [utils.IsAdminOrTeacher]
+    pagination_class = StudentPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["curriculum_type", "is_active", "gender"]
     search_fields = ["admission_no", "user__first_name", "user__last_name"]
+
+    def get_serializer_class(self):
+        # View/Edit modals need the nested user account; the list view
+        # keeps using the lighter StudentProfileSerializer.
+        if self.action in ("retrieve", "update", "partial_update"):
+            return serializers.StudentProfileDetailSerializer
+        return serializers.StudentProfileSerializer
 
     def get_queryset(self):
         user = self.request.user
@@ -168,7 +181,26 @@ class StudentProfileViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.request.user and self.request.user.role in (models.User.Role.STUDENT, models.User.Role.PARENT):
             return [IsAuthenticated()]
+        if self.action in ("destroy", "reset_password"):
+            return [utils.IsAdmin()]
         return super().get_permissions()
+
+    def perform_destroy(self, instance):
+        # StudentProfile.user is OneToOneField(on_delete=CASCADE), so
+        # deleting the User cascades down to the profile — this removes
+        # both the login and the profile in one go instead of leaving an
+        # orphaned, still-loginable User behind.
+        instance.user.delete()
+
+    @action(detail=True, methods=["post"])
+    def reset_password(self, request, pk=None):
+        student = self.get_object()
+        serializer = serializers.ResetStudentPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        new_password = services.reset_student_password(
+            student, serializer.validated_data.get("new_password") or None
+        )
+        return Response({"detail": "Password reset successfully.", "new_password": new_password})
 
 
 class AdmitStudentView(generics.CreateAPIView):
@@ -919,3 +951,6 @@ class ReportsOverviewView(APIView):
             "pass_rates": pass_rates,
             "enrollment_trend": enrollment_trend,
         })
+        
+        
+     
