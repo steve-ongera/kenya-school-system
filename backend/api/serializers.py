@@ -148,6 +148,7 @@ class ClassRoomSerializer(serializers.ModelSerializer):
     stream_name = serializers.CharField(source="stream.name", read_only=True)
     class_teacher_name = serializers.CharField(source="class_teacher.get_full_name", read_only=True)
     student_count = serializers.SerializerMethodField()
+    academic_year_year = serializers.IntegerField(source="academic_year.year", read_only=True)
     academic_year_is_current = serializers.BooleanField(source="academic_year.is_current", read_only=True)
 
     class Meta:
@@ -607,3 +608,25 @@ class ResetStudentPasswordSerializer(serializers.Serializer):
         if value:
             password_validation.validate_password(value)
         return value
+    
+    
+class BulkCreateClassroomsSerializer(serializers.Serializer):
+    """
+    POST body: { "academic_year": 4, "grade_level_ids": [1,2,3,4], "stream_ids": [1,2,3,4] }
+    Creates the cross-product of grades x streams for that year in one call.
+    """
+    academic_year = serializers.PrimaryKeyRelatedField(queryset=models.AcademicYear.objects.all())
+    grade_level_ids = serializers.PrimaryKeyRelatedField(
+        queryset=models.GradeLevel.objects.all(), many=True
+    )
+    stream_ids = serializers.PrimaryKeyRelatedField(
+        queryset=models.Stream.objects.all(), many=True
+    )
+
+    def create(self, validated_data):
+        result = services.bulk_create_classrooms(
+            academic_year=validated_data["academic_year"],
+            grade_level_ids=[g.id for g in validated_data["grade_level_ids"]],
+            stream_ids=[s.id for s in validated_data["stream_ids"]],
+        )
+        return result

@@ -146,6 +146,20 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
     filterset_fields = ["grade_level", "academic_year", "stream"]
     filter_backends = [DjangoFilterBackend]
 
+    @action(detail=False, methods=["post"], url_path="bulk_create")
+    def bulk_create(self, request):
+        serializer = serializers.BulkCreateClassroomsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+        return Response(
+            {
+                "created_count": len(result["created"]),
+                "skipped_count": len(result["skipped"]),
+                "created": serializers.ClassRoomSerializer(result["created"], many=True).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
 
 # ---------------------------------------------------------------------------
 # STUDENTS / GUARDIANS / ENROLLMENT
