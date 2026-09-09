@@ -140,6 +140,7 @@ export const academicsApi = {
   subjects: (params) => api.get("/subjects/", { params }),
   gradeSubjects: (params) => api.get("/grade-subjects/", { params }),
   selectionRules: () => api.get("/selection-rules/"),
+  gradingScales: (params) => api.get("/grading-scales/", { params }),
 };
 
 // ---------------------------------------------------------------------------
@@ -189,6 +190,7 @@ export const financeApi = {
   invoices: (params) => api.get("/invoices/", { params }),
   generateInvoice: (payload) => api.post("/invoices/generate/", payload),
   recordPayment: (payload) => api.post("/payments/", payload),
+  status: () => api.get("/fees/status/"),   // <-- ADD THIS LINE
 };
 
 // ---------------------------------------------------------------------------

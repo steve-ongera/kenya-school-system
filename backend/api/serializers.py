@@ -232,9 +232,23 @@ class StudentEnrollSerializer(serializers.Serializer):
             curriculum_type=validated_data["curriculum_type"],
             upi_number=validated_data.get("upi_number", ""),
         )
-        models.Enrollment.objects.create(
+        enrollment = models.Enrollment.objects.create(
             student=profile, classroom=classroom, academic_year=classroom.academic_year,
         )
+
+        # Invoice the student for the current term right away, so admitting
+        # someone mid-term (e.g. a walk-in admission today) doesn't leave
+        # them without a fee statement until tomorrow's scheduled run.
+        # If the current term's FeeStructure for this grade isn't set up
+        # yet, this quietly raises the same FeeStructureMissingAlert the
+        # daily engine would - it never blocks admission.
+        current_term = models.Term.objects.filter(is_current=True).first()
+        if current_term:
+            try:
+                services.generate_invoice(enrollment, current_term)
+            except ValueError:
+                services._record_missing_fee_structure(classroom.grade_level, current_term)
+
         return profile
 
     def to_representation(self, instance):

@@ -1018,3 +1018,65 @@ class ReportsOverviewView(APIView):
         
         
      
+class StudentFeeStatusView(APIView):
+    """
+    GET /api/v1/fees/status/
+    (parents pass ?student_id=<StudentProfile id> for the child they want)
+
+    Tells the student/parent portal whether the CURRENT term's invoice
+    exists for the logged-in student's current class - or, if the
+    FeeStructure for that grade/term simply hasn't been configured yet,
+    returns a friendly message pointing them to ICT/Finance instead of
+    just showing an empty fees page.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        student = getattr(user, "student_profile", None)
+
+        if not student and user.role == models.User.Role.PARENT:
+            student_id = request.query_params.get("student_id")
+            links = models.ParentStudentLink.objects.filter(parent__user=user).select_related("student")
+            link = links.filter(student_id=student_id).first() if student_id else links.first()
+            student = link.student if link else None
+
+        if not student:
+            return Response({"detail": "No student profile found for this account."}, status=404)
+
+        enrollment = student.current_enrollment
+        if not enrollment:
+            return Response({"detail": "No active enrollment for the current academic year."}, status=404)
+
+        current_term = models.Term.objects.filter(is_current=True).first()
+        if not current_term:
+            return Response({"has_fee_structure": None, "detail": "No current term is configured."})
+
+        grade_level = enrollment.classroom.grade_level
+        fee_structure = models.FeeStructure.objects.filter(
+            grade_level=grade_level, term=current_term
+        ).first()
+
+        if not fee_structure:
+            return Response({
+                "has_fee_structure": False,
+                "grade": grade_level.name,
+                "term": str(current_term),
+                "message": (
+                    f"Fee structure for {grade_level.name} has not been set up yet for "
+                    f"{current_term}. Kindly check with the ICT/Finance office."
+                ),
+            })
+
+        invoice = models.Invoice.objects.filter(
+            enrollment=enrollment, fee_structure=fee_structure
+        ).first()
+
+        return Response({
+            "has_fee_structure": True,
+            "invoice_generated": invoice is not None,
+            "grade": grade_level.name,
+            "term": str(current_term),
+            "invoice_id": invoice.id if invoice else None,
+        })
