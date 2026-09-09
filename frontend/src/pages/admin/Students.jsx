@@ -8,6 +8,7 @@ import Modal from "../../components/Modal";
 const emptyAddForm = {
   first_name: "", last_name: "", email: "", phone_number: "", national_id: "",
   gender: "M", curriculum_type: "CBC", classroom_id: "", date_of_birth: "", upi_number: "",
+  parent_name: "", parent_phone: "", parent_relationship: "GUARDIAN",
 };
 
 const emptyEditForm = {
@@ -200,7 +201,8 @@ export default function AdminStudents() {
       const { data } = await studentsApi.admit(payload);
       setMessage(
         `Admitted successfully. Admission No / login username: ${data.admission_no}` +
-        (data.current_classroom ? ` — enrolled in ${data.current_classroom}` : "")
+        (data.current_classroom ? ` — enrolled in ${data.current_classroom}` : "") +
+        (data.guardian ? ` — guardian ${data.guardian.name} linked` : "")
       );
       setMessageType("success");
       setShowAddModal(false);
@@ -607,6 +609,7 @@ export default function AdminStudents() {
       {/* ---------------- ADD MODAL ---------------- */}
       <Modal show={showAddModal} onClose={() => setShowAddModal(false)} title="Admit New Student" size="lg">
         <form onSubmit={handleAdmit}>
+          <h6 style={{ fontWeight: 700 }}>Student Details</h6>
           <div className="row g-3">
             <div className="col-md-6">
               <label className="form-label">First Name</label>
@@ -680,9 +683,43 @@ export default function AdminStudents() {
               </div>
             </div>
           </div>
+
+          <h6 className="mt-4" style={{ fontWeight: 700 }}>Parent / Guardian</h6>
+          <div className="row g-3">
+            <div className="col-md-6">
+              <label className="form-label">Parent/Guardian Name</label>
+              <input className="form-control"
+                placeholder="e.g. Jane Wanjiku"
+                value={addForm.parent_name}
+                onChange={(e) => setAddForm({ ...addForm, parent_name: e.target.value })} />
+            </div>
+            <div className="col-md-4">
+              <label className="form-label">Parent/Guardian Phone</label>
+              <input className="form-control"
+                placeholder="07XXXXXXXX"
+                value={addForm.parent_phone}
+                onChange={(e) => setAddForm({ ...addForm, parent_phone: e.target.value })} />
+            </div>
+            <div className="col-md-2">
+              <label className="form-label">Relationship</label>
+              <select className="form-select" value={addForm.parent_relationship}
+                onChange={(e) => setAddForm({ ...addForm, parent_relationship: e.target.value })}>
+                <option value="MOTHER">Mother</option>
+                <option value="FATHER">Father</option>
+                <option value="GUARDIAN">Guardian</option>
+              </select>
+            </div>
+            <div className="col-12">
+              <div className="form-text" style={{ fontSize: "var(--fs-xs)" }}>
+                If this phone number already belongs to a registered parent (e.g. an older sibling),
+                the student is linked to that existing parent account instead of creating a duplicate.
+              </div>
+            </div>
+          </div>
+
           <p className="text-muted-soft mt-3" style={{ fontSize: "var(--fs-xs)" }}>
-            The admission number is generated automatically and used as both the student's login
-            username and initial password.
+            The admission number is generated automatically and used as the student's login username.
+            The initial password for every new student is always <strong>password123</strong>.
           </p>
           <div className="mt-3 d-flex gap-2 justify-content-end">
             <button type="button" className="btn btn-secondary" onClick={() => setShowAddModal(false)}>Cancel</button>
@@ -847,7 +884,7 @@ export default function AdminStudents() {
               <label className="form-label">New Password (optional)</label>
               <input
                 className="form-control"
-                placeholder="Leave blank to reset to admission number"
+                placeholder="Leave blank to reset to password123"
                 value={resetPasswordValue}
                 onChange={(e) => setResetPasswordValue(e.target.value)}
               />

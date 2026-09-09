@@ -21,30 +21,33 @@ from . import models
 # ---------------------------------------------------------------------------
 def generate_admission_no(year: int) -> str:
     """
-    Generates a sequential admission number scoped to the intake year,
-    e.g. 2026-0001. Deliberately independent of the User.id (uuid) or any
-    login credential - admission numbers are printed on report forms and
+    Generates a sequential admission number, e.g. 00001, 00081, 11871.
+
+    Deliberately independent of the User.id (uuid) or any login
+    credential - admission numbers are printed on report forms and
     must stay short, sequential and human-readable.
 
-    Uses a hyphen (not a slash) on purpose: this value is also used
+    Purely numeric (zero-padded to 5 digits): this value is also used
     directly, unchanged, as the student's login username (see
     StudentEnrollSerializer.create()) - Django's default username
-    validator accepts "-" but rejects "/".
+    validator accepts digit-only strings.
+
+    Note: `year` is accepted for backwards compatibility with existing
+    callers but no longer affects the generated number - admission
+    numbers are now sequential across all years, not scoped per intake.
     """
-    prefix = f"{year}-"
     last = (
-        models.StudentProfile.objects.filter(admission_no__startswith=prefix)
+        models.StudentProfile.objects.filter(admission_no__regex=r"^\d+$")
         .order_by("-admission_no")
         .first()
     )
     next_seq = 1
     if last:
         try:
-            next_seq = int(last.admission_no.split("-")[-1]) + 1
+            next_seq = int(last.admission_no) + 1
         except ValueError:
             pass
-    return f"{prefix}{next_seq:04d}"
-
+    return f"{next_seq:05d}"
 
 # ---------------------------------------------------------------------------
 # SELF-SERVICE PROFILE UPDATES
@@ -664,3 +667,54 @@ def run_daily_invoice_generation() -> dict:
         "terms_processed": len(results),
         "results": results,
     }
+    
+    
+# ---------------------------------------------------------------------------
+# PARENTS / GUARDIANS
+# ---------------------------------------------------------------------------
+def attach_guardian(student: models.StudentProfile, full_name: str, phone_number: str, relationship: str):
+    """
+    Links a parent/guardian to a newly admitted student.
+
+    Reuses an existing ParentGuardianProfile if a PARENT user with this
+    exact phone number already exists (e.g. admitting a second child of
+    the same parent) instead of creating a duplicate account/login for
+    the same person. Only creates a new User+ParentGuardianProfile when
+    no match is found.
+    """
+    existing_user = models.User.objects.filter(
+        role=models.User.Role.PARENT, phone_number=phone_number
+    ).first()
+
+    if existing_user:
+        guardian_profile, _ = models.ParentGuardianProfile.objects.get_or_create(user=existing_user)
+    else:
+        name_parts = full_name.split(" ", 1) if full_name else ["Guardian"]
+        first_name = name_parts[0]
+        last_name = name_parts[1] if len(name_parts) > 1 else ""
+
+        # phone number doubles as the login username for parents; guard
+        # against a collision the same way admission numbers never do
+        # (phone numbers can occasionally repeat across records/typos).
+        username = phone_number
+        suffix = 1
+        while models.User.objects.filter(username=username).exists():
+            suffix += 1
+            username = f"{phone_number}-{suffix}"
+
+        guardian_user = models.User.objects.create(
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            phone_number=phone_number,
+            role=models.User.Role.PARENT,
+        )
+        guardian_user.set_password("password123")
+        guardian_user.save()
+        guardian_profile = models.ParentGuardianProfile.objects.create(user=guardian_user)
+
+    models.ParentStudentLink.objects.get_or_create(
+        parent=guardian_profile, student=student,
+        defaults={"relationship": relationship},
+    )
+    return guardian_profile
