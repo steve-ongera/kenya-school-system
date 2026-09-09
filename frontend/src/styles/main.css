@@ -236,7 +236,7 @@ textarea:focus-visible,
 .app-loading .spinner-border { color: var(--blue-600); }
 
 /* ==========================================================================
-   5. SIDEBAR (drawer on mobile, collapsible on desktop)
+   5. SIDEBAR (collapsible / fully hides on toggle across all screen sizes)
    ========================================================================== */
 .app-sidebar {
   width: var(--sidebar-width);
@@ -245,19 +245,32 @@ textarea:focus-visible,
   color: #fff;
   display: flex;
   flex-direction: column;
-  transition: width 0.22s ease, transform 0.22s ease;
+  transition: width 0.22s ease, transform 0.22s ease, opacity 0.22s ease;
   flex-shrink: 0;
   position: relative;
   z-index: 950;
+  overflow: hidden;
 }
 
-.app-sidebar--collapsed { width: var(--sidebar-width-collapsed); }
+/* Toggled state: completely removes sidebar from view on both small & large screens */
+.app-sidebar--collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  overflow: hidden !important;
+  opacity: 0;
+  pointer-events: none;
+}
 
 .app-sidebar__brand {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 1.15rem 1.25rem;
+  height: var(--navbar-height);
+  min-height: var(--navbar-height);
+  padding: 0 1.25rem;
   font-family: var(--font-display);
   font-size: 1.15rem;
   font-weight: 700;
@@ -265,6 +278,7 @@ textarea:focus-visible,
   white-space: nowrap;
   overflow: hidden;
   flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .app-sidebar__brand i {
@@ -294,10 +308,7 @@ textarea:focus-visible,
   min-height: 0;
 }
 
-/* Opt-in modifier: sidebar navigation never scrolls internally, even if the
-   nav list is taller than the viewport (items simply stop at the bottom
-   edge). Apply this class alongside .app-sidebar__nav when that behavior
-   is required instead of the default internal scroll above. */
+/* Opt-in modifier: sidebar navigation never scrolls internally */
 .app-sidebar__nav--no-scroll {
   overflow: hidden !important;
 }
@@ -358,15 +369,6 @@ textarea:focus-visible,
   border-radius: var(--radius-pill);
 }
 
-.app-sidebar--collapsed .app-sidebar__link span,
-.app-sidebar--collapsed .app-sidebar__section-title,
-.app-sidebar--collapsed .app-sidebar__brand span,
-.app-sidebar--collapsed .app-sidebar__link-badge {
-  display: none;
-}
-
-.app-sidebar--collapsed .app-sidebar__link { justify-content: center; }
-
 .app-sidebar__footer {
   padding: 0.9rem 1rem;
   border-top: 1px solid rgba(255, 255, 255, 0.10);
@@ -390,6 +392,7 @@ textarea:focus-visible,
    ========================================================================== */
 .app-navbar {
   height: var(--navbar-height);
+  min-height: var(--navbar-height);
   background: var(--surface);
   border-bottom: 1px solid var(--border-color);
   display: flex;
@@ -400,6 +403,7 @@ textarea:focus-visible,
   top: 0;
   z-index: 800;
   flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .app-navbar__toggle {
@@ -662,6 +666,7 @@ textarea:focus-visible,
 .app-navbar__profile-menu-item--danger { color: var(--danger-600); }
 .app-navbar__profile-menu-item--danger i { color: var(--danger-600); }
 .app-navbar__profile-menu-divider { height: 1px; background: var(--border-color); margin: 0.35rem 0.2rem; }
+
 
 /* ==========================================================================
    7. BUTTONS
