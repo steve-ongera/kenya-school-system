@@ -1,13 +1,24 @@
 import { useEffect, useState } from "react";
-import { studentsApi, examsApi } from "../../services/api";
+import { studentsApi, financeApi, performanceApi } from "../../services/api";
 import { useAuth } from "../../hooks/useAuth";
 import Breadcrumb from "../../components/Breadcrumb";
+import {
+  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from "recharts";
+
+const PIE_COLORS = ["#1d4ed8", "#d97706", "#16a34a", "#7c3aed", "#dc2626"];
 
 export default function StudentDashboard() {
   const { user } = useAuth();
   const [enrollment, setEnrollment] = useState(null);
-  const [ranking, setRanking] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  const [netBalance, setNetBalance] = useState(0);
+  const [feeLoading, setFeeLoading] = useState(true);
+
+  const [performance, setPerformance] = useState(null);
+  const [performanceLoading, setPerformanceLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -15,22 +26,28 @@ export default function StudentDashboard() {
       try {
         const { data } = await studentsApi.enrollments({ status: "ACTIVE" });
         const list = data.results ?? data;
-        const current = list[0];
-        setEnrollment(current);
-        if (current) {
-          const { data: rankData } = await examsApi.rankings({ 
-            enrollment: current.id, 
-            checkpoint: "ENDTERM" 
-          });
-          const rankList = rankData.results ?? rankData;
-          setRanking(rankList[rankList.length - 1] || null);
-        }
+        setEnrollment(list[0] || null);
       } catch (error) {
         console.error("Failed to load dashboard:", error);
       } finally {
         setLoading(false);
       }
     })();
+
+    financeApi.invoices()
+      .then(({ data }) => {
+        const list = data.results ?? data;
+        const totalDue = list.reduce((s, i) => s + Number(i.amount_due), 0);
+        const totalPaid = list.reduce((s, i) => s + Number(i.amount_paid), 0);
+        setNetBalance(totalDue - totalPaid);
+      })
+      .catch((error) => console.error("Failed to load fee balance:", error))
+      .finally(() => setFeeLoading(false));
+
+    performanceApi.dashboard()
+      .then(({ data }) => setPerformance(data))
+      .catch((error) => console.error("Failed to load performance dashboard:", error))
+      .finally(() => setPerformanceLoading(false));
   }, []);
 
   // Get student initials
@@ -46,6 +63,8 @@ export default function StudentDashboard() {
     if (hour < 17) return "Good Afternoon";
     return "Good Evening";
   };
+
+  const subjectsCount = performance?.subjects_summary?.length ?? null;
 
   return (
     <div>
@@ -97,7 +116,7 @@ export default function StudentDashboard() {
 
       {/* Stat Cards */}
       <div className="row g-3">
-        <div className="col-md-4">
+        <div className="col-6 col-md-3">
           <div className="stat-card">
             <i className="bi bi-door-open"></i>
             <div>
@@ -113,142 +132,214 @@ export default function StudentDashboard() {
           </div>
         </div>
 
-        <div className="col-md-4">
-          <div className="stat-card stat-card--gold">
-            <i className="bi bi-trophy"></i>
+        <div className="col-6 col-md-3">
+          <div className="stat-card">
+            <i className="bi bi-calendar-week"></i>
             <div>
               <div className="stat-card__value">
-                {loading ? (
-                  <div className="skeleton skeleton-text" style={{ width: "60px", height: "24px" }}></div>
+                {performanceLoading ? (
+                  <div className="skeleton skeleton-text" style={{ width: "70px", height: "24px" }}></div>
                 ) : (
-                  ranking ? `#${ranking.class_position}` : "-"
+                  performance?.current_term || "-"
                 )}
               </div>
-              <div className="stat-card__label">Latest Class Position</div>
+              <div className="stat-card__label">Current Term</div>
             </div>
           </div>
         </div>
 
-        <div className="col-md-4">
-          <div className="stat-card stat-card--success">
-            <i className="bi bi-graph-up-arrow"></i>
+        <div className="col-6 col-md-3">
+          <div className="stat-card stat-card--gold">
+            <i className="bi bi-journal-bookmark"></i>
             <div>
               <div className="stat-card__value">
-                {loading ? (
-                  <div className="skeleton skeleton-text" style={{ width: "70px", height: "24px" }}></div>
+                {performanceLoading ? (
+                  <div className="skeleton skeleton-text" style={{ width: "40px", height: "24px" }}></div>
                 ) : (
-                  ranking ? `${ranking.average_marks}%` : "-"
+                  subjectsCount ?? "-"
                 )}
               </div>
-              <div className="stat-card__label">Latest Average</div>
+              <div className="stat-card__label">Subjects Registered</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="col-6 col-md-3">
+          <div className={`stat-card ${netBalance > 0 ? "stat-card--danger" : "stat-card--success"}`}>
+            <i className="bi bi-cash-coin"></i>
+            <div>
+              <div className="stat-card__value">
+                {feeLoading ? (
+                  <div className="skeleton skeleton-text" style={{ width: "90px", height: "24px" }}></div>
+                ) : (
+                  `KES ${Math.abs(netBalance).toLocaleString()}`
+                )}
+              </div>
+              <div className="stat-card__label">
+                {netBalance > 0 ? "Fee Balance Owed" : netBalance < 0 ? "Fee Credit" : "Fee Balance"}
+              </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Quick Links / Actions */}
+
+      {/* Performance Overview */}
       <div className="row g-3 mt-2">
         <div className="col-12">
           <h6 className="mb-3" style={{ fontWeight: 600, color: "var(--ink-600)" }}>
-            <i className="bi bi-grid-3x3-gap me-2"></i>
-            Quick Actions
+            <i className="bi bi-bar-chart-line me-2"></i>
+            Performance Overview
           </h6>
-          <div className="row g-3">
-            <div className="col-6 col-md-3">
-              <div className="card card--interactive p-3 text-center" 
-                   style={{ cursor: "pointer" }}
-                   onClick={() => window.location.href = "/student/results"}>
-                <i className="bi bi-journal-text" style={{ fontSize: "1.8rem", color: "var(--blue-700)" }}></i>
-                <div style={{ fontSize: "var(--fs-sm)", fontWeight: 600, marginTop: "0.5rem", color: "var(--ink-700)" }}>
-                  My Results
-                </div>
-              </div>
+        </div>
+
+        {/* Line chart: performance within the current term */}
+        <div className="col-12 col-lg-6">
+          <div className="card">
+            <div className="card-header" style={{
+              background: "transparent", borderBottom: "1px solid var(--border-color)",
+              padding: "1rem 1.25rem", fontWeight: 600, color: "var(--ink-700)"
+            }}>
+              <i className="bi bi-graph-up me-2" style={{ color: "var(--blue-700)" }}></i>
+              Performance This Term{performance?.current_term ? ` — ${performance.current_term}` : ""}
             </div>
-            <div className="col-6 col-md-3">
-              <div className="card card--interactive p-3 text-center"
-                   style={{ cursor: "pointer" }}
-                   onClick={() => window.location.href = "/student/subjects"}>
-                <i className="bi bi-journal-bookmark" style={{ fontSize: "1.8rem", color: "var(--gold-600)" }}></i>
-                <div style={{ fontSize: "var(--fs-sm)", fontWeight: 600, marginTop: "0.5rem", color: "var(--ink-700)" }}>
-                  My Subjects
-                </div>
-              </div>
+            <div className="card-body">
+              {performanceLoading ? (
+                <div className="skeleton skeleton-text" style={{ width: "100%", height: "220px" }}></div>
+              ) : performance?.term_trend?.length ? (
+                <ResponsiveContainer width="100%" height={220}>
+                  <LineChart data={performance.term_trend}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="exam" />
+                    <YAxis domain={[0, 100]} />
+                    <Tooltip formatter={(v) => `${v}%`} />
+                    <Line type="monotone" dataKey="average" stroke="#1d4ed8" strokeWidth={2} name="Average %" />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="text-muted-soft mb-0">No exam results recorded yet for this term.</p>
+              )}
             </div>
-            <div className="col-6 col-md-3">
-              <div className="card card--interactive p-3 text-center"
-                   style={{ cursor: "pointer" }}
-                   onClick={() => window.location.href = "/student/fees"}>
-                <i className="bi bi-cash-coin" style={{ fontSize: "1.8rem", color: "var(--success-600)" }}></i>
-                <div style={{ fontSize: "var(--fs-sm)", fontWeight: 600, marginTop: "0.5rem", color: "var(--ink-700)" }}>
-                  Fee Statement
-                </div>
-              </div>
+          </div>
+        </div>
+
+        {/* Bar chart: performance across Term 1, 2, 3 of the academic year */}
+        <div className="col-12 col-lg-6">
+          <div className="card">
+            <div className="card-header" style={{
+              background: "transparent", borderBottom: "1px solid var(--border-color)",
+              padding: "1rem 1.25rem", fontWeight: 600, color: "var(--ink-700)"
+            }}>
+              <i className="bi bi-bar-chart-line me-2" style={{ color: "var(--gold-600)" }}></i>
+              Performance Across the Academic Year
             </div>
-            <div className="col-6 col-md-3">
-              <div className="card card--interactive p-3 text-center"
-                   style={{ cursor: "pointer" }}
-                   onClick={() => window.location.href = "/student/profile"}>
-                <i className="bi bi-person" style={{ fontSize: "1.8rem", color: "var(--blue-700)" }}></i>
-                <div style={{ fontSize: "var(--fs-sm)", fontWeight: 600, marginTop: "0.5rem", color: "var(--ink-700)" }}>
-                  My Profile
+            <div className="card-body">
+              {performanceLoading ? (
+                <div className="skeleton skeleton-text" style={{ width: "100%", height: "220px" }}></div>
+              ) : performance?.academic_year_trend?.some((t) => t.average !== null) ? (
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={performance.academic_year_trend}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="term" />
+                    <YAxis domain={[0, 100]} />
+                    <Tooltip formatter={(v) => (v === null ? "No data" : `${v}%`)} />
+                    <Bar dataKey="average" fill="#d97706" name="Average %" />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="text-muted-soft mb-0">No term averages recorded yet for this academic year.</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Pie chart: best performing subjects this term */}
+        <div className="col-12 col-lg-6">
+          <div className="card">
+            <div className="card-header" style={{
+              background: "transparent", borderBottom: "1px solid var(--border-color)",
+              padding: "1rem 1.25rem", fontWeight: 600, color: "var(--ink-700)"
+            }}>
+              <i className="bi bi-pie-chart me-2" style={{ color: "var(--success-600)" }}></i>
+              Best Performing Subjects This Term
+            </div>
+            <div className="card-body">
+              {performanceLoading ? (
+                <div className="skeleton skeleton-text" style={{ width: "100%", height: "220px" }}></div>
+              ) : performance?.subject_performance?.length ? (
+                <ResponsiveContainer width="100%" height={220}>
+                  <PieChart>
+                    <Pie
+                      data={performance.subject_performance}
+                      dataKey="average"
+                      nameKey="subject"
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={80}
+                      label={({ subject, average }) => `${subject}: ${average}%`}
+                    >
+                      {performance.subject_performance.map((_, index) => (
+                        <Cell key={index} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(v) => `${v}%`} />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="text-muted-soft mb-0">No subject results recorded yet for this term.</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Subjects summary table */}
+        <div className="col-12 col-lg-6">
+          <div className="card">
+            <div className="card-header" style={{
+              background: "transparent", borderBottom: "1px solid var(--border-color)",
+              padding: "1rem 1.25rem", fontWeight: 600, color: "var(--ink-700)"
+            }}>
+              <i className="bi bi-journal-bookmark me-2" style={{ color: "var(--blue-700)" }}></i>
+              My Subjects{performance?.current_class ? ` — ${performance.current_class}` : ""}
+            </div>
+            <div className="card-body p-0">
+              {performanceLoading ? (
+                <div className="p-3">
+                  <div className="skeleton skeleton-text" style={{ width: "100%", height: "180px" }}></div>
                 </div>
-              </div>
+              ) : performance?.subjects_summary?.length ? (
+                <div className="table-responsive">
+                  <table className="table table-hover mb-0">
+                    <thead>
+                      <tr>
+                        <th>Subject</th>
+                        <th className="text-end">Latest Mark</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {performance.subjects_summary.map((s) => (
+                        <tr key={s.subject}>
+                          <td>{s.subject}</td>
+                          <td className="text-end">
+                            {s.marks !== null ? (
+                              <span className="badge badge-blue">{s.marks}%</span>
+                            ) : (
+                              <span className="text-muted-soft">Not yet examined</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-muted-soft mb-0 p-3">No subjects registered for this class yet.</p>
+              )}
             </div>
           </div>
         </div>
       </div>
-
-      {/* Recent Performance Info */}
-      {ranking && !loading && (
-        <div className="row g-3 mt-2">
-          <div className="col-12">
-            <div className="card">
-              <div className="card-header" style={{
-                background: "transparent",
-                borderBottom: "1px solid var(--border-color)",
-                padding: "1rem 1.25rem",
-                fontWeight: 600,
-                color: "var(--ink-700)"
-              }}>
-                <i className="bi bi-bar-chart-line me-2" style={{ color: "var(--blue-700)" }}></i>
-                Latest Performance Summary
-              </div>
-              <div className="card-body">
-                <div className="row g-3">
-                  <div className="col-6 col-md-3">
-                    <div style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>Position</div>
-                    <div style={{ fontSize: "var(--fs-lg)", fontWeight: 700, color: "var(--ink-900)" }}>
-                      #{ranking.class_position}
-                    </div>
-                  </div>
-                  <div className="col-6 col-md-3">
-                    <div style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>Average</div>
-                    <div style={{ fontSize: "var(--fs-lg)", fontWeight: 700, color: "var(--ink-900)" }}>
-                      {ranking.average_marks}%
-                    </div>
-                  </div>
-                  <div className="col-6 col-md-3">
-                    <div style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>Total Students</div>
-                    <div style={{ fontSize: "var(--fs-lg)", fontWeight: 700, color: "var(--ink-900)" }}>
-                      {ranking.total_students || "-"}
-                    </div>
-                  </div>
-                  <div className="col-6 col-md-3">
-                    <div style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>Ranking</div>
-                    <div style={{ fontSize: "var(--fs-sm)", fontWeight: 600 }}>
-                      <span className={`badge ${ranking.class_position <= 3 ? "badge-gold" : ranking.class_position <= 10 ? "badge-blue" : "badge-neutral"}`}>
-                        {ranking.class_position <= 3 ? "🏆 Top 3" : 
-                         ranking.class_position <= 10 ? "🌟 Top 10" : 
-                         `${Math.round((ranking.class_position / ranking.total_students) * 100)}th Percentile`}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Empty State for No Data */}
       {!loading && !enrollment && (
