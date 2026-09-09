@@ -558,10 +558,10 @@ class PromotionRuleViewSet(viewsets.ModelViewSet):
 # FEES
 # ---------------------------------------------------------------------------
 class FeeStructureViewSet(viewsets.ModelViewSet):
-    queryset = models.FeeStructure.objects.select_related("grade_level", "term").prefetch_related("items").all()
+    queryset = models.FeeStructure.objects.select_related("grade_level", "term__academic_year").prefetch_related("items").all()
     serializer_class = serializers.FeeStructureSerializer
     permission_classes = [utils.IsAdminOrFinance]
-    filterset_fields = ["grade_level", "term"]
+    filterset_fields = ["grade_level", "term", "term__academic_year"]
     filter_backends = [DjangoFilterBackend]
 
 
