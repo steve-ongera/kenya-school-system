@@ -657,3 +657,41 @@ class MpesaSTKPushRequest(models.Model):
     def __str__(self):
         return f"STK {self.checkout_request_id} - KES {self.amount} [{self.status}]"
  
+ 
+
+class FeeStructureMissingAlert(models.Model):
+    """
+    Raised automatically by the invoice generation engine (see
+    services.generate_invoices_for_term) whenever a (grade_level, term)
+    combination has active students but NO FeeStructure has been
+    configured for it yet.
+
+    The student/parent portal reads this via GET /fees/status/ to show
+    "kindly check with the ICT/Finance office for your class" instead of
+    silently showing an empty fees page.
+
+    One row per (grade_level, term) - re-running the engine daily just
+    refreshes last_checked_at / affected_student_count on the same row
+    rather than creating duplicates. Once ICT adds the missing
+    FeeStructure and the engine successfully generates invoices for that
+    grade/term, the alert is auto-resolved.
+    """
+
+    grade_level = models.ForeignKey(
+        GradeLevel, on_delete=models.CASCADE, related_name="fee_alerts"
+    )
+    term = models.ForeignKey(Term, on_delete=models.CASCADE, related_name="fee_alerts")
+    affected_student_count = models.PositiveIntegerField(default=0)
+    is_resolved = models.BooleanField(default=False)
+    first_detected_at = models.DateTimeField(auto_now_add=True)
+    last_checked_at = models.DateTimeField(auto_now=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "fee_structure_missing_alerts"
+        unique_together = ("grade_level", "term")
+        ordering = ["-last_checked_at"]
+
+    def __str__(self):
+        status = "RESOLVED" if self.is_resolved else "OPEN"
+        return f"[{status}] {self.grade_level} - {self.term} ({self.affected_student_count} students)"

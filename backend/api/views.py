@@ -414,7 +414,6 @@ class ExamTypeViewSet(viewsets.ModelViewSet):
 class ExamViewSet(viewsets.ModelViewSet):
     queryset = models.Exam.objects.select_related("term", "exam_type", "grade_level").all()
     serializer_class = serializers.ExamSerializer
-    permission_classes = [utils.IsAdminOrTeacher]
     filterset_fields = ["term", "exam_type", "grade_level", "is_published"]
     filter_backends = [DjangoFilterBackend]
 
@@ -433,7 +432,6 @@ class ExamResultViewSet(viewsets.ModelViewSet):
         "exam", "enrollment__student__user", "subject", "paper"
     ).all()
     serializer_class = serializers.ExamResultSerializer
-    permission_classes = [utils.IsAdminOrTeacher]
     filterset_fields = ["exam", "subject", "enrollment", "enrollment__classroom"]
     filter_backends = [DjangoFilterBackend]
     pagination_class = ExamResultPagination

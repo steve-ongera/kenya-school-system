@@ -364,17 +364,22 @@ class ExamSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+
 class ExamResultSerializer(serializers.ModelSerializer):
     student_name = serializers.CharField(source="enrollment.student.user.get_full_name", read_only=True)
     admission_no = serializers.CharField(source="enrollment.student.admission_no", read_only=True)
     subject_name = serializers.CharField(source="subject.name", read_only=True)
+    paper_name = serializers.SerializerMethodField()
     percentage = serializers.ReadOnlyField()
-
+ 
     class Meta:
         model = models.ExamResult
         fields = "__all__"
         read_only_fields = ["entered_by", "entered_at"]
-
+ 
+    def get_paper_name(self, obj):
+        return obj.paper.name if obj.paper_id else None
+ 
     def validate(self, attrs):
         marks = attrs.get("marks_obtained")
         max_marks = attrs.get("max_marks", 100)
@@ -385,6 +390,7 @@ class ExamResultSerializer(serializers.ModelSerializer):
             if marks < 0 or marks > max_marks:
                 raise serializers.ValidationError("marks_obtained must be between 0 and max_marks.")
         return attrs
+ 
 
 
 class BulkExamResultRowSerializer(serializers.Serializer):
