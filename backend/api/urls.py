@@ -40,6 +40,7 @@ urlpatterns = [
     path("students/admit/", views.AdmitStudentView.as_view(), name="admit-student"),
     path("dashboard/stats/", views.DashboardStatsView.as_view(), name="dashboard-stats"),
     path("reports/overview/", views.ReportsOverviewView.as_view(), name="reports-overview"),
+    path("students/me/performance/", views.StudentPerformanceDashboardView.as_view(), name="student-performance"),
     # subject selection for one enrollment
     path(
         "enrollments/<int:enrollment_id>/subjects/",

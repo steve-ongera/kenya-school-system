@@ -1080,3 +1080,128 @@ class StudentFeeStatusView(APIView):
             "term": str(current_term),
             "invoice_id": invoice.id if invoice else None,
         })
+        
+        
+        
+from django.db.models import Avg, F, FloatField, ExpressionWrapper
+
+
+class StudentPerformanceDashboardView(APIView):
+    """
+    GET /api/v1/students/me/performance/
+
+    One aggregated payload for the student dashboard's charts, so the
+    frontend doesn't have to make 4-5 separate calls and stitch them
+    together:
+
+      - term_trend            -> line chart: average % per exam WITHIN
+                                  the current term (CAT, Midterm, Endterm...)
+      - academic_year_trend   -> bar chart: average % per TERM (1, 2, 3)
+                                  across the current academic year
+      - subject_performance   -> pie chart: top 5 subjects by average %
+                                  in the current term
+      - subjects_summary      -> every subject the student is registered
+                                  for this year, with their latest current
+                                  -term mark if one exists, else null
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        student = getattr(user, "student_profile", None)
+        if not student:
+            return Response({"detail": "No student profile found for this account."}, status=404)
+
+        enrollment = student.current_enrollment
+        if not enrollment:
+            return Response({"detail": "No active enrollment for the current academic year."}, status=404)
+
+        current_year = enrollment.academic_year
+        current_term = models.Term.objects.filter(is_current=True).first()
+
+        def avg_pct_queryset(qs):
+            return qs.aggregate(
+                avg_pct=Avg(
+                    ExpressionWrapper(
+                        F("marks_obtained") * 100.0 / F("max_marks"),
+                        output_field=FloatField(),
+                    )
+                )
+            )["avg_pct"]
+
+        base_results = models.ExamResult.objects.filter(
+            enrollment=enrollment, is_absent=False, marks_obtained__isnull=False
+        )
+
+        # ---- line chart: per-exam average within the current term ----
+        term_trend = []
+        if current_term:
+            exams = models.Exam.objects.filter(
+                term=current_term, grade_level=enrollment.classroom.grade_level
+            ).order_by("exam_type__order")
+            for exam in exams:
+                avg_pct = avg_pct_queryset(base_results.filter(exam=exam))
+                if avg_pct is not None:
+                    term_trend.append({"exam": exam.name, "average": round(avg_pct, 1)})
+
+        # ---- bar chart: per-term average across the whole academic year ----
+        academic_year_trend = []
+        for term in models.Term.objects.filter(academic_year=current_year).order_by("term_number"):
+            ranking = models.TermPositionRanking.objects.filter(
+                enrollment=enrollment, term=term, checkpoint=models.TermPositionRanking.Checkpoint.ENDTERM
+            ).first()
+            if ranking:
+                average = float(ranking.average_marks)
+            else:
+                average = avg_pct_queryset(base_results.filter(exam__term=term))
+                average = round(average, 1) if average is not None else None
+            academic_year_trend.append({"term": term.get_term_number_display(), "average": average})
+
+        # ---- pie chart: top 5 subjects by average % in the current term ----
+        subject_performance = []
+        if current_term:
+            rows = (
+                base_results.filter(exam__term=current_term)
+                .values("subject__name")
+                .annotate(
+                    avg_pct=Avg(
+                        ExpressionWrapper(
+                            F("marks_obtained") * 100.0 / F("max_marks"),
+                            output_field=FloatField(),
+                        )
+                    )
+                )
+                .order_by("-avg_pct")[:5]
+            )
+            subject_performance = [
+                {"subject": r["subject__name"], "average": round(r["avg_pct"], 1)} for r in rows
+            ]
+
+        # ---- subjects summary: every registered subject + latest current-term mark ----
+        selections = models.StudentSubjectSelection.objects.filter(
+            enrollment=enrollment
+        ).select_related("subject")
+
+        subjects_summary = []
+        for selection in selections:
+            latest_result = None
+            if current_term:
+                latest_result = (
+                    base_results.filter(subject=selection.subject, exam__term=current_term)
+                    .order_by("-exam__exam_type__order")
+                    .first()
+                )
+            subjects_summary.append({
+                "subject": selection.subject.name,
+                "marks": latest_result.percentage if latest_result else None,
+            })
+
+        return Response({
+            "current_class": str(enrollment.classroom),
+            "current_term": str(current_term) if current_term else None,
+            "term_trend": term_trend,
+            "academic_year_trend": academic_year_trend,
+            "subject_performance": subject_performance,
+            "subjects_summary": subjects_summary,
+        })

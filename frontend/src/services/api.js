@@ -193,6 +193,10 @@ export const financeApi = {
   status: () => api.get("/fees/status/"),   // <-- ADD THIS LINE
 };
 
+export const performanceApi = {
+  dashboard: () => api.get("/students/me/performance/"),
+};
+
 // ---------------------------------------------------------------------------
 // STUDENT/PARENT SELF-SERVICE FEE PAYMENT (STK push, DEBUG-bypassed locally)
 // ---------------------------------------------------------------------------
