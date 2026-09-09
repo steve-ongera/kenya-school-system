@@ -418,7 +418,11 @@ class ExamViewSet(viewsets.ModelViewSet):
     filterset_fields = ["term", "exam_type", "grade_level", "is_published"]
     filter_backends = [DjangoFilterBackend]
 
-
+class ExamResultPagination(PageNumberPagination):
+    page_size = 200
+    page_size_query_param = "page_size"
+    max_page_size = 1000
+    
 class ExamResultViewSet(viewsets.ModelViewSet):
     """
     Teachers enter marks here from their own portal, scoped to what they
@@ -432,6 +436,7 @@ class ExamResultViewSet(viewsets.ModelViewSet):
     permission_classes = [utils.IsAdminOrTeacher]
     filterset_fields = ["exam", "subject", "enrollment", "enrollment__classroom"]
     filter_backends = [DjangoFilterBackend]
+    pagination_class = ExamResultPagination
 
     def get_queryset(self):
         user = self.request.user
