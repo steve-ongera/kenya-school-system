@@ -46,6 +46,9 @@ const NAV_BY_ROLE = {
       label: "Finance",
       items: [
         { to: "/admin/fees", icon: "bi-cash-coin", label: "Fee Structures" },
+        { to: "/admin/finance-reports/collections", icon: "bi-graph-up-arrow", label: "Collections Report" },
+        { to: "/admin/finance-reports/class-analysis", icon: "bi-bar-chart-steps", label: "Class Analysis" },
+        { to: "/admin/finance-reports/detailed", icon: "bi-table", label: "Detailed Report" },
       ],
     },
     {
@@ -113,21 +116,28 @@ const NAV_BY_ROLE = {
     },
   ],
   FINANCE: [
-    {
-      items: [
-        { to: "/finance", icon: "bi-speedometer2", label: "Dashboard" },
-        { to: "/finance/structures", icon: "bi-receipt", label: "Fee Structures" },
-        { to: "/finance/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
-        { to: "/finance/payments", icon: "bi-cash-coin", label: "Payments" },
-      ],
-    },
-    {
-      items: [
-        { to: "/profile", icon: "bi-person", label: "My Profile" },
-        { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
-      ],
-    },
-  ],
+  {
+    items: [
+      { to: "/finance", icon: "bi-speedometer2", label: "Dashboard" },
+      { to: "/finance/structures", icon: "bi-receipt", label: "Fee Structures" },
+      { to: "/finance/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
+      { to: "/finance/payments", icon: "bi-cash-coin", label: "Payments" },
+    ],
+  },
+  {
+    items: [
+      { to: "/finance/reports/collections", icon: "bi-graph-up-arrow", label: "Collections Report" },
+      { to: "/finance/reports/class-analysis", icon: "bi-bar-chart-steps", label: "Class Analysis" },
+      { to: "/finance/reports/detailed", icon: "bi-table", label: "Detailed Report" },
+    ],
+  },
+  {
+    items: [
+      { to: "/profile", icon: "bi-person", label: "My Profile" },
+      { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
+    ],
+  },
+],
 };
 
 /**

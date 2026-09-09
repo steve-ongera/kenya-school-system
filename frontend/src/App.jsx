@@ -18,6 +18,16 @@ import AdminPromotions from "./pages/admin/Promotions";
 import AdminFees from "./pages/admin/Fees";
 import AdminUsers from "./pages/admin/Users";
 
+// admin finance reports
+import AdminFinanceCollections from "./pages/admin/finance/Collections";
+import AdminFinanceClassAnalysis from "./pages/admin/finance/ClassAnalysis";
+import AdminFinanceDetailedReport from "./pages/admin/finance/DetailedReport";
+
+// finance officer's own copies of the same 3 pages
+import FinanceCollections from "./pages/finance/Collections";
+import FinanceClassAnalysis from "./pages/finance/ClassAnalysis";
+import FinanceDetailedReport from "./pages/finance/DetailedReport";
+
 // add near other admin imports
 import AdminReports from "./pages/admin/Reports";
 import AdminCalendar from "./pages/admin/Calendar";
@@ -79,6 +89,11 @@ export default function App() {
           <Route path="/admin/settings" element={<RoleSection role="ADMIN"><AdminSettings /></RoleSection>} />
           <Route path="/admin/parents" element={<RoleSection role="ADMIN"><AdminParents /></RoleSection>} />
 
+          {/* ADMIN finance reports */}
+          <Route path="/admin/finance-reports/collections" element={<RoleSection role="ADMIN"><AdminFinanceCollections /></RoleSection>} />
+          <Route path="/admin/finance-reports/class-analysis" element={<RoleSection role="ADMIN"><AdminFinanceClassAnalysis /></RoleSection>} />
+          <Route path="/admin/finance-reports/detailed" element={<RoleSection role="ADMIN"><AdminFinanceDetailedReport /></RoleSection>} />
+
           {/* TEACHER */}
           <Route path="/teacher" element={<RoleSection role="TEACHER"><TeacherDashboard /></RoleSection>} />
           <Route path="/teacher/classes" element={<RoleSection role="TEACHER"><TeacherClasses /></RoleSection>} />
@@ -102,6 +117,11 @@ export default function App() {
           <Route path="/finance/structures" element={<RoleSection role="FINANCE"><FinanceStructures /></RoleSection>} />
           <Route path="/finance/invoices" element={<RoleSection role="FINANCE"><FinanceInvoices /></RoleSection>} />
           <Route path="/finance/payments" element={<RoleSection role="FINANCE"><FinancePayments /></RoleSection>} />
+
+          {/* FINANCE reports */}
+          <Route path="/finance/reports/collections" element={<RoleSection role="FINANCE"><FinanceCollections /></RoleSection>} />
+          <Route path="/finance/reports/class-analysis" element={<RoleSection role="FINANCE"><FinanceClassAnalysis /></RoleSection>} />
+          <Route path="/finance/reports/detailed" element={<RoleSection role="FINANCE"><FinanceDetailedReport /></RoleSection>} />
 
           <Route path="/" element={<Navigate to="/login" replace />} />
         </Route>
