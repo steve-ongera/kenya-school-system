@@ -716,3 +716,57 @@ class ClassroomStudentSerializer(serializers.ModelSerializer):
             }
             for link in links
         ]
+        
+        
+
+# ===========================================================================
+# ADD TO serializers.py, directly after the existing PaymentSerializer.
+# Read-only, enriched view of a Payment for the Finance "all payments" list:
+# who the student is, their own phone, their guardian's name/phone, which
+# class/term/year the payment's invoice belongs to, and who recorded it
+# (front-desk staff for manual entries, or the student/parent themselves
+# for a self-service STK push - see services.initiate_payment).
+# ===========================================================================
+class PaymentListSerializer(serializers.ModelSerializer):
+    admission_no = serializers.CharField(source="invoice.enrollment.student.admission_no", read_only=True)
+    student_name = serializers.CharField(
+        source="invoice.enrollment.student.user.get_full_name", read_only=True
+    )
+    student_phone = serializers.CharField(
+        source="invoice.enrollment.student.user.phone_number", read_only=True
+    )
+    classroom = serializers.CharField(source="invoice.enrollment.classroom.__str__", read_only=True)
+    academic_year = serializers.IntegerField(source="invoice.enrollment.academic_year.year", read_only=True)
+    term = serializers.CharField(source="invoice.fee_structure.term.__str__", read_only=True)
+    guardian_name = serializers.SerializerMethodField()
+    guardian_phone = serializers.SerializerMethodField()
+    recorded_by_name = serializers.SerializerMethodField()
+    recorded_by_role = serializers.SerializerMethodField()
+
+    class Meta:
+        model = models.Payment
+        fields = [
+            "id", "paid_at", "amount", "method", "reference", "receipt_no",
+            "admission_no", "student_name", "student_phone",
+            "guardian_name", "guardian_phone",
+            "classroom", "academic_year", "term",
+            "recorded_by_name", "recorded_by_role",
+        ]
+
+    def _guardian_link(self, obj):
+        student = obj.invoice.enrollment.student
+        return models.ParentStudentLink.objects.filter(student=student).select_related("parent__user").first()
+
+    def get_guardian_name(self, obj):
+        link = self._guardian_link(obj)
+        return link.parent.user.get_full_name() if link else None
+
+    def get_guardian_phone(self, obj):
+        link = self._guardian_link(obj)
+        return link.parent.user.phone_number if link else None
+
+    def get_recorded_by_name(self, obj):
+        return obj.recorded_by.get_full_name() if obj.recorded_by else "Self-service (STK push)"
+
+    def get_recorded_by_role(self, obj):
+        return obj.recorded_by.get_role_display() if obj.recorded_by else None
