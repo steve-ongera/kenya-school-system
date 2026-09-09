@@ -39,7 +39,7 @@ export default function Pagination({
     <div className="table-wrap__footer">
       <div className="d-flex align-items-center gap-3 flex-wrap">
         <span className="table-wrap__footer-info">
-          Showing <strong>{startIndex + 1}</strong> to <strong>{Math.min(endIndex, totalItems)}</strong> of <strong>{totalItems}</strong> students
+          Showing <strong>{startIndex + 1}</strong> to <strong>{Math.min(endIndex, totalItems)}</strong> of <strong>{totalItems}</strong>
         </span>
         
         <div className="per-page-select">
