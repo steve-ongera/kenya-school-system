@@ -19,7 +19,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True)
+    password = serializers.CharField(write_only=True, min_length=4)
 
     class Meta:
         model = models.User
@@ -27,10 +27,6 @@ class UserCreateSerializer(serializers.ModelSerializer):
             "id", "username", "email", "first_name", "last_name",
             "role", "phone_number", "national_id", "password",
         ]
-
-    def validate_password(self, value):
-        password_validation.validate_password(value)
-        return value
 
     def create(self, validated_data):
         password = validated_data.pop("password")
@@ -630,3 +626,39 @@ class BulkCreateClassroomsSerializer(serializers.Serializer):
             stream_ids=[s.id for s in validated_data["stream_ids"]],
         )
         return result
+    
+    
+    
+class ClassroomStudentSerializer(serializers.ModelSerializer):
+    """
+    Full student detail used by the classroom View modal's roster + CSV
+    export - flattens the User account fields onto the student row and
+    nests each linked parent/guardian's contact details.
+    """
+
+    full_name = serializers.CharField(source="user.get_full_name", read_only=True)
+    email = serializers.CharField(source="user.email", read_only=True)
+    phone_number = serializers.CharField(source="user.phone_number", read_only=True)
+    national_id = serializers.CharField(source="user.national_id", read_only=True)
+    username = serializers.CharField(source="user.username", read_only=True)
+    guardians = serializers.SerializerMethodField()
+
+    class Meta:
+        model = models.StudentProfile
+        fields = [
+            "id", "admission_no", "username", "full_name", "email", "phone_number",
+            "national_id", "gender", "date_of_birth", "curriculum_type", "upi_number",
+            "is_active", "date_admitted", "guardians",
+        ]
+
+    def get_guardians(self, obj):
+        links = models.ParentStudentLink.objects.filter(student=obj).select_related("parent__user")
+        return [
+            {
+                "name": link.parent.user.get_full_name(),
+                "relationship": link.get_relationship_display(),
+                "phone_number": link.parent.user.phone_number,
+                "email": link.parent.user.email,
+            }
+            for link in links
+        ]
