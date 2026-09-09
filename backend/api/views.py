@@ -88,16 +88,22 @@ class ChangePasswordView(APIView):
 # ---------------------------------------------------------------------------
 # USERS (admin manages staff/parent accounts here; students via StudentEnroll)
 # ---------------------------------------------------------------------------
+class UserPagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 500
+
+
 class UserViewSet(viewsets.ModelViewSet):
     queryset = models.User.objects.all().order_by("first_name")
     permission_classes = [utils.IsAdmin]
+    pagination_class = UserPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["role"]
-    search_fields = ["first_name", "last_name", "username", "email"]
- 
+    search_fields = ["first_name", "last_name", "username", "email", "phone_number"]
+
     def get_serializer_class(self):
         return serializers.UserCreateSerializer if self.action == "create" else serializers.UserSerializer
- 
 
 # ---------------------------------------------------------------------------
 # SCHOOL / CALENDAR
@@ -139,12 +145,52 @@ class StreamViewSet(viewsets.ModelViewSet):
     permission_classes = [utils.ReadOnlyOrAdmin]
 
 
+class ClassRoomPagination(PageNumberPagination):
+    page_size = 12
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+
 class ClassRoomViewSet(viewsets.ModelViewSet):
-    queryset = models.ClassRoom.objects.select_related("grade_level", "stream", "academic_year").all()
+    queryset = (
+        models.ClassRoom.objects.select_related("grade_level", "stream", "academic_year", "class_teacher")
+        .all()
+        .order_by("-academic_year__year", "grade_level__level_order", "stream__name")
+    )
     serializer_class = serializers.ClassRoomSerializer
     permission_classes = [utils.ReadOnlyOrAdmin]
-    filterset_fields = ["grade_level", "academic_year", "stream"]
-    filter_backends = [DjangoFilterBackend]
+    pagination_class = ClassRoomPagination
+    filterset_fields = ["grade_level", "academic_year", "stream", "class_teacher"]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    search_fields = ["grade_level__name", "stream__name", "class_teacher__first_name", "class_teacher__last_name"]
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        Blocks deleting a classroom that still has active students in it -
+        deleting would cascade and wipe their Enrollment (and everything
+        FK'd to it: results, invoices) rather than just removing an empty
+        classroom shell.
+        """
+        instance = self.get_object()
+        if instance.enrollments.filter(status=models.Enrollment.Status.ACTIVE).exists():
+            return Response(
+                {"detail": "Cannot delete a classroom with active students enrolled. Move or promote them first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
+    
+    
+    @action(detail=True, methods=["get"], url_path="students")
+    def students(self, request, pk=None):
+        """Full roster (with parent/guardian contacts) for this classroom's active students."""
+        classroom = self.get_object()
+        enrollments = (
+            classroom.enrollments.filter(status=models.Enrollment.Status.ACTIVE)
+            .select_related("student__user")
+            .order_by("student__user__first_name")
+        )
+        students = [e.student for e in enrollments]
+        return Response(serializers.ClassroomStudentSerializer(students, many=True).data)
 
     @action(detail=False, methods=["post"], url_path="bulk_create")
     def bulk_create(self, request):
@@ -158,8 +204,9 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
                 "created": serializers.ClassRoomSerializer(result["created"], many=True).data,
             },
             status=status.HTTP_201_CREATED,
+            
+            
         )
-
 
 # ---------------------------------------------------------------------------
 # STUDENTS / GUARDIANS / ENROLLMENT

@@ -32,8 +32,8 @@ from api.models import (
     Term, TeacherSubjectAllocation, TermPositionRanking, User,
 )
 
-admin.site.site_header = "Kilele Ridge Secondary School Administration"
-admin.site.site_title = "Kilele Ridge Admin"
+admin.site.site_header = "Moi High  School Administration"
+admin.site.site_title = "Moi High Admin"
 admin.site.index_title = "School Management System"
 
 
