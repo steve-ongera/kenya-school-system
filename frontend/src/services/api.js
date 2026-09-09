@@ -191,6 +191,7 @@ export const financeApi = {
   generateInvoice: (payload) => api.post("/invoices/generate/", payload),
   recordPayment: (payload) => api.post("/payments/", payload),
   status: () => api.get("/fees/status/"),   // <-- ADD THIS LINE
+  payments: (params) => api.get("/payments/", { params }),
 };
 
 export const performanceApi = {
