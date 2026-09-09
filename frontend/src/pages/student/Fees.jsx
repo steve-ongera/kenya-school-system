@@ -11,6 +11,7 @@ export default function StudentFees() {
   const [invoices, setInvoices] = useState([]);
   const [defaultPhone, setDefaultPhone] = useState("");
   const [loading, setLoading] = useState(true);
+  const [feeStatus, setFeeStatus] = useState(null);
 
   // pay modal state
   const [payInvoice, setPayInvoice] = useState(null);
@@ -40,6 +41,7 @@ export default function StudentFees() {
   useEffect(() => {
     loadInvoices();
     profileApi.me().then(({ data }) => setDefaultPhone(data.phone_number || ""));
+    financeApi.status().then(({ data }) => setFeeStatus(data)).catch(() => {});
   }, []);
 
   const totalDue = invoices.reduce((s, i) => s + Number(i.amount_due), 0);
@@ -157,6 +159,17 @@ export default function StudentFees() {
           </span>
         )}
       </div>
+
+      {/* Fee Structure Missing Banner */}
+      {feeStatus && feeStatus.has_fee_structure === false && (
+        <div
+          className="alert alert-warning mb-4"
+          style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
+        >
+          <i className="bi bi-exclamation-triangle" style={{ fontSize: "1.2rem" }}></i>
+          <span>{feeStatus.message}</span>
+        </div>
+      )}
 
       {/* Balance Banners */}
       {!loading && netBalance > 0 && (

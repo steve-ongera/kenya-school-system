@@ -504,3 +504,163 @@ def bulk_create_classrooms(academic_year, grade_level_ids, stream_ids):
             (created if was_created else skipped).append(obj)
 
     return {"created": created, "skipped": skipped}
+
+
+
+# ---------------------------------------------------------------------------
+# INVOICE GENERATION ENGINE (the daily scheduled job runs this)
+# ---------------------------------------------------------------------------
+def _terms_to_process(academic_year: "models.AcademicYear"):
+    """
+    Every term of the given academic year that has already started
+    (start_date in the past or today).
+
+    Processing every started term - not just the one flagged is_current -
+    is what gives the engine its backfill behaviour for free: if Term 1's
+    invoices were never generated (e.g. its FeeStructure was only added
+    after the fact), running this while Term 2 is current still catches
+    Term 1, because Term 1's start_date is still <= today.
+    """
+    today = timezone.now().date()
+    return models.Term.objects.filter(
+        academic_year=academic_year, start_date__lte=today
+    ).order_by("term_number")
+
+
+def _record_missing_fee_structure(grade_level, term, affected_count=None):
+    """
+    Creates or refreshes the FeeStructureMissingAlert for (grade_level, term).
+
+    Pass affected_count when you know the precise number (the nightly
+    engine always does, since it processes a whole grade at once). Leave
+    it None for an ad-hoc single-student call (e.g. right after admitting
+    one new student mid-term) so it doesn't stomp a more accurate count
+    that a previous full run already recorded - the next nightly run
+    corrects the count regardless.
+    """
+    alert, created = models.FeeStructureMissingAlert.objects.get_or_create(
+        grade_level=grade_level,
+        term=term,
+        defaults={"affected_student_count": affected_count or 1},
+    )
+    if not created:
+        alert.is_resolved = False
+        alert.resolved_at = None
+        if affected_count is not None:
+            alert.affected_student_count = affected_count
+        alert.save(update_fields=["is_resolved", "resolved_at", "affected_student_count"])
+    return alert
+
+
+def _resolve_fee_structure_alert(grade_level, term):
+    models.FeeStructureMissingAlert.objects.filter(
+        grade_level=grade_level, term=term, is_resolved=False
+    ).update(is_resolved=True, resolved_at=timezone.now())
+
+
+def generate_invoices_for_term(term: "models.Term", enrollments=None) -> dict:
+    """
+    Generates (or backfills) invoices for every ACTIVE enrollment, for one
+    term, across EVERY grade level at once.
+
+    Idempotent: generate_invoice() already returns the existing invoice
+    instead of duplicating one (see its `existing = ...` check), so this
+    is completely safe to run repeatedly - a student never gets billed
+    twice for the same term no matter how many times the job fires.
+
+    Students whose grade has no FeeStructure configured for this term are
+    counted and rolled into a FeeStructureMissingAlert instead of raising
+    - one bad/missing fee structure never blocks the other grades from
+    being invoiced in the same run.
+    """
+    if enrollments is None:
+        enrollments = models.Enrollment.objects.filter(
+            academic_year=term.academic_year, status=models.Enrollment.Status.ACTIVE
+        ).select_related("classroom__grade_level", "student__user")
+
+    created, already_existed, missing_fee_structures = [], [], {}
+
+    # Group by grade so FeeStructure is looked up once per grade (not once
+    # per student) - this is what makes "run across all classes" cheap:
+    # one query per grade rather than one per student per grade.
+    by_grade = {}
+    for enrollment in enrollments:
+        by_grade.setdefault(enrollment.classroom.grade_level_id, []).append(enrollment)
+
+    for grade_enrollments in by_grade.values():
+        grade_level = grade_enrollments[0].classroom.grade_level
+        fee_structure = models.FeeStructure.objects.filter(
+            grade_level=grade_level, term=term
+        ).first()
+
+        if not fee_structure:
+            _record_missing_fee_structure(grade_level, term, len(grade_enrollments))
+            missing_fee_structures[grade_level.name] = len(grade_enrollments)
+            continue
+
+        # this grade/term is fully configured this run - clear any stale alert
+        _resolve_fee_structure_alert(grade_level, term)
+
+        for enrollment in grade_enrollments:
+            existing = models.Invoice.objects.filter(
+                enrollment=enrollment, fee_structure=fee_structure
+            ).first()
+            if existing:
+                already_existed.append(existing.id)
+                continue
+            invoice = generate_invoice(enrollment, term)
+            created.append(invoice.id)
+
+    return {
+        "term": str(term),
+        "invoices_created": len(created),
+        "invoices_already_existed": len(already_existed),
+        "missing_fee_structures": missing_fee_structures,
+    }
+
+
+def run_daily_invoice_generation() -> dict:
+    """
+    Entry point for the scheduled job (scheduler.py / management command).
+
+    For the CURRENT academic year only, walks every term that has already
+    started and generates/backfills invoices for every active enrollment,
+    across every grade level in one pass. Concretely, this means:
+
+      - A student admitted TODAY gets billed for the current term the
+        next time this job runs (it's also triggered immediately on
+        admission - see the hook in StudentEnrollSerializer.create()).
+      - If an earlier term in the SAME academic year was never invoiced
+        for some students (e.g. their FeeStructure only got configured
+        after that term had already started), it gets backfilled
+        automatically the next time this runs - no manual re-run needed.
+      - A grade with no FeeStructure yet doesn't block anything else;
+        it's flagged via FeeStructureMissingAlert and simply picked up
+        automatically once ICT/Finance adds the missing FeeStructure.
+
+    Deliberately scoped to the CURRENT academic year only - a past
+    cohort's invoices are historical records and are never touched or
+    regenerated by this job.
+    """
+    current_year = models.AcademicYear.objects.filter(is_current=True).first()
+    if not current_year:
+        return {"detail": "No current academic year is configured.", "results": []}
+
+    terms = _terms_to_process(current_year)
+    if not terms.exists():
+        return {
+            "detail": "No terms have started yet for the current academic year.",
+            "results": [],
+        }
+
+    active_enrollments = models.Enrollment.objects.filter(
+        academic_year=current_year, status=models.Enrollment.Status.ACTIVE
+    ).select_related("classroom__grade_level", "student__user")
+
+    results = [generate_invoices_for_term(term, active_enrollments) for term in terms]
+
+    return {
+        "academic_year": current_year.year,
+        "terms_processed": len(results),
+        "results": results,
+    }
