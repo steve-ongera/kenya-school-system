@@ -171,7 +171,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
 
 
 class StudentEnrollSerializer(serializers.Serializer):
-    """Used by the admin 'admit new student' endpoint - creates User + StudentProfile + Enrollment together."""
+    """Used by the admin 'admit new student' endpoint - creates User + StudentProfile + Enrollment (+ parent/guardian) together."""
 
     first_name = serializers.CharField()
     last_name = serializers.CharField()
@@ -183,6 +183,16 @@ class StudentEnrollSerializer(serializers.Serializer):
     curriculum_type = serializers.ChoiceField(choices=models.CurriculumType.choices)
     classroom_id = serializers.PrimaryKeyRelatedField(queryset=models.ClassRoom.objects.all())
     upi_number = serializers.CharField(required=False, allow_blank=True)
+
+    # Parent/guardian - optional, but strongly recommended so fee
+    # notifications and communication have somewhere to go.
+    parent_name = serializers.CharField(required=False, allow_blank=True)
+    parent_phone = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    parent_relationship = serializers.ChoiceField(
+        choices=models.ParentStudentLink.Relationship.choices,
+        required=False,
+        default=models.ParentStudentLink.Relationship.GUARDIAN,
+    )
 
     def validate_national_id(self, value):
         if not value:
@@ -209,6 +219,12 @@ class StudentEnrollSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         classroom = validated_data.pop("classroom_id")
+        parent_name = validated_data.pop("parent_name", "").strip()
+        parent_phone = validated_data.pop("parent_phone", "").strip()
+        parent_relationship = validated_data.pop(
+            "parent_relationship", models.ParentStudentLink.Relationship.GUARDIAN
+        )
+
         year = classroom.academic_year.year
         admission_no = services.generate_admission_no(year)
 
@@ -221,7 +237,12 @@ class StudentEnrollSerializer(serializers.Serializer):
             national_id=validated_data.get("national_id") or None,
             role=models.User.Role.STUDENT,
         )
-        user.set_password(admission_no.replace("/", "-"))
+        # Fixed default password for every new student - "password123" -
+        # matching services.reset_student_password()'s own default, so
+        # there's exactly one default password for the front desk to
+        # remember, instead of the admission number (which changes per
+        # student and is easy to mistype when read out verbally).
+        user.set_password("password123")
         user.save()
 
         profile = models.StudentProfile.objects.create(
@@ -235,6 +256,11 @@ class StudentEnrollSerializer(serializers.Serializer):
         enrollment = models.Enrollment.objects.create(
             student=profile, classroom=classroom, academic_year=classroom.academic_year,
         )
+
+        # Link (or create) the parent/guardian, if one was provided at
+        # the admission desk.
+        if parent_phone:
+            services.attach_guardian(profile, parent_name, parent_phone, parent_relationship)
 
         # Invoice the student for the current term right away, so admitting
         # someone mid-term (e.g. a walk-in admission today) doesn't leave
@@ -253,6 +279,9 @@ class StudentEnrollSerializer(serializers.Serializer):
 
     def to_representation(self, instance):
         enrollment = instance.current_enrollment
+        guardian_link = models.ParentStudentLink.objects.filter(
+            student=instance
+        ).select_related("parent__user").first()
         return {
             "id": instance.id,
             "admission_no": instance.admission_no,
@@ -266,6 +295,11 @@ class StudentEnrollSerializer(serializers.Serializer):
             "curriculum_type": instance.curriculum_type,
             "upi_number": instance.upi_number,
             "current_classroom": str(enrollment.classroom) if enrollment else None,
+            "guardian": {
+                "name": guardian_link.parent.user.get_full_name(),
+                "phone_number": guardian_link.parent.user.phone_number,
+                "relationship": guardian_link.get_relationship_display(),
+            } if guardian_link else None,
         }
         
 
