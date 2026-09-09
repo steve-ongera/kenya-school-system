@@ -33,9 +33,17 @@ export default function AdminTeacherAllocation() {
     try {
       const [a, u, s, c, y] = await Promise.all([
         api.get("/teacher-allocations/"),
-        api.get("/users/", { params: { role: "TEACHER" } }),
+        // NOTE: /users/ is paginated (UserPagination, page_size=25, max=500).
+        // This page uses the result to populate a <select>, so we need
+        // *every* teacher, not just page 1 — request the max page size
+        // explicitly rather than relying on the default.
+        api.get("/users/", { params: { role: "TEACHER", page_size: 500 } }),
         academicsApi.subjects(),
-        academicsApi.classrooms(),
+        // Same issue for classrooms (ClassRoomPagination, page_size=12,
+        // max=200) — most schools will have well over 12 classroom rows
+        // (grade x stream x year), so this silently dropped classrooms
+        // from every dropdown/filter on this page.
+        academicsApi.classrooms({ page_size: 200 }),
         calendarApi.academicYears(),
       ]);
       setAllocations(a.data.results ?? a.data);
