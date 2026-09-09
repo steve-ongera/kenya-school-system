@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { studentsApi, academicsApi } from "../../services/api";
 import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
@@ -6,8 +6,8 @@ import Pagination from "../../components/Pagination";
 import Modal from "../../components/Modal";
 
 const emptyAddForm = {
-  first_name: "", last_name: "", gender: "M", curriculum_type: "CBC",
-  classroom_id: "", date_of_birth: "", upi_number: "",
+  first_name: "", last_name: "", email: "", phone_number: "", national_id: "",
+  gender: "M", curriculum_type: "CBC", classroom_id: "", date_of_birth: "", upi_number: "",
 };
 
 const emptyEditForm = {
@@ -15,15 +15,24 @@ const emptyEditForm = {
   gender: "M", date_of_birth: "", curriculum_type: "CBC", upi_number: "", is_active: true,
 };
 
+const emptyFilters = {
+  gender: "", curriculum_type: "", status: "",
+  academic_year: "", grade_level: "", classroom_id: "",
+};
+
 export default function AdminStudents() {
   const [students, setStudents] = useState([]);
   const [totalItems, setTotalItems] = useState(0);
-  const [classrooms, setClassrooms] = useState([]);
+
+  // Full, unfiltered classroom list — used to build the Academic Year /
+  // Grade / Classroom filter dropdowns (needs to see every year, not just
+  // the current one).
+  const [allClassrooms, setAllClassrooms] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [filters, setFilters] = useState({ gender: "", curriculum_type: "", status: "" });
+  const [filters, setFilters] = useState(emptyFilters);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(25);
 
@@ -75,6 +84,12 @@ export default function AdminStudents() {
       if (filters.gender) params.gender = filters.gender;
       if (filters.curriculum_type) params.curriculum_type = filters.curriculum_type;
       if (filters.status) params.is_active = filters.status === "active";
+      // These three filter on the student's CURRENT enrollment/classroom.
+      // Requires the backend StudentViewSet to support filtering by the
+      // related classroom's academic year, grade level, and id.
+      if (filters.academic_year) params.current_enrollment__classroom__academic_year__year = filters.academic_year;
+      if (filters.grade_level) params.current_enrollment__classroom__grade_level = filters.grade_level;
+      if (filters.classroom_id) params.current_enrollment__classroom = filters.classroom_id;
 
       const { data } = await studentsApi.list(params);
       if (Array.isArray(data)) {
@@ -99,13 +114,50 @@ export default function AdminStudents() {
   }, [loadStudents]);
 
   useEffect(() => {
-    academicsApi.classrooms().then(({ data }) => setClassrooms(data.results ?? data));
+    academicsApi.classrooms().then(({ data }) => setAllClassrooms(data.results ?? data));
   }, []);
+
+  // Classrooms allowed in the Admit / Edit forms — current academic year
+  // only, so new admissions can never land in a stale/past year again.
+  const admitClassrooms = useMemo(
+    () => allClassrooms.filter((c) => c.academic_year_is_current),
+    [allClassrooms]
+  );
+
+  // Distinct academic years, newest first, for the filter dropdown.
+  const academicYearOptions = useMemo(() => {
+    const years = [...new Set(allClassrooms.map((c) => c.academic_year))];
+    return years.sort((a, b) => b - a);
+  }, [allClassrooms]);
+
+  // Distinct grade levels for the filter dropdown, scoped to the selected
+  // academic year (if any) so the list doesn't show grades that don't
+  // exist in that year.
+  const gradeLevelOptions = useMemo(() => {
+    const pool = filters.academic_year
+      ? allClassrooms.filter((c) => String(c.academic_year) === String(filters.academic_year))
+      : allClassrooms;
+    const seen = new Map();
+    pool.forEach((c) => seen.set(c.grade_level, c.grade_level_name));
+    return [...seen.entries()]; // [ [id, name], ... ]
+  }, [allClassrooms, filters.academic_year]);
+
+  // Classrooms for the filter dropdown, scoped to selected year + grade.
+  const classroomOptions = useMemo(() => {
+    return allClassrooms.filter((c) => {
+      if (filters.academic_year && String(c.academic_year) !== String(filters.academic_year)) return false;
+      if (filters.grade_level && String(c.grade_level) !== String(filters.grade_level)) return false;
+      return true;
+    });
+  }, [allClassrooms, filters.academic_year, filters.grade_level]);
 
   const totalPages = Math.max(1, Math.ceil(totalItems / itemsPerPage));
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + students.length;
-  const hasActiveFilters = !!(searchInput || filters.gender || filters.curriculum_type || filters.status);
+  const hasActiveFilters = !!(
+    searchInput || filters.gender || filters.curriculum_type || filters.status ||
+    filters.academic_year || filters.grade_level || filters.classroom_id
+  );
 
   const handlePageChange = (page) => {
     if (page < 1 || page > totalPages) return;
@@ -115,7 +167,24 @@ export default function AdminStudents() {
   const clearFilters = () => {
     setSearchInput("");
     setSearchQuery("");
-    setFilters({ gender: "", curriculum_type: "", status: "" });
+    setFilters(emptyFilters);
+    setCurrentPage(1);
+  };
+
+  const updateFilter = (patch) => {
+    // Changing academic_year or grade_level invalidates a more specific
+    // downstream selection (grade/classroom), so clear those to avoid an
+    // impossible combination silently returning zero results.
+    setFilters((prev) => {
+      const next = { ...prev, ...patch };
+      if ("academic_year" in patch) {
+        next.grade_level = "";
+        next.classroom_id = "";
+      } else if ("grade_level" in patch) {
+        next.classroom_id = "";
+      }
+      return next;
+    });
     setCurrentPage(1);
   };
 
@@ -124,15 +193,22 @@ export default function AdminStudents() {
     e.preventDefault();
     setAddSaving(true);
     try {
-      const { data } = await studentsApi.admit(addForm);
-      setMessage(`Admitted successfully. Admission No / login username: ${data.admission_no}`);
+      const payload = {
+        ...addForm,
+        date_of_birth: addForm.date_of_birth || null,
+      };
+      const { data } = await studentsApi.admit(payload);
+      setMessage(
+        `Admitted successfully. Admission No / login username: ${data.admission_no}` +
+        (data.current_classroom ? ` — enrolled in ${data.current_classroom}` : "")
+      );
       setMessageType("success");
       setShowAddModal(false);
       setAddForm(emptyAddForm);
       setCurrentPage(1);
       await loadStudents();
     } catch (err) {
-      setMessage(err.response?.data?.detail || "Could not admit student.");
+      setMessage(err.response?.data?.detail || err.response?.data?.classroom_id?.[0] || "Could not admit student.");
       setMessageType("danger");
     } finally {
       setAddSaving(false);
@@ -306,7 +382,7 @@ export default function AdminStudents() {
             <select
               className="form-select"
               value={filters.gender}
-              onChange={(e) => { setFilters({ ...filters, gender: e.target.value }); setCurrentPage(1); }}
+              onChange={(e) => updateFilter({ gender: e.target.value })}
               style={{ width: "auto", minWidth: "130px" }}
             >
               <option value="">All Genders</option>
@@ -316,7 +392,7 @@ export default function AdminStudents() {
             <select
               className="form-select"
               value={filters.curriculum_type}
-              onChange={(e) => { setFilters({ ...filters, curriculum_type: e.target.value }); setCurrentPage(1); }}
+              onChange={(e) => updateFilter({ curriculum_type: e.target.value })}
               style={{ width: "auto", minWidth: "140px" }}
             >
               <option value="">All Curriculums</option>
@@ -326,7 +402,7 @@ export default function AdminStudents() {
             <select
               className="form-select"
               value={filters.status}
-              onChange={(e) => { setFilters({ ...filters, status: e.target.value }); setCurrentPage(1); }}
+              onChange={(e) => updateFilter({ status: e.target.value })}
               style={{ width: "auto", minWidth: "120px" }}
             >
               <option value="">All Status</option>
@@ -340,6 +416,44 @@ export default function AdminStudents() {
             )}
           </div>
 
+          <div className="d-flex flex-wrap gap-2" style={{ width: "100%" }}>
+            <select
+              className="form-select"
+              value={filters.academic_year}
+              onChange={(e) => updateFilter({ academic_year: e.target.value })}
+              style={{ width: "auto", minWidth: "150px" }}
+            >
+              <option value="">All Academic Years</option>
+              {academicYearOptions.map((year) => (
+                <option key={year} value={year}>{year}</option>
+              ))}
+            </select>
+            <select
+              className="form-select"
+              value={filters.grade_level}
+              onChange={(e) => updateFilter({ grade_level: e.target.value })}
+              style={{ width: "auto", minWidth: "160px" }}
+            >
+              <option value="">All Grades / Forms</option>
+              {gradeLevelOptions.map(([id, name]) => (
+                <option key={id} value={id}>{name}</option>
+              ))}
+            </select>
+            <select
+              className="form-select"
+              value={filters.classroom_id}
+              onChange={(e) => updateFilter({ classroom_id: e.target.value })}
+              style={{ width: "auto", minWidth: "180px" }}
+            >
+              <option value="">All Classes</option>
+              {classroomOptions.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.grade_level_name} {c.stream_name} ({c.academic_year})
+                </option>
+              ))}
+            </select>
+          </div>
+
           {hasActiveFilters && (
             <div className="d-flex flex-wrap gap-1">
               {searchQuery && (
@@ -351,19 +465,37 @@ export default function AdminStudents() {
               {filters.gender && (
                 <span className="filter-chip">
                   Gender: {filters.gender === "M" ? "Male" : "Female"}
-                  <button onClick={() => setFilters({ ...filters, gender: "" })}><i className="bi bi-x"></i></button>
+                  <button onClick={() => updateFilter({ gender: "" })}><i className="bi bi-x"></i></button>
                 </span>
               )}
               {filters.curriculum_type && (
                 <span className="filter-chip">
                   Curriculum: {filters.curriculum_type}
-                  <button onClick={() => setFilters({ ...filters, curriculum_type: "" })}><i className="bi bi-x"></i></button>
+                  <button onClick={() => updateFilter({ curriculum_type: "" })}><i className="bi bi-x"></i></button>
                 </span>
               )}
               {filters.status && (
                 <span className="filter-chip">
                   Status: {filters.status}
-                  <button onClick={() => setFilters({ ...filters, status: "" })}><i className="bi bi-x"></i></button>
+                  <button onClick={() => updateFilter({ status: "" })}><i className="bi bi-x"></i></button>
+                </span>
+              )}
+              {filters.academic_year && (
+                <span className="filter-chip">
+                  Year: {filters.academic_year}
+                  <button onClick={() => updateFilter({ academic_year: "" })}><i className="bi bi-x"></i></button>
+                </span>
+              )}
+              {filters.grade_level && (
+                <span className="filter-chip">
+                  Grade: {gradeLevelOptions.find(([id]) => String(id) === String(filters.grade_level))?.[1]}
+                  <button onClick={() => updateFilter({ grade_level: "" })}><i className="bi bi-x"></i></button>
+                </span>
+              )}
+              {filters.classroom_id && (
+                <span className="filter-chip">
+                  Class: {classroomOptions.find((c) => String(c.id) === String(filters.classroom_id))?.stream_name}
+                  <button onClick={() => updateFilter({ classroom_id: "" })}><i className="bi bi-x"></i></button>
                 </span>
               )}
             </div>
@@ -473,7 +605,7 @@ export default function AdminStudents() {
       )}
 
       {/* ---------------- ADD MODAL ---------------- */}
-      <Modal show={showAddModal} onClose={() => setShowAddModal(false)} title="Admit New Student">
+      <Modal show={showAddModal} onClose={() => setShowAddModal(false)} title="Admit New Student" size="lg">
         <form onSubmit={handleAdmit}>
           <div className="row g-3">
             <div className="col-md-6">
@@ -487,6 +619,29 @@ export default function AdminStudents() {
               <input className="form-control" required
                 value={addForm.last_name}
                 onChange={(e) => setAddForm({ ...addForm, last_name: e.target.value })} />
+            </div>
+            <div className="col-md-6">
+              <label className="form-label">Email (optional)</label>
+              <input type="email" className="form-control"
+                value={addForm.email}
+                onChange={(e) => setAddForm({ ...addForm, email: e.target.value })} />
+            </div>
+            <div className="col-md-6">
+              <label className="form-label">Phone Number (optional)</label>
+              <input className="form-control"
+                value={addForm.phone_number}
+                onChange={(e) => setAddForm({ ...addForm, phone_number: e.target.value })} />
+            </div>
+            <div className="col-md-6">
+              <label className="form-label">National ID (optional)</label>
+              <input className="form-control"
+                value={addForm.national_id}
+                onChange={(e) => setAddForm({ ...addForm, national_id: e.target.value })} />
+            </div>
+            <div className="col-md-6">
+              <label className="form-label">UPI / NEMIS No (optional)</label>
+              <input className="form-control" value={addForm.upi_number}
+                onChange={(e) => setAddForm({ ...addForm, upi_number: e.target.value })} />
             </div>
             <div className="col-md-4">
               <label className="form-label">Gender</label>
@@ -509,22 +664,20 @@ export default function AdminStudents() {
                 <option value="8-4-4">8-4-4 (Legacy)</option>
               </select>
             </div>
-            <div className="col-md-8">
+            <div className="col-md-12">
               <label className="form-label">Classroom</label>
               <select className="form-select" required value={addForm.classroom_id}
                 onChange={(e) => setAddForm({ ...addForm, classroom_id: e.target.value })}>
                 <option value="">Select...</option>
-                {classrooms.map((c) => (
+                {admitClassrooms.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.grade_level_name} {c.stream_name} - {c.academic_year}
                   </option>
                 ))}
               </select>
-            </div>
-            <div className="col-md-4">
-              <label className="form-label">UPI / NEMIS No (optional)</label>
-              <input className="form-control" value={addForm.upi_number}
-                onChange={(e) => setAddForm({ ...addForm, upi_number: e.target.value })} />
+              <div className="form-text" style={{ fontSize: "var(--fs-xs)" }}>
+                Only classrooms in the current academic year are shown.
+              </div>
             </div>
           </div>
           <p className="text-muted-soft mt-3" style={{ fontSize: "var(--fs-xs)" }}>

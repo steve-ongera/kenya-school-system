@@ -479,3 +479,28 @@ def generate_receipt_qr_base64(payment: models.Payment) -> str:
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode()
+
+
+# ---------------------------------------------------------------------------
+# BULK CLASSROOM CREATION
+# ---------------------------------------------------------------------------
+def bulk_create_classrooms(academic_year, grade_level_ids, stream_ids):
+    """
+    Creates one ClassRoom for every (grade_level x stream) combination for
+    the given academic_year. Idempotent - if a classroom already exists
+    for a given combination (unique_together on ClassRoom), it's skipped
+    rather than erroring, so this is safe to re-run e.g. after adding a
+    new stream mid-year.
+    """
+    grade_levels = models.GradeLevel.objects.filter(id__in=grade_level_ids)
+    streams = models.Stream.objects.filter(id__in=stream_ids)
+
+    created, skipped = [], []
+    for grade_level in grade_levels:
+        for stream in streams:
+            obj, was_created = models.ClassRoom.objects.get_or_create(
+                grade_level=grade_level, stream=stream, academic_year=academic_year,
+            )
+            (created if was_created else skipped).append(obj)
+
+    return {"created": created, "skipped": skipped}
