@@ -198,6 +198,15 @@ export const performanceApi = {
 };
 
 // ---------------------------------------------------------------------------
+// FINANCE REPORTS (3 pages: collections, class analysis, detailed)
+// ---------------------------------------------------------------------------
+export const financeReportsApi = {
+  collections: (params) => api.get("/finance-reports/collections/", { params }),
+  classAnalysis: (params) => api.get("/finance-reports/class-analysis/", { params }),
+  detailed: (params) => api.get("/finance-reports/detailed/", { params }),
+};
+
+// ---------------------------------------------------------------------------
 // STUDENT/PARENT SELF-SERVICE FEE PAYMENT (STK push, DEBUG-bypassed locally)
 // ---------------------------------------------------------------------------
 export const paymentsApi = {
