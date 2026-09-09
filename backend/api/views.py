@@ -1,6 +1,6 @@
 from decimal import Decimal
 from rest_framework.pagination import PageNumberPagination
-
+from django.db.models import Count, Sum, Q, F, FloatField, ExpressionWrapper
 from django.contrib.auth import authenticate
 from django.db import transaction
 from rest_framework import viewsets, generics, status, filters
@@ -565,12 +565,37 @@ class FeeStructureViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend]
 
 
+# ===========================================================================
+# REPLACE the existing InvoiceViewSet in views.py with this version.
+# Adds: pagination (invoices can now number in the thousands since the
+# engine generates them automatically), filtering by academic year, and
+# search by admission no / student name. The role-based scoping and the
+# generate action are unchanged from what you already have.
+# ===========================================================================
+class InvoicePagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 1000
+
+
 class InvoiceViewSet(viewsets.ModelViewSet):
-    queryset = models.Invoice.objects.select_related("enrollment__student__user", "fee_structure").all()
+    queryset = models.Invoice.objects.select_related(
+        "enrollment__student__user",
+        "enrollment__classroom__grade_level",
+        "enrollment__classroom__stream",
+        "enrollment__academic_year",
+        "fee_structure__term",
+    ).order_by("-issued_at")
     serializer_class = serializers.InvoiceSerializer
     permission_classes = [utils.IsAdminOrFinance]
-    filterset_fields = ["enrollment", "fee_structure"]
-    filter_backends = [DjangoFilterBackend]
+    pagination_class = InvoicePagination
+    filterset_fields = ["enrollment", "fee_structure", "enrollment__academic_year"]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    search_fields = [
+        "enrollment__student__admission_no",
+        "enrollment__student__user__first_name",
+        "enrollment__student__user__last_name",
+    ]
 
     def get_queryset(self):
         user = self.request.user
@@ -595,16 +620,51 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             return Response({"detail": str(exc)}, status=400)
         return Response(serializers.InvoiceSerializer(invoice).data, status=201)
 
+# ===========================================================================
+# REPLACE the existing PaymentViewSet in views.py with this version.
+# Adds: filtering by academic year / grade level / stream / term / method,
+# search by admission no or student name, and a much larger max_page_size
+# so the frontend can request everything matching the current filters in
+# one call for the Excel export (normal browsing still defaults to 25/page).
+# ===========================================================================
+class PaymentPagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 5000  # lets the "download Excel" button pull a full filtered set in one request
+
 
 class PaymentViewSet(viewsets.ModelViewSet):
     """Direct/manual payment recording, used by Finance for cash/bank/cheque. Students/parents use InitiatePaymentView instead."""
- 
-    queryset = models.Payment.objects.select_related("invoice").all()
-    serializer_class = serializers.PaymentSerializer
+
+    queryset = models.Payment.objects.select_related(
+        "invoice__enrollment__student__user",
+        "invoice__enrollment__classroom__grade_level",
+        "invoice__enrollment__classroom__stream",
+        "invoice__enrollment__academic_year",
+        "invoice__fee_structure__term",
+        "recorded_by",
+    ).order_by("-paid_at")
     permission_classes = [utils.IsAdminOrFinance]
-    filterset_fields = ["invoice", "method"]
-    filter_backends = [DjangoFilterBackend]
- 
+    pagination_class = PaymentPagination
+    filterset_fields = [
+        "method",
+        "invoice__enrollment__academic_year",
+        "invoice__enrollment__classroom__grade_level",
+        "invoice__enrollment__classroom__stream",
+        "invoice__fee_structure__term",
+    ]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    search_fields = [
+        "invoice__enrollment__student__admission_no",
+        "invoice__enrollment__student__user__first_name",
+        "invoice__enrollment__student__user__last_name",
+    ]
+
+    def get_serializer_class(self):
+        if self.action == "list":
+            return serializers.PaymentListSerializer
+        return serializers.PaymentSerializer
+
     def create(self, request, *args, **kwargs):
         invoice = generics.get_object_or_404(models.Invoice, pk=request.data.get("invoice"))
         payment = services.record_payment(
@@ -780,6 +840,24 @@ def _months_back(n):
         months.append(date(y, m, 1))
     return months
 
+
+def _months_in_range(start_date, end_date):
+    """
+    Return the first-of-month date for every month from start_date to
+    end_date inclusive, oldest first. Mirrors _months_back but bounded by
+    an explicit date range instead of 'last N months from today' - used
+    by the finance reports below, one range per academic year, so each
+    tab shows that year's months (not always the trailing 12 from today).
+    """
+    months = []
+    y, m = start_date.year, start_date.month
+    while (y, m) <= (end_date.year, end_date.month):
+        months.append(date(y, m, 1))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return months
 
 class DashboardStatsView(APIView):
     """
@@ -1205,3 +1283,403 @@ class StudentPerformanceDashboardView(APIView):
             "subject_performance": subject_performance,
             "subjects_summary": subjects_summary,
         })
+        
+        
+        
+        
+# ---------------------------------------------------------------------------
+# FINANCE REPORTS (3 pages: Collections, Class Analysis, Detailed)
+# Admin and Finance both get full access - same permission class you're
+# already using on FeeStructureViewSet/InvoiceViewSet/PaymentViewSet.
+# ---------------------------------------------------------------------------
+class FinanceCollectionsReportView(APIView):
+    """
+    GET /api/v1/finance-reports/collections/?academic_year=<id>
+
+    Page 1 - Collections overview:
+      - stat_cards: 5 ALL-TIME totals (not scoped to the selected tab),
+        since "how much have I collected since students started paying"
+        is a lifetime question, not a per-year one.
+      - academic_years: every AcademicYear, for the tab strip.
+      - monthly_trend: revenue collected each month WITHIN the selected
+        academic year's date range - this is what switching tabs changes.
+    """
+
+    permission_classes = [utils.IsAdminOrFinance]
+
+    def get(self, request):
+        academic_years = models.AcademicYear.objects.all().order_by("-year")
+
+        academic_year_id = request.query_params.get("academic_year")
+        if academic_year_id:
+            academic_year = generics.get_object_or_404(models.AcademicYear, pk=academic_year_id)
+        else:
+            academic_year = academic_years.filter(is_current=True).first() or academic_years.first()
+
+        # ---- 5 stat cards (all-time) ----
+        total_collected = models.Payment.objects.aggregate(total=Sum("amount"))["total"] or 0
+
+        invoice_balances = models.Invoice.objects.annotate(
+            balance=ExpressionWrapper(F("amount_due") - F("amount_paid"), output_field=FloatField())
+        )
+        outstanding_balance = (
+            invoice_balances.filter(balance__gt=0).aggregate(total=Sum("balance"))["total"] or 0
+        )
+        fully_paid_count = invoice_balances.filter(amount_paid__gte=F("amount_due")).count()
+        partially_paid_count = invoice_balances.filter(
+            amount_paid__gt=0, amount_paid__lt=F("amount_due")
+        ).count()
+        unpaid_count = invoice_balances.filter(amount_paid=0).count()
+
+        stat_cards = {
+            "total_collected": float(total_collected),
+            "outstanding_balance": float(outstanding_balance),
+            "fully_paid_invoices": fully_paid_count,
+            "partially_paid_invoices": partially_paid_count,
+            "unpaid_invoices": unpaid_count,
+        }
+
+        # ---- monthly trend, selected academic year only ----
+        monthly_trend = []
+        if academic_year:
+            months = _months_in_range(academic_year.start_date, academic_year.end_date)
+            raw = (
+                models.Payment.objects.filter(
+                    paid_at__date__gte=academic_year.start_date,
+                    paid_at__date__lte=academic_year.end_date,
+                )
+                .annotate(month=TruncMonth("paid_at"))
+                .values("month")
+                .annotate(total=Sum("amount"))
+            )
+            revenue_by_month = {r["month"].strftime("%Y-%m"): float(r["total"]) for r in raw}
+            monthly_trend = [
+                {
+                    "month": d.strftime("%Y-%m"),
+                    "label": d.strftime("%b"),
+                    "revenue": revenue_by_month.get(d.strftime("%Y-%m"), 0),
+                }
+                for d in months
+            ]
+
+        return Response(
+            {
+                "stat_cards": stat_cards,
+                "academic_years": [
+                    {"id": ay.id, "year": ay.year, "is_current": ay.is_current} for ay in academic_years
+                ],
+                "selected_academic_year": academic_year.id if academic_year else None,
+                "monthly_trend": monthly_trend,
+            }
+        )
+
+
+class FinanceClassAnalysisReportView(APIView):
+    """
+    GET /api/v1/finance-reports/class-analysis/?academic_year=<id>
+
+    Page 2 - Class analysis, all scoped to one academic year (same tab
+    strip as the collections report):
+      - classroom_outstanding: which classes carry the most unpaid fees,
+        worst-first.
+      - monthly_trend: 4 parallel series (due, paid, outstanding, invoice
+        count) across the year - feed these into 4 line charts (or 4
+        lines on one chart, your call on the frontend).
+      - payment_method_breakdown: pie-chart-ready totals by method.
+      - gender_balance_analysis: outstanding balance split by gender.
+    """
+
+    permission_classes = [utils.IsAdminOrFinance]
+
+    def get(self, request):
+        academic_years = models.AcademicYear.objects.all().order_by("-year")
+        academic_year_list = [
+            {"id": ay.id, "year": ay.year, "is_current": ay.is_current} for ay in academic_years
+        ]
+
+        academic_year_id = request.query_params.get("academic_year")
+        if academic_year_id:
+            academic_year = generics.get_object_or_404(models.AcademicYear, pk=academic_year_id)
+        else:
+            academic_year = academic_years.filter(is_current=True).first() or academic_years.first()
+
+        if not academic_year:
+            return Response(
+                {
+                    "academic_years": academic_year_list,
+                    "selected_academic_year": None,
+                    "classroom_outstanding": [],
+                    "monthly_trend": {"months": [], "total_due": [], "total_paid": [], "outstanding": [], "invoice_count": []},
+                    "payment_method_breakdown": [],
+                    "gender_balance_analysis": {},
+                }
+            )
+
+        year_invoices = models.Invoice.objects.filter(enrollment__academic_year=academic_year)
+
+        # ---- classroom outstanding, worst-first ----
+        raw_classrooms = (
+            year_invoices.values(
+                "enrollment__classroom__id",
+                "enrollment__classroom__grade_level__name",
+                "enrollment__classroom__stream__name",
+            )
+            .annotate(due=Sum("amount_due"), paid=Sum("amount_paid"))
+        )
+        classroom_outstanding = []
+        for r in raw_classrooms:
+            due = float(r["due"] or 0)
+            paid = float(r["paid"] or 0)
+            classroom_outstanding.append(
+                {
+                    "classroom_id": r["enrollment__classroom__id"],
+                    "classroom": f'{r["enrollment__classroom__grade_level__name"]} {r["enrollment__classroom__stream__name"]}',
+                    "due": due,
+                    "paid": paid,
+                    "outstanding": due - paid,
+                }
+            )
+        classroom_outstanding.sort(key=lambda c: c["outstanding"], reverse=True)
+
+        # ---- 4-line monthly trend ----
+        months = _months_in_range(academic_year.start_date, academic_year.end_date)
+        month_labels = [d.strftime("%b") for d in months]
+
+        due_by_month, count_by_month, paid_by_month = {}, {}, {}
+        raw_invoice_months = (
+            year_invoices.annotate(month=TruncMonth("issued_at"))
+            .values("month")
+            .annotate(due=Sum("amount_due"), cnt=Count("id"))
+        )
+        for r in raw_invoice_months:
+            key = r["month"].strftime("%Y-%m")
+            due_by_month[key] = float(r["due"] or 0)
+            count_by_month[key] = r["cnt"]
+
+        raw_payment_months = (
+            models.Payment.objects.filter(invoice__enrollment__academic_year=academic_year)
+            .annotate(month=TruncMonth("paid_at"))
+            .values("month")
+            .annotate(paid=Sum("amount"))
+        )
+        for r in raw_payment_months:
+            paid_by_month[r["month"].strftime("%Y-%m")] = float(r["paid"] or 0)
+
+        total_due_series, total_paid_series, outstanding_series, count_series = [], [], [], []
+        for d in months:
+            key = d.strftime("%Y-%m")
+            due = due_by_month.get(key, 0)
+            paid = paid_by_month.get(key, 0)
+            total_due_series.append(due)
+            total_paid_series.append(paid)
+            outstanding_series.append(due - paid)
+            count_series.append(count_by_month.get(key, 0))
+
+        monthly_trend = {
+            "months": month_labels,
+            "total_due": total_due_series,
+            "total_paid": total_paid_series,
+            "outstanding": outstanding_series,
+            "invoice_count": count_series,
+        }
+
+        # ---- payment method pie ----
+        raw_methods = (
+            models.Payment.objects.filter(invoice__enrollment__academic_year=academic_year)
+            .values("method")
+            .annotate(amount=Sum("amount"), count=Count("id"))
+        )
+        method_labels = dict(models.Payment.Method.choices)
+        payment_method_breakdown = [
+            {
+                "method": method_labels.get(r["method"], r["method"]),
+                "amount": float(r["amount"] or 0),
+                "count": r["count"],
+            }
+            for r in raw_methods
+        ]
+
+        # ---- gender balance analysis ----
+        gender_rows = (
+            year_invoices.values("enrollment__student__gender")
+            .annotate(due=Sum("amount_due"), paid=Sum("amount_paid"), invoice_count=Count("id"))
+        )
+        gender_labels = dict(models.StudentProfile.Gender.choices)
+        gender_balance_analysis = {}
+        for r in gender_rows:
+            due = float(r["due"] or 0)
+            paid = float(r["paid"] or 0)
+            outstanding = due - paid
+            key = "male" if r["enrollment__student__gender"] == models.StudentProfile.Gender.MALE else "female"
+            gender_balance_analysis[key] = {
+                "label": gender_labels.get(r["enrollment__student__gender"], key),
+                "total_due": due,
+                "total_paid": paid,
+                "total_outstanding": outstanding,
+                "average_outstanding": round(outstanding / r["invoice_count"], 2) if r["invoice_count"] else 0,
+                "invoice_count": r["invoice_count"],
+            }
+
+        return Response(
+            {
+                "academic_years": academic_year_list,
+                "selected_academic_year": academic_year.id,
+                "classroom_outstanding": classroom_outstanding,
+                "monthly_trend": monthly_trend,
+                "payment_method_breakdown": payment_method_breakdown,
+                "gender_balance_analysis": gender_balance_analysis,
+            }
+        )
+
+
+class FinanceReportPagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+
+class FinanceDetailedReportView(APIView):
+    """
+    GET /api/v1/finance-reports/detailed/
+        ?academic_year=<id>&term=<id>&classroom=<id>&status=paid|partial|unpaid&search=<name/admission_no>
+
+    Page 3 - the drill-down: a paginated, filterable invoice list, plus a
+    term-wise summary and a top-10 debtors list so admin/finance can go
+    from "who owes what" straight to a specific invoice.
+    """
+
+    permission_classes = [utils.IsAdminOrFinance]
+    pagination_class = FinanceReportPagination
+
+    def get(self, request):
+        academic_years = models.AcademicYear.objects.all().order_by("-year")
+        academic_year_id = request.query_params.get("academic_year")
+        if academic_year_id:
+            academic_year = generics.get_object_or_404(models.AcademicYear, pk=academic_year_id)
+        else:
+            academic_year = academic_years.filter(is_current=True).first() or academic_years.first()
+
+        qs = models.Invoice.objects.select_related(
+            "enrollment__student__user", "enrollment__classroom__grade_level",
+            "enrollment__classroom__stream", "fee_structure__term",
+        )
+        if academic_year:
+            qs = qs.filter(enrollment__academic_year=academic_year)
+
+        term_id = request.query_params.get("term")
+        if term_id:
+            qs = qs.filter(fee_structure__term_id=term_id)
+
+        classroom_id = request.query_params.get("classroom")
+        if classroom_id:
+            qs = qs.filter(enrollment__classroom_id=classroom_id)
+
+        pay_status = request.query_params.get("status")
+        if pay_status == "paid":
+            qs = qs.filter(amount_paid__gte=F("amount_due"))
+        elif pay_status == "partial":
+            qs = qs.filter(amount_paid__gt=0, amount_paid__lt=F("amount_due"))
+        elif pay_status == "unpaid":
+            qs = qs.filter(amount_paid=0)
+
+        search = request.query_params.get("search")
+        if search:
+            qs = qs.filter(
+                Q(enrollment__student__admission_no__icontains=search)
+                | Q(enrollment__student__user__first_name__icontains=search)
+                | Q(enrollment__student__user__last_name__icontains=search)
+            )
+
+        qs = qs.order_by("-issued_at")
+
+        totals = qs.aggregate(total_due=Sum("amount_due"), total_paid=Sum("amount_paid"))
+        total_due = float(totals["total_due"] or 0)
+        total_paid = float(totals["total_paid"] or 0)
+
+        # ---- term-wise summary for the selected academic year ----
+        term_summary = []
+        if academic_year:
+            term_number_labels = dict(models.Term.TermNumber.choices)
+            term_rows = (
+                models.Invoice.objects.filter(enrollment__academic_year=academic_year)
+                .values("fee_structure__term__term_number")
+                .annotate(due=Sum("amount_due"), paid=Sum("amount_paid"))
+                .order_by("fee_structure__term__term_number")
+            )
+            for r in term_rows:
+                due = float(r["due"] or 0)
+                paid = float(r["paid"] or 0)
+                term_summary.append(
+                    {
+                        "term": term_number_labels.get(r["fee_structure__term__term_number"], "-"),
+                        "due": due,
+                        "paid": paid,
+                        "outstanding": due - paid,
+                    }
+                )
+
+        # ---- top 10 debtors ----
+        debtor_qs = (
+            models.Invoice.objects.filter(enrollment__academic_year=academic_year)
+            if academic_year
+            else models.Invoice.objects.all()
+        )
+        raw_debtors = debtor_qs.values(
+            "enrollment__student__admission_no",
+            "enrollment__student__user__first_name",
+            "enrollment__student__user__last_name",
+            "enrollment__classroom__grade_level__name",
+            "enrollment__classroom__stream__name",
+        ).annotate(due=Sum("amount_due"), paid=Sum("amount_paid"))
+
+        top_debtors = sorted(
+            (
+                {
+                    "admission_no": r["enrollment__student__admission_no"],
+                    "name": f'{r["enrollment__student__user__first_name"]} {r["enrollment__student__user__last_name"]}',
+                    "classroom": f'{r["enrollment__classroom__grade_level__name"]} {r["enrollment__classroom__stream__name"]}',
+                    "outstanding": float(r["due"] or 0) - float(r["paid"] or 0),
+                }
+                for r in raw_debtors
+            ),
+            key=lambda d: d["outstanding"],
+            reverse=True,
+        )
+        top_debtors = [d for d in top_debtors if d["outstanding"] > 0][:10]
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        rows = []
+        for inv in page:
+            status_label = (
+                "paid" if inv.amount_paid >= inv.amount_due
+                else "partial" if inv.amount_paid > 0
+                else "unpaid"
+            )
+            rows.append(
+                {
+                    "id": inv.id,
+                    "admission_no": inv.enrollment.student.admission_no,
+                    "student_name": inv.enrollment.student.user.get_full_name(),
+                    "classroom": str(inv.enrollment.classroom),
+                    "term": str(inv.fee_structure.term),
+                    "due": float(inv.amount_due),
+                    "paid": float(inv.amount_paid),
+                    "balance": float(inv.balance),
+                    "status": status_label,
+                }
+            )
+
+        response = paginator.get_paginated_response(rows)
+        response.data["summary"] = {
+            "total_due": total_due,
+            "total_paid": total_paid,
+            "total_outstanding": total_due - total_paid,
+        }
+        response.data["term_summary"] = term_summary
+        response.data["top_debtors"] = top_debtors
+        response.data["academic_years"] = [
+            {"id": ay.id, "year": ay.year, "is_current": ay.is_current} for ay in academic_years
+        ]
+        response.data["selected_academic_year"] = academic_year.id if academic_year else None
+        return response

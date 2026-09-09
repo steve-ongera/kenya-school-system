@@ -51,6 +51,11 @@ urlpatterns = [
     path("my-allocations/", views.MyAllocationsView.as_view(), name="my-allocations"),
     # ranking trigger
     path("rank/", views.RankView.as_view(), name="rank"),
+    # finance reports (3 pages: collections, class analysis, detailed)
+    path("finance-reports/collections/", views.FinanceCollectionsReportView.as_view(), name="finance-collections-report"),
+    path("finance-reports/class-analysis/", views.FinanceClassAnalysisReportView.as_view(), name="finance-class-analysis-report"),
+    path("finance-reports/detailed/", views.FinanceDetailedReportView.as_view(), name="finance-detailed-report"),
+
     # student/parent self-service fee payment (STK push, DEBUG-bypassed locally)
     path("payments/initiate/", views.InitiatePaymentView.as_view(), name="initiate-payment"),
     path("payments/mpesa-callback/", views.MpesaCallbackView.as_view(), name="mpesa-callback"),
