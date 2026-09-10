@@ -90,6 +90,14 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# --- security tunables ---
+ACCOUNT_LOCKOUT_MAX_ATTEMPTS = 3
+ACCOUNT_LOCKOUT_DURATION_MINUTES = 30
+OTP_EXPIRY_MINUTES = 5
+PASSWORD_RESET_TOKEN_EXPIRY_MINUTES = 30
+FRONTEND_URL = "http://localhost:5173"  # used to build the reset-password link
+
+
 # ---------------------------------------------------------------------------
 # DRF / JWT / RBAC
 # ---------------------------------------------------------------------------
@@ -103,6 +111,11 @@ REST_FRAMEWORK = {
     "DEFAULT_FILTER_BACKENDS": ("django_filters.rest_framework.DjangoFilterBackend",),
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 25,
+    "DEFAULT_THROTTLE_RATES": {
+        "login": "10/min",          # per-IP attempts against /auth/login/
+        "otp_verify": "8/min",      # per-IP attempts against /auth/verify-otp/
+        "forgot_password": "3/hour",
+    },
 }
 
 SIMPLE_JWT = {

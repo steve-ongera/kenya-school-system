@@ -33,9 +33,14 @@ router.register(r"payments", views.PaymentViewSet, basename="payment")
 router.register(r"communications", views.CommunicationViewSet, basename="communication")
 router.register(r"notifications", views.NotificationViewSet, basename="notification")
 router.register(r"conversations", views.ConversationViewSet, basename="conversation")
+router.register(r"login-attempts", views.LoginAttemptLogViewSet, basename="login-attempt")
 
 urlpatterns = [
-    path("auth/login/", views.LoginView.as_view(), name="login"),
+    path("auth/login/", views.LoginView.as_view(), name="login"),  # replaces old login route
+    path("auth/verify-otp/", views.VerifyOtpView.as_view(), name="verify-otp"),
+    path("auth/forgot-password/", views.ForgotPasswordRequestView.as_view(), name="forgot-password"),
+    path("auth/reset-password/", views.ResetPasswordConfirmView.as_view(), name="reset-password"),
+    
     path("auth/me/", views.MeView.as_view(), name="me"),
     path("auth/change-password/", views.ChangePasswordView.as_view(), name="change-password"),
     path("profile/me/", views.ProfileView.as_view(), name="profile-me"),
