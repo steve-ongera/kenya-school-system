@@ -106,7 +106,7 @@ export default function FinanceStructures() {
         total_amount: total,
         items: cleanItems,
       });
-      setMessage({ type: "success", text: "✅ Fee structure created successfully." });
+      setMessage({ type: "success", text: " Fee structure created successfully." });
       resetForm();
       loadStructures({
         ...(filters.term__academic_year ? { term__academic_year: filters.term__academic_year } : {}),
