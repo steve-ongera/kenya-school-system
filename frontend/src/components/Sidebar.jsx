@@ -15,12 +15,17 @@ import logo from "../assets/moi_forces.png"; // Adjust path as needed
  * Items within each Admin group are ordered so related tools sit next
  * to each other (e.g. Classes -> Subjects -> Exams -> Rankings ->
  * Promotions all live under "Academics"), instead of one long list.
+ *
+ * Every role includes a "Messages" link - 1:1 conversations are open
+ * to all authenticated users (staff can start new threads, parents/
+ * students can reply) - see /messages in App.jsx.
  */
 const NAV_BY_ROLE = {
   ADMIN: [
     {
       items: [
         { to: "/admin", icon: "bi-speedometer2", label: "Dashboard" },
+        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
       ],
     },
     {
@@ -52,6 +57,12 @@ const NAV_BY_ROLE = {
       ],
     },
     {
+      label: "Communication",
+      items: [
+        { to: "/admin/communications", icon: "bi-megaphone", label: "Announcements" },
+      ],
+    },
+    {
       label: "Administration",
       items: [
         { to: "/admin/users", icon: "bi-shield-lock", label: "User Accounts" },
@@ -74,6 +85,7 @@ const NAV_BY_ROLE = {
         { to: "/teacher/classes", icon: "bi-door-open", label: "My Classes" },
         { to: "/teacher/marks", icon: "bi-pencil-square", label: "Enter Marks" },
         { to: "/teacher/rankings", icon: "bi-bar-chart-line", label: "Class Rankings" },
+        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
       ],
     },
     {
@@ -90,6 +102,7 @@ const NAV_BY_ROLE = {
         { to: "/student/results", icon: "bi-journal-text", label: "My Results" },
         { to: "/student/subjects", icon: "bi-journal-bookmark", label: "My Subjects" },
         { to: "/student/fees", icon: "bi-cash-coin", label: "Fee Statement" },
+        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
       ],
     },
     {
@@ -106,6 +119,7 @@ const NAV_BY_ROLE = {
         { to: "/parent/children", icon: "bi-people", label: "My Children" },
         { to: "/parent/results", icon: "bi-journal-text", label: "Results" },
         { to: "/parent/fees", icon: "bi-cash-coin", label: "Fee Statements" },
+        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
       ],
     },
     {
@@ -116,28 +130,30 @@ const NAV_BY_ROLE = {
     },
   ],
   FINANCE: [
-  {
-    items: [
-      { to: "/finance", icon: "bi-speedometer2", label: "Dashboard" },
-      { to: "/finance/structures", icon: "bi-receipt", label: "Fee Structures" },
-      { to: "/finance/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
-      { to: "/finance/payments", icon: "bi-cash-coin", label: "Payments" },
-    ],
-  },
-  {
-    items: [
-      { to: "/finance/reports/collections", icon: "bi-graph-up-arrow", label: "Collections Report" },
-      { to: "/finance/reports/class-analysis", icon: "bi-bar-chart-steps", label: "Class Analysis" },
-      { to: "/finance/reports/detailed", icon: "bi-table", label: "Detailed Report" },
-    ],
-  },
-  {
-    items: [
-      { to: "/profile", icon: "bi-person", label: "My Profile" },
-      { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
-    ],
-  },
-],
+    {
+      items: [
+        { to: "/finance", icon: "bi-speedometer2", label: "Dashboard" },
+        { to: "/finance/structures", icon: "bi-receipt", label: "Fee Structures" },
+        { to: "/finance/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
+        { to: "/finance/payments", icon: "bi-cash-coin", label: "Payments" },
+        { to: "/finance/communications", icon: "bi-megaphone", label: "Announcements" },
+        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
+      ],
+    },
+    {
+      items: [
+        { to: "/finance/reports/collections", icon: "bi-graph-up-arrow", label: "Collections Report" },
+        { to: "/finance/reports/class-analysis", icon: "bi-bar-chart-steps", label: "Class Analysis" },
+        { to: "/finance/reports/detailed", icon: "bi-table", label: "Detailed Report" },
+      ],
+    },
+    {
+      items: [
+        { to: "/profile", icon: "bi-person", label: "My Profile" },
+        { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
+      ],
+    },
+  ],
 };
 
 /**

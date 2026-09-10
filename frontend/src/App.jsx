@@ -58,6 +58,10 @@ import FinanceStructures from "./pages/finance/Structures";
 import FinanceInvoices from "./pages/finance/Invoices";
 import FinancePayments from "./pages/finance/Payments";
 
+// communications & messaging - shared across roles, not nested under one role's folder
+import Communications from "./pages/Communications";
+import Messages from "./pages/Messages";
+
 function RoleSection({ role, children }) {
   return <ProtectedRoute allowedRoles={[role]}>{children}</ProtectedRoute>;
 }
@@ -72,6 +76,8 @@ export default function App() {
           {/* shared - any authenticated role */}
           <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
           <Route path="/change-password" element={<ProtectedRoute><ChangePassword /></ProtectedRoute>} />
+          <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
+
           {/* ADMIN */}
           <Route path="/admin" element={<RoleSection role="ADMIN"><AdminDashboard /></RoleSection>} />
           <Route path="/admin/students" element={<RoleSection role="ADMIN"><AdminStudents /></RoleSection>} />
@@ -122,6 +128,10 @@ export default function App() {
           <Route path="/finance/reports/collections" element={<RoleSection role="FINANCE"><FinanceCollections /></RoleSection>} />
           <Route path="/finance/reports/class-analysis" element={<RoleSection role="FINANCE"><FinanceClassAnalysis /></RoleSection>} />
           <Route path="/finance/reports/detailed" element={<RoleSection role="FINANCE"><FinanceDetailedReport /></RoleSection>} />
+
+          {/* COMMUNICATIONS - Admin and Finance can both broadcast; each keeps its own path so the sidebar entry sits naturally in its own role group */}
+          <Route path="/admin/communications" element={<ProtectedRoute allowedRoles={["ADMIN"]}><Communications /></ProtectedRoute>} />
+          <Route path="/finance/communications" element={<ProtectedRoute allowedRoles={["FINANCE"]}><Communications /></ProtectedRoute>} />
 
           <Route path="/" element={<Navigate to="/login" replace />} />
         </Route>
