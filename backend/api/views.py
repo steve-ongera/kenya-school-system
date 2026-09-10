@@ -1683,3 +1683,189 @@ class FinanceDetailedReportView(APIView):
         ]
         response.data["selected_academic_year"] = academic_year.id if academic_year else None
         return response
+    
+    
+    
+# ===========================================================================
+# COMMUNICATIONS & MESSAGING 
+# ===========================================================================
+
+class CommunicationPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+
+class CommunicationViewSet(viewsets.ModelViewSet):
+    """
+    Admin/Finance only. POST creates + immediately sends a broadcast
+    (audience resolved and dispatched in services.send_communication).
+    GET lists the communications log with per-channel delivery counts.
+    """
+
+    queryset = models.Communication.objects.select_related("sender", "grade_level", "classroom", "academic_year").all()
+    permission_classes = [utils.IsAdminOrFinance]
+    pagination_class = CommunicationPagination
+    filterset_fields = ["category", "audience_type"]
+    filter_backends = [DjangoFilterBackend]
+
+    def get_serializer_class(self):
+        return serializers.CommunicationCreateSerializer if self.action == "create" else serializers.CommunicationSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = serializers.CommunicationCreateSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        communication = serializer.save()
+        return Response(serializers.CommunicationSerializer(communication).data, status=201)
+
+
+class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Every authenticated user's own in-app notifications - what the navbar
+    bell reads. Not scoped to Admin/Finance: everyone (Teacher, Student,
+    Parent...) can receive a Communication and should see it here.
+    """
+
+    serializer_class = serializers.NotificationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return models.CommunicationRecipient.objects.filter(
+            user=self.request.user, channel=models.CommunicationRecipient.Channel.IN_APP
+        ).select_related("communication", "communication__sender").order_by("-communication__created_at")
+
+    @action(detail=False, methods=["get"])
+    def unread_count(self, request):
+        count = self.get_queryset().filter(is_read=False).count()
+        return Response({"unread_count": count})
+
+    @action(detail=False, methods=["post"])
+    def mark_all_read(self, request):
+        self.get_queryset().filter(is_read=False).update(is_read=True)
+        return Response({"detail": "All notifications marked read."})
+
+    @action(detail=True, methods=["post"])
+    def mark_read(self, request, pk=None):
+        notification = self.get_object()
+        notification.is_read = True
+        notification.save(update_fields=["is_read"])
+        return Response(serializers.NotificationSerializer(notification).data)
+
+
+class ConversationViewSet(viewsets.ModelViewSet):
+    """
+    1:1 messaging threads. Anyone authenticated can list/view their own
+    conversations and post replies into one they're already part of;
+    only staff (Admin/Teacher/Finance) can start a NEW conversation -
+    see ConversationCreateSerializer, which also enforces that a Teacher
+    can only start one with a student they actually teach.
+    """
+
+    serializer_class = serializers.ConversationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return (
+            models.Conversation.objects.filter(participants=self.request.user)
+            .prefetch_related("participants", "messages")
+            .distinct()
+        )
+
+    def get_permissions(self):
+        if self.action == "create":
+            return [utils.IsStaffMember()]
+        return super().get_permissions()
+
+    def create(self, request, *args, **kwargs):
+        serializer = serializers.ConversationCreateSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        conversation = serializer.save()
+        return Response(serializers.ConversationSerializer(conversation, context={"request": request}).data, status=201)
+
+    @action(detail=True, methods=["get", "post"])
+    def messages(self, request, pk=None):
+        conversation = self.get_object()
+        if request.method == "GET":
+            qs = conversation.messages.select_related("sender").order_by("created_at")
+            # opening the thread marks every message in it as read
+            for message in qs.exclude(read_by=request.user):
+                message.read_by.add(request.user)
+            return Response(serializers.DirectMessageSerializer(qs, many=True, context={"request": request}).data)
+
+        body = request.data.get("body", "").strip()
+        if not body:
+            return Response({"detail": "Message body is required."}, status=400)
+        message = models.DirectMessage.objects.create(conversation=conversation, sender=request.user, body=body)
+        message.read_by.add(request.user)
+        return Response(serializers.DirectMessageSerializer(message, context={"request": request}).data, status=201)
+
+    @action(detail=False, methods=["get"])
+    def unread_count(self, request):
+        count = (
+            models.DirectMessage.objects.filter(conversation__participants=request.user)
+            .exclude(sender=request.user)
+            .exclude(read_by=request.user)
+            .count()
+        )
+        return Response({"unread_count": count})
+
+
+class RecipientSearchView(APIView):
+    """
+    GET /api/v1/messaging/recipients/?search=<text>&role=PARENT|STUDENT
+    Powers the "start a new conversation" picker: staff search students/
+    guardians by name or admission number and get back the actual User id
+    needed for ConversationCreateSerializer.recipient_id, plus which
+    student the thread should be tied to.
+    """
+
+    permission_classes = [utils.IsStaffMember]
+
+    def get(self, request):
+        search = request.query_params.get("search", "").strip()
+        role = request.query_params.get("role")
+        results = []
+
+        if role in (None, "STUDENT"):
+            students = models.StudentProfile.objects.select_related("user").all()
+            if search:
+                students = students.filter(
+                    Q(admission_no__icontains=search)
+                    | Q(user__first_name__icontains=search)
+                    | Q(user__last_name__icontains=search)
+                )
+            for s in students[:20]:
+                enrollment = s.current_enrollment
+                results.append({
+                    "user_id": s.user_id,
+                    "student_id": s.id,
+                    "name": s.user.get_full_name(),
+                    "role": "STUDENT",
+                    "detail": f"{s.admission_no} - {enrollment.classroom if enrollment else 'No current class'}",
+                })
+
+        if role in (None, "PARENT"):
+            links = models.ParentStudentLink.objects.select_related("parent__user", "student__user")
+            if search:
+                links = links.filter(
+                    Q(parent__user__first_name__icontains=search)
+                    | Q(parent__user__last_name__icontains=search)
+                    | Q(student__admission_no__icontains=search)
+                    | Q(student__user__first_name__icontains=search)
+                    | Q(student__user__last_name__icontains=search)
+                )
+            seen = set()
+            for link in links[:40]:
+                key = (link.parent.user_id, link.student_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append({
+                    "user_id": link.parent.user_id,
+                    "student_id": link.student_id,
+                    "name": link.parent.user.get_full_name(),
+                    "role": "PARENT",
+                    "detail": f"Guardian of {link.student.user.get_full_name()} ({link.student.admission_no})",
+                })
+
+        return Response(results[:30])
