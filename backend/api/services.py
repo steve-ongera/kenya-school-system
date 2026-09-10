@@ -922,10 +922,10 @@ def make_challenge_token(user):
 
 
 def read_challenge_token(token):
-    """Returns the user id, or None if the token is missing/expired/tampered."""
+    """Returns the user id (a UUID string), or None if the token is missing/expired/tampered."""
     try:
-        return int(_signer.unsign(token, max_age=settings.OTP_EXPIRY_MINUTES * 60))
-    except (BadSignature, SignatureExpired, ValueError):
+        return _signer.unsign(token, max_age=settings.OTP_EXPIRY_MINUTES * 60)
+    except (BadSignature, SignatureExpired):
         return None
 
 
@@ -1023,10 +1023,12 @@ def _dispatch_otp(user, code):
 
 
 def verify_otp(user, submitted_code, ip_address):
+    submitted_code = (submitted_code or "").strip()
+
     if not user.otp_code or not user.otp_expires_at or timezone.now() > user.otp_expires_at:
         register_failed_login(user, ip_address, models.LoginAttemptLog.Result.OTP_FAILED)
         return False
-    if submitted_code != user.otp_code:
+    if submitted_code != user.otp_code.strip():
         register_failed_login(user, ip_address, models.LoginAttemptLog.Result.OTP_FAILED)
         return False
 

@@ -118,9 +118,12 @@ class LoginRequestSerializer(serializers.Serializer):
 
 
 class VerifyOtpSerializer(serializers.Serializer):
-    challenge_token = serializers.CharField(max_length=200)
-    otp_code = serializers.RegexField(r"^\d{6}$", error_messages={"invalid": "Enter the 6-digit code."})
-
+    challenge_token = serializers.CharField(max_length=200, trim_whitespace=True)
+    otp_code = serializers.RegexField(
+        r"^\d{6}$",
+        trim_whitespace=True,
+        error_messages={"invalid": "Enter the 6-digit code."},
+    )
 
 class ForgotPasswordRequestSerializer(serializers.Serializer):
     admission_no = serializers.CharField(max_length=30)
