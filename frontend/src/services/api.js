@@ -198,6 +198,28 @@ export const performanceApi = {
   dashboard: () => api.get("/students/me/performance/"),
 };
 
+export const communicationApi = {
+  list: (params) => api.get("/communications/", { params }),
+  send: (payload) => api.post("/communications/", payload),
+};
+ 
+export const notificationApi = {
+  list: (params) => api.get("/notifications/", { params }),
+  unreadCount: () => api.get("/notifications/unread_count/"),
+  markRead: (id) => api.post(`/notifications/${id}/mark_read/`),
+  markAllRead: () => api.post("/notifications/mark_all_read/"),
+};
+ 
+export const messagingApi = {
+  conversations: () => api.get("/conversations/"),
+  start: (payload) => api.post("/conversations/", payload), // { recipient_id, student_id?, body }
+  messages: (conversationId) => api.get(`/conversations/${conversationId}/messages/`),
+  send: (conversationId, body) => api.post(`/conversations/${conversationId}/messages/`, { body }),
+  unreadCount: () => api.get("/conversations/unread_count/"),
+  searchRecipients: (params) => api.get("/messaging/recipients/", { params }), // { search, role? }
+};
+ 
+
 // ---------------------------------------------------------------------------
 // FINANCE REPORTS (3 pages: collections, class analysis, detailed)
 // ---------------------------------------------------------------------------

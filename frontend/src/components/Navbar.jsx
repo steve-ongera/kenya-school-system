@@ -1,7 +1,8 @@
 // components/Navbar.jsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { notificationApi, messagingApi } from "../services/api";
 
 const ROLE_LABELS = {
   ADMIN: "Administrator",
@@ -11,17 +12,27 @@ const ROLE_LABELS = {
   FINANCE: "Finance Officer",
 };
 
-// Replace with real data from your API/context.
-const MOCK_NOTIFICATIONS = [
-  { id: 1, icon: "bi-pencil-square", title: "Term 2 exams published", text: "Results are ready for review across all streams.", time: "10m ago", unread: true },
-  { id: 2, icon: "bi-cash-coin", title: "Fee payment received", text: "Kamau, J. — Grade 7B paid KES 12,000.", time: "1h ago", unread: true },
-  { id: 3, icon: "bi-people", title: "New student enrolled", text: "Wanjiru Otieno added to Grade 4A.", time: "Yesterday", unread: false },
-];
+const CATEGORY_ICON = {
+  GENERAL: "bi-megaphone",
+  EVENT: "bi-calendar-event",
+  CLOSING: "bi-door-closed",
+  FEE_REMINDER: "bi-cash-coin",
+  ACADEMIC: "bi-mortarboard",
+};
 
-const MOCK_MESSAGES = [
-  { id: 1, initials: "MN", title: "Mary Njoroge", text: "Can we move the parents' meeting to Friday?", time: "5m ago", unread: true },
-  { id: 2, initials: "PO", title: "Peter Otieno", text: "Marksheet for Grade 6 uploaded.", time: "2h ago", unread: false },
-];
+function timeAgo(dateString) {
+  const seconds = Math.floor((Date.now() - new Date(dateString)) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "Yesterday";
+  return `${days}d ago`;
+}
+
+const POLL_INTERVAL_MS = 30000;
 
 export default function Navbar({ onToggleSidebar }) {
   const { user, logout } = useAuth();
@@ -31,8 +42,21 @@ export default function Navbar({ onToggleSidebar }) {
   const [query, setQuery] = useState("");
   const containerRef = useRef(null);
 
-  const unreadNotifications = MOCK_NOTIFICATIONS.filter((n) => n.unread).length;
-  const unreadMessages = MOCK_MESSAGES.filter((m) => m.unread).length;
+  const [notifications, setNotifications] = useState([]);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [conversations, setConversations] = useState([]);
+  const [unreadMessages, setUnreadMessages] = useState(0);
+
+  const refreshCounts = useCallback(() => {
+    notificationApi.unreadCount().then(({ data }) => setUnreadNotifications(data.unread_count)).catch(() => {});
+    messagingApi.unreadCount().then(({ data }) => setUnreadMessages(data.unread_count)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshCounts();
+    const interval = setInterval(refreshCounts, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [refreshCounts]);
 
   useEffect(() => {
     function handleClickOutside(e) {
@@ -51,12 +75,34 @@ export default function Navbar({ onToggleSidebar }) {
     };
   }, []);
 
-  const toggleMenu = (menu) => setOpenMenu((prev) => (prev === menu ? null : menu));
+  const toggleMenu = (menu) => {
+    setOpenMenu((prev) => (prev === menu ? null : menu));
+    if (menu === "notifications" && openMenu !== "notifications") {
+      notificationApi.list({ page_size: 8 }).then(({ data }) => setNotifications(data.results ?? data));
+    }
+    if (menu === "messages" && openMenu !== "messages") {
+      messagingApi.conversations().then(({ data }) => setConversations(data.slice(0, 8)));
+    }
+  };
+
+  const markAllRead = async (e) => {
+    e.preventDefault();
+    await notificationApi.markAllRead();
+    setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+    setUnreadNotifications(0);
+  };
+
+  const openNotification = async (n) => {
+    if (!n.is_read) {
+      await notificationApi.markRead(n.id);
+      setNotifications((prev) => prev.map((x) => (x.id === n.id ? { ...x, is_read: true } : x)));
+      setUnreadNotifications((c) => Math.max(0, c - 1));
+    }
+  };
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
     if (!query.trim()) return;
-    // wire up to your search/results route
     navigate(`/search?q=${encodeURIComponent(query.trim())}`);
   };
 
@@ -94,33 +140,35 @@ export default function Navbar({ onToggleSidebar }) {
             aria-expanded={openMenu === "notifications"}
           >
             <i className="bi bi-bell"></i>
-            {unreadNotifications > 0 && (
-              <span className="badge-count">{unreadNotifications}</span>
-            )}
+            {unreadNotifications > 0 && <span className="badge-count">{unreadNotifications}</span>}
           </button>
 
           {openMenu === "notifications" && (
             <div className="app-navbar__dropdown">
               <div className="app-navbar__dropdown-header">
                 <span>Notifications</span>
-                <a href="#" onClick={(e) => e.preventDefault()}>Mark all read</a>
+                <a href="#" onClick={markAllRead}>
+                  Mark all read
+                </a>
               </div>
               <div className="app-navbar__dropdown-list">
-                {MOCK_NOTIFICATIONS.length === 0 ? (
+                {notifications.length === 0 ? (
                   <div className="app-navbar__dropdown-empty">You're all caught up.</div>
                 ) : (
-                  MOCK_NOTIFICATIONS.map((n) => (
+                  notifications.map((n) => (
                     <div
                       key={n.id}
-                      className={`app-navbar__dropdown-item ${n.unread ? "app-navbar__dropdown-item--unread" : ""}`}
+                      className={`app-navbar__dropdown-item ${!n.is_read ? "app-navbar__dropdown-item--unread" : ""}`}
+                      onClick={() => openNotification(n)}
+                      role="button"
                     >
                       <div className="app-navbar__dropdown-avatar">
-                        <i className={`bi ${n.icon}`}></i>
+                        <i className={`bi ${CATEGORY_ICON[n.category] || "bi-bell"}`}></i>
                       </div>
                       <div className="app-navbar__dropdown-body">
-                        <div className="app-navbar__dropdown-title">{n.title}</div>
-                        <div className="app-navbar__dropdown-text">{n.text}</div>
-                        <div className="app-navbar__dropdown-time">{n.time}</div>
+                        <div className="app-navbar__dropdown-title">{n.subject}</div>
+                        <div className="app-navbar__dropdown-text">{n.body}</div>
+                        <div className="app-navbar__dropdown-time">{timeAgo(n.created_at)}</div>
                       </div>
                     </div>
                   ))
@@ -146,25 +194,49 @@ export default function Navbar({ onToggleSidebar }) {
             <div className="app-navbar__dropdown">
               <div className="app-navbar__dropdown-header">
                 <span>Messages</span>
-                <a href="#" onClick={(e) => e.preventDefault()}>New message</a>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setOpenMenu(null);
+                    navigate("/messages");
+                  }}
+                >
+                  Open Messages
+                </a>
               </div>
               <div className="app-navbar__dropdown-list">
-                {MOCK_MESSAGES.length === 0 ? (
+                {conversations.length === 0 ? (
                   <div className="app-navbar__dropdown-empty">No messages yet.</div>
                 ) : (
-                  MOCK_MESSAGES.map((m) => (
-                    <div
-                      key={m.id}
-                      className={`app-navbar__dropdown-item ${m.unread ? "app-navbar__dropdown-item--unread" : ""}`}
-                    >
-                      <div className="app-navbar__dropdown-avatar">{m.initials}</div>
-                      <div className="app-navbar__dropdown-body">
-                        <div className="app-navbar__dropdown-title">{m.title}</div>
-                        <div className="app-navbar__dropdown-text">{m.text}</div>
-                        <div className="app-navbar__dropdown-time">{m.time}</div>
+                  conversations.map((c) => {
+                    const others = (c.participants || []).filter((p) => p.id !== user?.id);
+                    const initials = others
+                      .map((p) => `${p.first_name?.[0] || ""}${p.last_name?.[0] || ""}`)
+                      .join(", ") || "?";
+                    return (
+                      <div
+                        key={c.id}
+                        className={`app-navbar__dropdown-item ${c.unread_count > 0 ? "app-navbar__dropdown-item--unread" : ""}`}
+                        onClick={() => {
+                          setOpenMenu(null);
+                          navigate("/messages");
+                        }}
+                        role="button"
+                      >
+                        <div className="app-navbar__dropdown-avatar">{initials}</div>
+                        <div className="app-navbar__dropdown-body">
+                          <div className="app-navbar__dropdown-title">
+                            {others.map((p) => `${p.first_name} ${p.last_name}`).join(", ") || "Conversation"}
+                          </div>
+                          <div className="app-navbar__dropdown-text">{c.last_message?.body || ""}</div>
+                          <div className="app-navbar__dropdown-time">
+                            {c.last_message ? timeAgo(c.last_message.created_at) : ""}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>
@@ -182,7 +254,9 @@ export default function Navbar({ onToggleSidebar }) {
               <i className="bi bi-person-circle"></i>
             </span>
             <span className="app-navbar__user-info">
-              <strong>{user?.first_name} {user?.last_name}</strong>
+              <strong>
+                {user?.first_name} {user?.last_name}
+              </strong>
               <small>{ROLE_LABELS[user?.role] || user?.role}</small>
             </span>
             <i className="bi bi-chevron-down"></i>
