@@ -1,7 +1,7 @@
 // components/Sidebar.jsx
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
-import logo from "../assets/moi_forces.png"; // Adjust path as needed
+import logo from "../assets/masomo_logo.png"; // Adjust path as needed
 
 /**
  * Nav config per role is an array of GROUPS instead of a flat list:
@@ -64,6 +64,7 @@ const NAV_BY_ROLE = {
       label: "Administration",
       items: [
         { to: "/admin/users", icon: "bi-shield-lock", label: "User Accounts" },
+        { to: "/admin/security", icon: "bi-shield-exclamation", label: "Security Monitor" },
         { to: "/admin/reports", icon: "bi-graph-up", label: "Reports & Analytics" },
         { to: "/admin/settings", icon: "bi-gear", label: "School Settings" },
       ],
