@@ -109,15 +109,14 @@ class VerifyOtpView(APIView):
             return Response({"detail": "This account is locked. Contact your administrator."}, status=423)
 
         if not services.verify_otp(user, serializer.validated_data["otp_code"], ip):
-            # OTP failures also count toward the same lockout counter
             if user.is_locked:
                 return Response({"detail": "Too many failed attempts. Account locked."}, status=423)
             return Response({"detail": "Invalid or expired code."}, status=401)
 
         services.reset_failed_logins(user)
         return Response(services.issue_tokens_for_user(user))
-
-
+    
+    
 class ForgotPasswordRequestView(APIView):
     """Students only. Admin/Teacher/Finance/Parent accounts must be reset by an Admin."""
 
