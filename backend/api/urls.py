@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from . import views
 
 router = DefaultRouter()
+
 router.register(r"users", views.UserViewSet, basename="user")
 router.register(r"schools", views.SchoolViewSet, basename="school")
 router.register(r"academic-years", views.AcademicYearViewSet, basename="academic-year")
@@ -29,38 +30,30 @@ router.register(r"promotion-rules", views.PromotionRuleViewSet, basename="promot
 router.register(r"fee-structures", views.FeeStructureViewSet, basename="fee-structure")
 router.register(r"invoices", views.InvoiceViewSet, basename="invoice")
 router.register(r"payments", views.PaymentViewSet, basename="payment")
+router.register(r"communications", views.CommunicationViewSet, basename="communication")
+router.register(r"notifications", views.NotificationViewSet, basename="notification")
+router.register(r"conversations", views.ConversationViewSet, basename="conversation")
 
 urlpatterns = [
-    # auth
     path("auth/login/", views.LoginView.as_view(), name="login"),
     path("auth/me/", views.MeView.as_view(), name="me"),
     path("auth/change-password/", views.ChangePasswordView.as_view(), name="change-password"),
     path("profile/me/", views.ProfileView.as_view(), name="profile-me"),
-    # student admission (creates User + StudentProfile + Enrollment)
     path("students/admit/", views.AdmitStudentView.as_view(), name="admit-student"),
     path("dashboard/stats/", views.DashboardStatsView.as_view(), name="dashboard-stats"),
     path("reports/overview/", views.ReportsOverviewView.as_view(), name="reports-overview"),
     path("students/me/performance/", views.StudentPerformanceDashboardView.as_view(), name="student-performance"),
-    # subject selection for one enrollment
-    path(
-        "enrollments/<int:enrollment_id>/subjects/",
-        views.StudentSubjectSelectionView.as_view(),
-        name="student-subjects",
-    ),
-    # teacher portal helper
+    path("enrollments/<int:enrollment_id>/subjects/", views.StudentSubjectSelectionView.as_view(), name="student-subjects"),
     path("my-allocations/", views.MyAllocationsView.as_view(), name="my-allocations"),
-    # ranking trigger
     path("rank/", views.RankView.as_view(), name="rank"),
-    # finance reports (3 pages: collections, class analysis, detailed)
     path("finance-reports/collections/", views.FinanceCollectionsReportView.as_view(), name="finance-collections-report"),
     path("finance-reports/class-analysis/", views.FinanceClassAnalysisReportView.as_view(), name="finance-class-analysis-report"),
     path("finance-reports/detailed/", views.FinanceDetailedReportView.as_view(), name="finance-detailed-report"),
-
-    # student/parent self-service fee payment (STK push, DEBUG-bypassed locally)
     path("payments/initiate/", views.InitiatePaymentView.as_view(), name="initiate-payment"),
     path("payments/mpesa-callback/", views.MpesaCallbackView.as_view(), name="mpesa-callback"),
     path("payments/status/<str:checkout_request_id>/", views.PaymentStatusView.as_view(), name="payment-status"),
     path("payments/<int:payment_id>/receipt/", views.ReceiptView.as_view(), name="payment-receipt"),
     path("receipts/verify/<str:receipt_no>/", views.VerifyReceiptView.as_view(), name="verify-receipt"),
+    path("messaging/recipients/", views.RecipientSearchView.as_view(), name="messaging-recipients"),
     path("", include(router.urls)),
 ]

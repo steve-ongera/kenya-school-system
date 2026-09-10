@@ -5,6 +5,7 @@ Views should stay thin: parse request -> call a service -> return response.
 import base64
 import io
 from decimal import Decimal
+from django.core.mail import send_mail
 
 import qrcode
 import requests
@@ -718,3 +719,172 @@ def attach_guardian(student: models.StudentProfile, full_name: str, phone_number
         defaults={"relationship": relationship},
     )
     return guardian_profile
+
+
+# ===========================================================================
+# COMMUNICATIONS - append to services.py.
+# Needs at top of services.py (add if not already present):
+#   from django.conf import settings
+#   from django.core.mail import send_mail
+#   from django.utils import timezone
+#   from . import models
+#
+# ASSUMPTION: this calls services.get_outstanding_balance(student), inferred
+# from the docstring on Invoice.brought_forward referencing it. If your
+# actual signature differs, that's the only call site to fix.
+# ===========================================================================
+
+def send_sms_notification(phone_number, message):
+    """
+    Placeholder SMS gateway. Wire this up to Africa's Talking, Twilio, etc.
+    Mirrors the DEBUG-bypass pattern already used for M-Pesa STK push
+    (see initiate_payment): in DEBUG we simulate a successful send instead
+    of calling a real API, so the whole flow is testable with no credentials.
+    Returns (ok: bool, error_message: str).
+    """
+    if not phone_number:
+        return False, "No phone number on file."
+    if settings.DEBUG:
+        print(f"[DEBUG SMS] To {phone_number}: {message}")
+        return True, ""
+    # TODO: call your SMS provider here, e.g. Africa's Talking:
+    #   africastalking.SMS.send(message, [phone_number])
+    return False, "SMS gateway not configured for production."
+
+
+def send_email_notification(to_email, subject, body):
+    """Returns (ok: bool, error_message: str)."""
+    if not to_email:
+        return False, "No email address on file."
+    try:
+        send_mail(subject, body, getattr(settings, "DEFAULT_FROM_EMAIL", None), [to_email], fail_silently=False)
+        return True, ""
+    except Exception as exc:  # noqa: BLE001 - surfaced to CommunicationRecipient.error_message
+        return False, str(exc)
+
+
+def resolve_communication_audience(communication):
+    """
+    Returns a list of (user, student_or_None) pairs for `communication`,
+    respecting include_students / include_guardians. student_or_None is
+    the StudentProfile this row concerns, used for fee-balance
+    personalization - None for role-wide broadcasts with no student
+    context (e.g. "all Teachers").
+    """
+    students_qs = models.StudentProfile.objects.none()
+
+    if communication.audience_type == models.Communication.AudienceType.ROLE:
+        users = models.User.objects.filter(
+            role__in=communication.target_roles, is_active_staff=True
+        ).distinct()
+        return [(u, None) for u in users]
+
+    if communication.audience_type == models.Communication.AudienceType.GRADE:
+        enrollments = models.Enrollment.objects.filter(
+            status=models.Enrollment.Status.ACTIVE,
+            classroom__grade_level=communication.grade_level,
+        )
+        if communication.academic_year_id:
+            enrollments = enrollments.filter(academic_year=communication.academic_year)
+        students_qs = models.StudentProfile.objects.filter(id__in=enrollments.values("student_id"))
+
+    elif communication.audience_type == models.Communication.AudienceType.CLASSROOM:
+        enrollments = models.Enrollment.objects.filter(
+            status=models.Enrollment.Status.ACTIVE, classroom=communication.classroom
+        )
+        students_qs = models.StudentProfile.objects.filter(id__in=enrollments.values("student_id"))
+
+    elif communication.audience_type == models.Communication.AudienceType.INDIVIDUAL:
+        students_qs = communication.target_students.all()
+
+    students_qs = students_qs.select_related("user")
+    pairs = {}  # user_id -> (user, student) - a guardian with 2 targeted kids collapses to 1 row
+
+    if communication.include_students:
+        for student in students_qs:
+            pairs[student.user_id] = (student.user, student)
+
+    if communication.include_guardians:
+        links = models.ParentStudentLink.objects.filter(student__in=students_qs).select_related(
+            "parent__user", "student"
+        )
+        for link in links:
+            guardian_user = link.parent.user
+            # keep the first linked student as the "primary" context for
+            # this guardian; _personalize_fee_body below still lists ALL
+            # of the guardian's targeted children, not just this one.
+            pairs.setdefault(guardian_user.id, (guardian_user, link.student))
+
+    return list(pairs.values())
+
+
+def _personalize_fee_body(communication, user, primary_student):
+    """For FEE_REMINDER communications, append each relevant student's live outstanding balance. Falls back to the plain body for every other category."""
+    if communication.category != models.Communication.Category.FEE_REMINDER:
+        return communication.body
+
+    if user.role == models.User.Role.STUDENT:
+        students = [primary_student] if primary_student else []
+    elif user.role == models.User.Role.PARENT:
+        target_ids = communication.target_students.values_list("id", flat=True)
+        students = list(models.StudentProfile.objects.filter(id__in=target_ids, guardians__user=user))
+    else:
+        students = []
+
+    if not students:
+        return communication.body
+
+    lines = [communication.body, ""]
+    for student in students:
+        try:
+            balance = get_outstanding_balance(student)  # existing helper - see module docstring above
+            lines.append(f"{student.user.get_full_name()} ({student.admission_no}): KES {balance:,.2f} outstanding")
+        except NameError:
+            # get_outstanding_balance isn't defined under that exact name in
+            # this project - adjust the call above to match your services.py.
+            break
+    return "\n".join(lines)
+
+
+def send_communication(communication):
+    """
+    Resolves the audience, creates a CommunicationRecipient row per
+    (user, channel), and dispatches each enabled channel immediately.
+    Synchronous by design - there's no task queue in this project yet.
+    If send volumes grow, move the per-recipient loop into a Celery task
+    without changing this function's signature.
+    """
+    audience = resolve_communication_audience(communication)
+
+    channels = []
+    if communication.send_in_app:
+        channels.append(models.CommunicationRecipient.Channel.IN_APP)
+    if communication.send_sms:
+        channels.append(models.CommunicationRecipient.Channel.SMS)
+    if communication.send_email:
+        channels.append(models.CommunicationRecipient.Channel.EMAIL)
+
+    created = []
+    for user, student in audience:
+        body = _personalize_fee_body(communication, user, student)
+        for channel in channels:
+            recipient, _ = models.CommunicationRecipient.objects.get_or_create(
+                communication=communication, user=user, channel=channel,
+                defaults={"personalized_body": body},
+            )
+            if channel == models.CommunicationRecipient.Channel.IN_APP:
+                recipient.status = models.CommunicationRecipient.Status.SENT
+                recipient.sent_at = timezone.now()
+            elif channel == models.CommunicationRecipient.Channel.SMS:
+                ok, err = send_sms_notification(user.phone_number, body)
+                recipient.status = models.CommunicationRecipient.Status.SENT if ok else models.CommunicationRecipient.Status.FAILED
+                recipient.error_message = err
+                recipient.sent_at = timezone.now() if ok else None
+            elif channel == models.CommunicationRecipient.Channel.EMAIL:
+                ok, err = send_email_notification(user.email, communication.subject, body)
+                recipient.status = models.CommunicationRecipient.Status.SENT if ok else models.CommunicationRecipient.Status.FAILED
+                recipient.error_message = err
+                recipient.sent_at = timezone.now() if ok else None
+            recipient.save()
+            created.append(recipient)
+    return created

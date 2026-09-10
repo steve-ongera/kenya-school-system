@@ -107,3 +107,35 @@ def teacher_allocated_classrooms(teacher, academic_year=None):
 
 def student_guardians(student_profile):
     return [link.parent.user for link in models.ParentStudentLink.objects.filter(student=student_profile)]
+
+
+# ===========================================================================
+# Add to utils.py.
+# ===========================================================================
+from rest_framework.permissions import BasePermission
+from . import models
+
+
+class IsStaffMember(BasePermission):
+    """ADMIN, TEACHER, or FINANCE - used to gate starting a new conversation and creating bulk Communications."""
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in (models.User.Role.ADMIN, models.User.Role.TEACHER, models.User.Role.FINANCE)
+        )
+
+
+def teacher_can_message_student(user, student):
+    """
+    True if `user` (a TEACHER) is the class teacher of `student`'s current
+    classroom, or is allocated to teach a subject in it. Admin/Finance
+    bypass this check entirely (see ConversationCreateSerializer).
+    """
+    enrollment = student.current_enrollment
+    if not enrollment:
+        return False
+    classroom = enrollment.classroom
+    if classroom.class_teacher_id == user.id:
+        return True
+    return models.TeacherSubjectAllocation.objects.filter(teacher=user, classroom=classroom).exists()

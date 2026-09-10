@@ -1,7 +1,8 @@
 from django.contrib.auth import password_validation
 from rest_framework import serializers
 from decimal import Decimal
-
+from django.db.models import Count
+from . import utils
 from . import models, services
 
 
@@ -770,3 +771,203 @@ class PaymentListSerializer(serializers.ModelSerializer):
 
     def get_recorded_by_role(self, obj):
         return obj.recorded_by.get_role_display() if obj.recorded_by else None
+    
+    
+    
+
+# ===========================================================================
+# COMMUNICATIONS & MESSAGING 
+# ===========================================================================
+
+# ---- bulk Communication (Admin/Finance broadcast) --------------------------
+class CommunicationCreateSerializer(serializers.Serializer):
+    subject = serializers.CharField(max_length=150)
+    body = serializers.CharField()
+    category = serializers.ChoiceField(choices=models.Communication.Category.choices, default=models.Communication.Category.GENERAL)
+
+    audience_type = serializers.ChoiceField(choices=models.Communication.AudienceType.choices)
+    target_roles = serializers.ListField(child=serializers.ChoiceField(choices=models.User.Role.choices), required=False, default=list)
+    academic_year_id = serializers.PrimaryKeyRelatedField(queryset=models.AcademicYear.objects.all(), required=False, allow_null=True)
+    grade_level_id = serializers.PrimaryKeyRelatedField(queryset=models.GradeLevel.objects.all(), required=False, allow_null=True)
+    classroom_id = serializers.PrimaryKeyRelatedField(queryset=models.ClassRoom.objects.all(), required=False, allow_null=True)
+    target_student_ids = serializers.PrimaryKeyRelatedField(
+        queryset=models.StudentProfile.objects.all(), many=True, required=False, default=list
+    )
+
+    include_students = serializers.BooleanField(default=True)
+    include_guardians = serializers.BooleanField(default=False)
+    send_in_app = serializers.BooleanField(default=True)
+    send_sms = serializers.BooleanField(default=False)
+    send_email = serializers.BooleanField(default=False)
+
+    def validate(self, attrs):
+        audience = attrs["audience_type"]
+        if audience == models.Communication.AudienceType.ROLE and not attrs.get("target_roles"):
+            raise serializers.ValidationError("Select at least one role for a role-based announcement.")
+        if audience == models.Communication.AudienceType.GRADE and not attrs.get("grade_level_id"):
+            raise serializers.ValidationError("Select a grade level.")
+        if audience == models.Communication.AudienceType.CLASSROOM and not attrs.get("classroom_id"):
+            raise serializers.ValidationError("Select a classroom.")
+        if audience == models.Communication.AudienceType.INDIVIDUAL and not attrs.get("target_student_ids"):
+            raise serializers.ValidationError("Select at least one student.")
+        if not (attrs.get("send_in_app") or attrs.get("send_sms") or attrs.get("send_email")):
+            raise serializers.ValidationError("Choose at least one channel: in-app, SMS, or email.")
+        if not (attrs.get("include_students") or attrs.get("include_guardians")):
+            raise serializers.ValidationError("Choose at least one of: send to students, send to guardians.")
+        return attrs
+
+    def create(self, validated_data):
+        target_students = validated_data.pop("target_student_ids", [])
+        communication = models.Communication.objects.create(
+            sender=self.context["request"].user,
+            subject=validated_data["subject"],
+            body=validated_data["body"],
+            category=validated_data["category"],
+            audience_type=validated_data["audience_type"],
+            target_roles=validated_data.get("target_roles", []),
+            academic_year=validated_data.get("academic_year_id"),
+            grade_level=validated_data.get("grade_level_id"),
+            classroom=validated_data.get("classroom_id"),
+            include_students=validated_data["include_students"],
+            include_guardians=validated_data["include_guardians"],
+            send_in_app=validated_data["send_in_app"],
+            send_sms=validated_data["send_sms"],
+            send_email=validated_data["send_email"],
+        )
+        if target_students:
+            communication.target_students.set(target_students)
+        services.send_communication(communication)
+        return communication
+
+
+class CommunicationSerializer(serializers.ModelSerializer):
+    """Read view for the communications log - shows what was sent and delivery counts per channel."""
+
+    sender_name = serializers.CharField(source="sender.get_full_name", read_only=True)
+    grade_level_name = serializers.CharField(source="grade_level.name", read_only=True)
+    classroom_label = serializers.CharField(source="classroom.__str__", read_only=True)
+    academic_year_year = serializers.IntegerField(source="academic_year.year", read_only=True)
+    recipient_count = serializers.SerializerMethodField()
+    delivery_summary = serializers.SerializerMethodField()
+
+    class Meta:
+        model = models.Communication
+        fields = [
+            "id", "subject", "body", "category", "audience_type", "target_roles",
+            "academic_year", "academic_year_year", "grade_level", "grade_level_name",
+            "classroom", "classroom_label", "include_students", "include_guardians",
+            "send_in_app", "send_sms", "send_email", "sender_name", "created_at",
+            "recipient_count", "delivery_summary",
+        ]
+
+    def get_recipient_count(self, obj):
+        return obj.recipients.values("user_id").distinct().count()
+
+    def get_delivery_summary(self, obj):
+        rows = obj.recipients.values("channel", "status").annotate(count=Count("id"))
+        summary = {}
+        for row in rows:
+            summary.setdefault(row["channel"], {}).update({row["status"]: row["count"]})
+        return summary
+
+
+# ---- Notifications (navbar bell) -------------------------------------------
+class NotificationSerializer(serializers.ModelSerializer):
+    """One row = one in-app CommunicationRecipient - what the navbar bell renders."""
+
+    subject = serializers.CharField(source="communication.subject", read_only=True)
+    category = serializers.CharField(source="communication.category", read_only=True)
+    body = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(source="communication.created_at", read_only=True)
+    sender_name = serializers.CharField(source="communication.sender.get_full_name", read_only=True)
+
+    class Meta:
+        model = models.CommunicationRecipient
+        fields = ["id", "subject", "body", "category", "sender_name", "is_read", "created_at"]
+
+    def get_body(self, obj):
+        return obj.personalized_body or obj.communication.body
+
+
+# ---- Direct Messaging (1:1 threads) ----------------------------------------
+class ConversationParticipantSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.User
+        fields = ["id", "first_name", "last_name", "role"]
+
+
+class DirectMessageSerializer(serializers.ModelSerializer):
+    sender_name = serializers.CharField(source="sender.get_full_name", read_only=True)
+    is_read = serializers.SerializerMethodField()
+
+    class Meta:
+        model = models.DirectMessage
+        fields = ["id", "conversation", "sender", "sender_name", "body", "created_at", "is_read"]
+        read_only_fields = ["sender"]
+
+    def get_is_read(self, obj):
+        request = self.context.get("request")
+        return request.user in obj.read_by.all() if request else False
+
+
+class ConversationSerializer(serializers.ModelSerializer):
+    participants = ConversationParticipantSerializer(many=True, read_only=True)
+    student_name = serializers.CharField(source="student.user.get_full_name", read_only=True, default=None)
+    last_message = serializers.SerializerMethodField()
+    unread_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = models.Conversation
+        fields = ["id", "participants", "student", "student_name", "created_at", "last_message", "unread_count"]
+
+    def get_last_message(self, obj):
+        last = obj.messages.order_by("-created_at").first()
+        if not last:
+            return None
+        return {"body": last.body, "sender_name": last.sender.get_full_name() if last.sender else "", "created_at": last.created_at}
+
+    def get_unread_count(self, obj):
+        request = self.context.get("request")
+        if not request:
+            return 0
+        return obj.messages.exclude(read_by=request.user).exclude(sender=request.user).count()
+
+
+class ConversationCreateSerializer(serializers.Serializer):
+    """POST { recipient_id, student_id?, body } - starts a thread and sends the first message in one call."""
+
+    recipient_id = serializers.PrimaryKeyRelatedField(queryset=models.User.objects.all())
+    student_id = serializers.PrimaryKeyRelatedField(queryset=models.StudentProfile.objects.all(), required=False, allow_null=True)
+    body = serializers.CharField()
+
+    def validate(self, attrs):
+        sender = self.context["request"].user
+        recipient = attrs["recipient_id"]
+        if recipient.role not in (models.User.Role.PARENT, models.User.Role.STUDENT):
+            raise serializers.ValidationError("You can only start a conversation with a student or parent/guardian.")
+        student = attrs.get("student_id")
+        if sender.role == models.User.Role.TEACHER and student is not None:
+            if not utils.teacher_can_message_student(sender, student):
+                raise serializers.ValidationError("You are not allocated to this student's class or subject.")
+        return attrs
+
+    def create(self, validated_data):
+        sender = self.context["request"].user
+        recipient = validated_data["recipient_id"]
+        student = validated_data.get("student_id")
+
+        # reuse an existing thread between the same two people about the
+        # same student, instead of spawning a duplicate every time.
+        existing = (
+            models.Conversation.objects.filter(participants=sender)
+            .filter(participants=recipient)
+            .filter(student=student)
+            .first()
+        )
+        conversation = existing or models.Conversation.objects.create(student=student)
+        if not existing:
+            conversation.participants.set([sender, recipient])
+
+        message = models.DirectMessage.objects.create(conversation=conversation, sender=sender, body=validated_data["body"])
+        message.read_by.add(sender)
+        return conversation

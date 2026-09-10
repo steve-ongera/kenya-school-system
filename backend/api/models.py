@@ -695,3 +695,139 @@ class FeeStructureMissingAlert(models.Model):
     def __str__(self):
         status = "RESOLVED" if self.is_resolved else "OPEN"
         return f"[{status}] {self.grade_level} - {self.term} ({self.affected_student_count} students)"
+    
+    
+    
+# ===========================================================================
+# 10. COMMUNICATIONS & MESSAGING
+# Append this whole section to the end of models.py.
+#
+# Two distinct features sharing the same file:
+#   - Communication / CommunicationRecipient: ADMIN/FINANCE broadcast a
+#     message to an audience (by role, grade+year, classroom, or hand-picked
+#     students) over in-app / SMS / email. CommunicationRecipient is the
+#     per-person, per-channel delivery record - it's also what powers the
+#     navbar notification bell for EVERY user, since it's just "my in-app
+#     rows".
+#   - Conversation / DirectMessage: 1:1 threads, e.g. a class teacher
+#     messaging a parent about their child. Only staff (Admin/Teacher/
+#     Finance) can start a thread; parents/students can only reply within
+#     threads they're already part of.
+# ===========================================================================
+class Communication(models.Model):
+    class AudienceType(models.TextChoices):
+        ROLE = "ROLE", "By Role"
+        GRADE = "GRADE", "By Grade / Academic Year"
+        CLASSROOM = "CLASSROOM", "By Classroom"
+        INDIVIDUAL = "INDIVIDUAL", "Specific Students"
+
+    class Category(models.TextChoices):
+        GENERAL = "GENERAL", "General Announcement"
+        EVENT = "EVENT", "Event / Visiting Day"
+        CLOSING = "CLOSING", "School Closing"
+        FEE_REMINDER = "FEE_REMINDER", "Fee Balance Reminder"
+        ACADEMIC = "ACADEMIC", "Academic"
+
+    sender = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, related_name="communications_sent"
+    )
+    subject = models.CharField(max_length=150)
+    body = models.TextField()
+    category = models.CharField(max_length=20, choices=Category.choices, default=Category.GENERAL)
+
+    audience_type = models.CharField(max_length=20, choices=AudienceType.choices)
+    # For AudienceType.ROLE - list of User.Role values, e.g. ["TEACHER"]
+    target_roles = models.JSONField(default=list, blank=True)
+    academic_year = models.ForeignKey(
+        AcademicYear, on_delete=models.SET_NULL, null=True, blank=True, related_name="communications"
+    )
+    grade_level = models.ForeignKey(
+        GradeLevel, on_delete=models.SET_NULL, null=True, blank=True, related_name="communications"
+    )
+    classroom = models.ForeignKey(
+        ClassRoom, on_delete=models.SET_NULL, null=True, blank=True, related_name="communications"
+    )
+    target_students = models.ManyToManyField(StudentProfile, blank=True, related_name="communications_targeted")
+
+    include_students = models.BooleanField(default=True, help_text="Send to the students themselves.")
+    include_guardians = models.BooleanField(default=False, help_text="Also send to each student's parent/guardian.")
+
+    send_in_app = models.BooleanField(default=True)
+    send_sms = models.BooleanField(default=False)
+    send_email = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "communications"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.subject} ({self.get_audience_type_display()})"
+
+
+class CommunicationRecipient(models.Model):
+    """One row per (communication, recipient, channel) - the delivery record for that channel, and (for IN_APP) the navbar notification itself."""
+
+    class Channel(models.TextChoices):
+        IN_APP = "IN_APP", "In-App"
+        SMS = "SMS", "SMS"
+        EMAIL = "EMAIL", "Email"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        SENT = "SENT", "Sent"
+        FAILED = "FAILED", "Failed"
+
+    communication = models.ForeignKey(Communication, on_delete=models.CASCADE, related_name="recipients")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="communications_received")
+    channel = models.CharField(max_length=10, choices=Channel.choices)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    is_read = models.BooleanField(default=False, help_text="Only meaningful for the IN_APP channel.")
+    # Per-recipient rendered body - lets a FEE_REMINDER communication show
+    # each guardian THEIR child's actual balance instead of the generic body.
+    personalized_body = models.TextField(blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        db_table = "communication_recipients"
+        unique_together = ("communication", "user", "channel")
+        indexes = [models.Index(fields=["user", "channel", "is_read"])]
+        ordering = ["-communication__created_at"]
+
+    def __str__(self):
+        return f"{self.communication.subject} -> {self.user} [{self.channel}]"
+
+
+class Conversation(models.Model):
+    """A 1:1 thread - e.g. a class teacher and a parent discussing their child. `student` is optional context (which child the thread concerns)."""
+
+    participants = models.ManyToManyField(User, related_name="conversations")
+    student = models.ForeignKey(
+        StudentProfile, on_delete=models.SET_NULL, null=True, blank=True, related_name="conversations"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "conversations"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        names = ", ".join(u.get_full_name() or u.username for u in self.participants.all()[:3])
+        return f"Conversation #{self.id} ({names})"
+
+
+class DirectMessage(models.Model):
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="messages")
+    sender = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="direct_messages_sent")
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_by = models.ManyToManyField(User, blank=True, related_name="direct_messages_read")
+
+    class Meta:
+        db_table = "direct_messages"
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.sender} in Conversation #{self.conversation_id}"
