@@ -129,7 +129,7 @@ export default function Communications() {
     setSending(true);
     try {
       await communicationApi.send(payload);
-      setMessage({ type: "success", text: "✅ Communication sent successfully." });
+      setMessage({ type: "success", text: " Communication sent successfully." });
       resetForm();
       loadLog();
     } catch (err) {

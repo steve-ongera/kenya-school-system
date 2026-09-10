@@ -53,7 +53,7 @@ export default function FinancePayments() {
       setForm({ invoice: "", amount: "", method: "MPESA", reference: "" });
       loadInvoices();
       loadPayments(1);
-      setMessage("✅ Payment recorded successfully.");
+      setMessage(" Payment recorded successfully.");
       setMessageType("success");
     } catch (err) {
       setMessage(err.response?.data ? JSON.stringify(err.response.data) : "Could not record payment.");
