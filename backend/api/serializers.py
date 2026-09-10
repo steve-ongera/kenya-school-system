@@ -102,6 +102,55 @@ class ChangePasswordSerializer(serializers.Serializer):
         return value
 
 
+from . import utils
+
+class LoginRequestSerializer(serializers.Serializer):
+    # hard length cap rejects the "600-character garbage username" case
+    # before it ever touches the database
+    username = serializers.CharField(max_length=utils.USERNAME_MAX_LENGTH, trim_whitespace=True)
+    password = serializers.CharField(max_length=128, trim_whitespace=False)
+
+    def validate_username(self, value):
+        try:
+            return services.validate_login_username(value)
+        except ValueError:
+            raise serializers.ValidationError("Invalid username format.")
+
+
+class VerifyOtpSerializer(serializers.Serializer):
+    challenge_token = serializers.CharField(max_length=200)
+    otp_code = serializers.RegexField(r"^\d{6}$", error_messages={"invalid": "Enter the 6-digit code."})
+
+
+class ForgotPasswordRequestSerializer(serializers.Serializer):
+    admission_no = serializers.CharField(max_length=30)
+
+
+class ResetPasswordConfirmSerializer(serializers.Serializer):
+    token = serializers.CharField(max_length=64)
+    new_password = serializers.CharField()
+
+    def validate_new_password(self, value):
+        password_validation.validate_password(value)
+        return value
+
+
+class LockedUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.User
+        fields = ["id", "username", "first_name", "last_name", "role", "failed_login_attempts", "locked_until"]
+
+
+class LoginAttemptLogSerializer(serializers.ModelSerializer):
+    user_full_name = serializers.CharField(source="user.get_full_name", read_only=True)
+    user_role = serializers.CharField(source="user.role", read_only=True)
+
+    class Meta:
+        model = models.LoginAttemptLog
+        fields = [
+            "id", "username_attempted", "user", "user_full_name", "user_role",
+            "ip_address", "result", "created_at",
+        ]
 # ---------------------------------------------------------------------------
 # SCHOOL / CALENDAR
 # ---------------------------------------------------------------------------

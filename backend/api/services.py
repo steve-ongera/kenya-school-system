@@ -888,3 +888,232 @@ def send_communication(communication):
             recipient.save()
             created.append(recipient)
     return created
+
+
+
+import random
+from datetime import timedelta
+from django.conf import settings
+from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
+from django.utils.crypto import get_random_string
+from django.utils import timezone
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from . import models, serializers, utils
+
+_signer = TimestampSigner(salt="2fa-login-challenge")
+
+
+# ---------------------------------------------------------------------------
+# TOKEN ISSUING
+# ---------------------------------------------------------------------------
+def issue_tokens_for_user(user):
+    refresh = RefreshToken.for_user(user)
+    refresh["role"] = user.role
+    return {
+        "access": str(refresh.access_token),
+        "refresh": str(refresh),
+        "user": serializers.UserSerializer(user).data,
+    }
+
+
+def make_challenge_token(user):
+    return _signer.sign(str(user.id))
+
+
+def read_challenge_token(token):
+    """Returns the user id, or None if the token is missing/expired/tampered."""
+    try:
+        return int(_signer.unsign(token, max_age=settings.OTP_EXPIRY_MINUTES * 60))
+    except (BadSignature, SignatureExpired, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# USERNAME VALIDATION (blocks the "giant garbage string" case)
+# ---------------------------------------------------------------------------
+def validate_login_username(username):
+    if not username or len(username) > utils.USERNAME_MAX_LENGTH or not utils.USERNAME_PATTERN.match(username):
+        raise ValueError("Invalid username format.")
+    return username
+
+
+# ---------------------------------------------------------------------------
+# LOCKOUT / FAILED ATTEMPTS
+# ---------------------------------------------------------------------------
+def register_failed_login(user, ip_address, result):
+    models.LoginAttemptLog.objects.create(
+        username_attempted=user.username, user=user, ip_address=ip_address, result=result
+    )
+
+    # In DEBUG, track it in the log for visibility but never actually lock
+    # the account - matches the STK-push DEBUG-bypass convention already
+    # used elsewhere in this codebase.
+    if settings.DEBUG or not user.requires_2fa:
+        return False
+
+    user.failed_login_attempts += 1
+    user.last_failed_login_at = timezone.now()
+    locked_now = False
+    if user.failed_login_attempts >= settings.ACCOUNT_LOCKOUT_MAX_ATTEMPTS:
+        user.locked_until = timezone.now() + timedelta(minutes=settings.ACCOUNT_LOCKOUT_DURATION_MINUTES)
+        locked_now = True
+
+    user.save(update_fields=["failed_login_attempts", "last_failed_login_at", "locked_until"])
+
+    if locked_now:
+        models.LoginAttemptLog.objects.create(
+            username_attempted=user.username, user=user, ip_address=ip_address,
+            result=models.LoginAttemptLog.Result.ACCOUNT_LOCKED,
+        )
+        notify_admins_account_locked(user)
+    elif user.failed_login_attempts == settings.ACCOUNT_LOCKOUT_MAX_ATTEMPTS - 1:
+        # warn admins one attempt before lockout, not on every single failure
+        notify_admins_suspicious_activity(user)
+
+    return locked_now
+
+
+def reset_failed_logins(user):
+    if user.failed_login_attempts or user.locked_until:
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        user.save(update_fields=["failed_login_attempts", "locked_until"])
+
+
+def unlock_user(user):
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    user.save(update_fields=["failed_login_attempts", "locked_until"])
+
+
+# ---------------------------------------------------------------------------
+# OTP (2FA) - Admin / Teacher / Finance only
+# ---------------------------------------------------------------------------
+def generate_and_send_otp(user):
+    code = f"{random.randint(0, 999999):06d}"
+    user.otp_code = code
+    user.otp_expires_at = timezone.now() + timedelta(minutes=settings.OTP_EXPIRY_MINUTES)
+    user.save(update_fields=["otp_code", "otp_expires_at"])
+
+    if settings.DEBUG:
+        # dev convenience only - never do this in production
+        print(f"[DEV OTP] {user.username} -> {code}")
+    else:
+        _dispatch_otp(user, code)
+
+    models.LoginAttemptLog.objects.create(
+        username_attempted=user.username, user=user, result=models.LoginAttemptLog.Result.OTP_SENT
+    )
+    return code
+
+
+def _dispatch_otp(user, code):
+    """Wire this to your real SMS/email provider. Placeholder uses Django's send_mail."""
+    from django.core.mail import send_mail
+    if user.email:
+        send_mail(
+            subject="Your login verification code",
+            message=f"Your one-time code is {code}. It expires in {settings.OTP_EXPIRY_MINUTES} minutes. "
+                    f"If you did not request this, contact IT immediately.",
+            from_email=None,
+            recipient_list=[user.email],
+        )
+    # else: plug in your SMS gateway (Africa's Talking / Twilio) using user.phone_number
+
+
+def verify_otp(user, submitted_code, ip_address):
+    if not user.otp_code or not user.otp_expires_at or timezone.now() > user.otp_expires_at:
+        register_failed_login(user, ip_address, models.LoginAttemptLog.Result.OTP_FAILED)
+        return False
+    if submitted_code != user.otp_code:
+        register_failed_login(user, ip_address, models.LoginAttemptLog.Result.OTP_FAILED)
+        return False
+
+    user.otp_code = None
+    user.otp_expires_at = None
+    user.save(update_fields=["otp_code", "otp_expires_at"])
+    models.LoginAttemptLog.objects.create(
+        username_attempted=user.username, user=user, ip_address=ip_address,
+        result=models.LoginAttemptLog.Result.OTP_SUCCESS,
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# ADMIN NOTIFICATIONS (reuses the existing Communication/notification system)
+# ---------------------------------------------------------------------------
+def _notify_admins(subject, body):
+    admin_ids = models.User.objects.filter(role=models.User.Role.ADMIN, is_active_staff=True)
+    if not admin_ids.exists():
+        return
+    comm = models.Communication.objects.create(
+        sender=None,
+        subject=subject,
+        body=body,
+        category=models.Communication.Category.GENERAL,
+        audience_type=models.Communication.AudienceType.ROLE,
+        target_roles=[models.User.Role.ADMIN],
+        include_students=False,
+        include_guardians=False,
+        send_in_app=True,
+        send_sms=False,
+        send_email=False,
+    )
+    send_communication(comm)  # existing function - resolves audience + dispatches
+
+
+def notify_admins_suspicious_activity(user):
+    _notify_admins(
+        subject=f"Repeated failed login: {user.get_full_name() or user.username}",
+        body=(
+            f"{user.username} ({user.get_role_display()}) has {user.failed_login_attempts} failed login "
+            f"attempt(s) at {timezone.now():%Y-%m-%d %H:%M}. One more failure will lock this account."
+        ),
+    )
+
+
+def notify_admins_account_locked(user):
+    _notify_admins(
+        subject=f"Account locked: {user.get_full_name() or user.username}",
+        body=(
+            f"{user.username} ({user.get_role_display()}) was locked after "
+            f"{user.failed_login_attempts} failed login attempts. Unlock it from User Accounts "
+            f"if this was the legitimate user."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# STUDENT-ONLY PASSWORD RESET
+# ---------------------------------------------------------------------------
+def generate_password_reset_token(student_user):
+    token = get_random_string(48)
+    student_user.password_reset_token = token
+    student_user.password_reset_expires_at = timezone.now() + timedelta(
+        minutes=settings.PASSWORD_RESET_TOKEN_EXPIRY_MINUTES
+    )
+    student_user.save(update_fields=["password_reset_token", "password_reset_expires_at"])
+    return token
+
+
+def send_password_reset_link(student_user, token):
+    link = f"{settings.FRONTEND_URL}/reset-password/{token}"
+    if settings.DEBUG:
+        print(f"[DEV RESET LINK] {student_user.username} -> {link}")
+        return
+    from django.core.mail import send_mail
+    guardian_link = models.ParentStudentLink.objects.filter(
+        student__user=student_user
+    ).select_related("parent__user").first()
+    recipient_email = student_user.email or (guardian_link.parent.user.email if guardian_link else None)
+    if recipient_email:
+        send_mail(
+            subject="Password reset request",
+            message=f"A password reset was requested for admission number "
+                     f"{student_user.student_profile.admission_no}. "
+                     f"Use this link within {settings.PASSWORD_RESET_TOKEN_EXPIRY_MINUTES} minutes: {link}\n\n"
+                     f"If you didn't request this, ignore this message.",
+            from_email=None,
+            recipient_list=[recipient_email],
+        )

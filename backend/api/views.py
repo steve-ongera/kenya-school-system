@@ -13,7 +13,8 @@ from django_filters.rest_framework import DjangoFilterBackend
 from datetime import date
 from django.db.models import Count, Sum
 from django.db.models.functions import TruncMonth, TruncYear
-
+from django.conf import settings
+from django.utils import timezone
 
 from . import models, serializers, services, utils
 
@@ -21,24 +22,148 @@ from . import models, serializers, services, utils
 # ---------------------------------------------------------------------------
 # AUTH
 # ---------------------------------------------------------------------------
+from rest_framework.throttling import ScopedRateThrottle
+from django.contrib.auth import authenticate
+
+
 class LoginView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"
+
+    def post(self, request):
+        serializer = serializers.LoginRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            # malformed/oversized username never even reaches authenticate()
+            return Response({"detail": "Invalid credentials."}, status=401)
+
+        username = serializer.validated_data["username"]
+        password = serializer.validated_data["password"]
+        ip = utils.get_client_ip(request)
+
+        user = models.User.objects.filter(username=username).first()
+
+        if user and user.requires_2fa and user.is_locked and not settings.DEBUG:
+            models.LoginAttemptLog.objects.create(
+                username_attempted=username, user=user, ip_address=ip,
+                result=models.LoginAttemptLog.Result.ACCOUNT_LOCKED,
+            )
+            return Response(
+                {"detail": "This account is locked due to multiple failed attempts. Contact your administrator."},
+                status=423,
+            )
+
+        authed = authenticate(request, username=username, password=password)
+
+        if not authed:
+            if user:
+                services.register_failed_login(
+                    user, ip,
+                    models.LoginAttemptLog.Result.BAD_PASSWORD,
+                )
+            else:
+                models.LoginAttemptLog.objects.create(
+                    username_attempted=username, ip_address=ip,
+                    result=models.LoginAttemptLog.Result.UNKNOWN_USER,
+                )
+            return Response({"detail": "Invalid credentials."}, status=401)
+
+        services.reset_failed_logins(authed)
+
+        if authed.requires_2fa and not settings.DEBUG:
+            services.generate_and_send_otp(authed)
+            return Response(
+                {
+                    "otp_required": True,
+                    "challenge_token": services.make_challenge_token(authed),
+                    "masked_contact": utils.mask_contact(authed),
+                },
+                status=200,
+            )
+
+        # Students/Parents, or DEBUG bypass for staff during development
+        models.LoginAttemptLog.objects.create(
+            username_attempted=username, user=authed, ip_address=ip,
+            result=models.LoginAttemptLog.Result.SUCCESS,
+        )
+        return Response(services.issue_tokens_for_user(authed))
+
+
+class VerifyOtpView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "otp_verify"
+
+    def post(self, request):
+        serializer = serializers.VerifyOtpSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user_id = services.read_challenge_token(serializer.validated_data["challenge_token"])
+        if not user_id:
+            return Response({"detail": "Login session expired. Please log in again."}, status=400)
+
+        user = generics.get_object_or_404(models.User, pk=user_id)
+        ip = utils.get_client_ip(request)
+
+        if user.is_locked:
+            return Response({"detail": "This account is locked. Contact your administrator."}, status=423)
+
+        if not services.verify_otp(user, serializer.validated_data["otp_code"], ip):
+            # OTP failures also count toward the same lockout counter
+            if user.is_locked:
+                return Response({"detail": "Too many failed attempts. Account locked."}, status=423)
+            return Response({"detail": "Invalid or expired code."}, status=401)
+
+        services.reset_failed_logins(user)
+        return Response(services.issue_tokens_for_user(user))
+
+
+class ForgotPasswordRequestView(APIView):
+    """Students only. Admin/Teacher/Finance/Parent accounts must be reset by an Admin."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "forgot_password"
+
+    def post(self, request):
+        serializer = serializers.ForgotPasswordRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        admission_no = serializer.validated_data["admission_no"]
+
+        student = models.StudentProfile.objects.filter(admission_no=admission_no).select_related("user").first()
+        # Always return the same generic message, whether or not the
+        # admission number exists, so this endpoint can't be used to
+        # enumerate valid students.
+        if student:
+            token = services.generate_password_reset_token(student.user)
+            services.send_password_reset_link(student.user, token)
+
+        return Response({
+            "detail": "If that admission number is registered, reset instructions have been sent "
+                      "to the contact on file."
+        })
+
+
+class ResetPasswordConfirmView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        username = request.data.get("username")
-        password = request.data.get("password")
-        user = authenticate(request, username=username, password=password)
-        if not user:
-            return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
-        refresh = RefreshToken.for_user(user)
-        refresh["role"] = user.role
-        return Response(
-            {
-                "access": str(refresh.access_token),
-                "refresh": str(refresh),
-                "user": serializers.UserSerializer(user).data,
-            }
-        )
+        serializer = serializers.ResetPasswordConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = models.User.objects.filter(
+            password_reset_token=serializer.validated_data["token"],
+            role=models.User.Role.STUDENT,
+        ).first()
+
+        if not user or not user.password_reset_expires_at or user.password_reset_expires_at < timezone.now():
+            return Response({"detail": "This reset link is invalid or has expired."}, status=400)
+
+        user.set_password(serializer.validated_data["new_password"])
+        user.password_reset_token = None
+        user.password_reset_expires_at = None
+        user.save(update_fields=["password", "password_reset_token", "password_reset_expires_at"])
+        return Response({"detail": "Password reset. You can now log in."})
 
 
 class MeView(APIView):
@@ -104,7 +229,54 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def get_serializer_class(self):
         return serializers.UserCreateSerializer if self.action == "create" else serializers.UserSerializer
+    
+    @action(detail=True, methods=["post"], permission_classes=[utils.IsAdminOnly])
+    def unlock(self, request, pk=None):
+        user = self.get_object()
+        services.unlock_user(user)
+        return Response({"detail": f"{user.username} has been unlocked."})
 
+    @action(detail=False, methods=["get"], permission_classes=[utils.IsAdminOnly])
+    def locked(self, request):
+        locked = self.get_queryset().filter(locked_until__gt=timezone.now())
+        return Response(serializers.LockedUserSerializer(locked, many=True).data)
+
+
+class LoginAttemptPagination(PageNumberPagination):
+    page_size = 30
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+
+class LoginAttemptLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """Admin-only audit trail: every login/OTP attempt, success or failure."""
+
+    queryset = models.LoginAttemptLog.objects.select_related("user").all()
+    serializer_class = serializers.LoginAttemptLogSerializer
+    permission_classes = [utils.IsAdminOnly]
+    pagination_class = LoginAttemptPagination
+    filterset_fields = ["result", "user"]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    search_fields = ["username_attempted", "ip_address"]
+
+    @action(detail=False, methods=["get"])
+    def summary(self, request):
+        """Quick counts for the security dashboard's stat cards."""
+        last_24h = timezone.now() - timezone.timedelta(hours=24)
+        recent = self.queryset.filter(created_at__gte=last_24h)
+        return Response({
+            "failed_last_24h": recent.filter(
+                result__in=[
+                    models.LoginAttemptLog.Result.BAD_PASSWORD,
+                    models.LoginAttemptLog.Result.UNKNOWN_USER,
+                    models.LoginAttemptLog.Result.OTP_FAILED,
+                ]
+            ).count(),
+            "locked_accounts": models.User.objects.filter(locked_until__gt=timezone.now()).count(),
+            "successful_last_24h": recent.filter(
+                result__in=[models.LoginAttemptLog.Result.SUCCESS, models.LoginAttemptLog.Result.OTP_SUCCESS]
+            ).count(),
+        })
 # ---------------------------------------------------------------------------
 # SCHOOL / CALENDAR
 # ---------------------------------------------------------------------------

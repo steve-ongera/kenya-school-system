@@ -39,13 +39,68 @@ class User(AbstractUser):
     national_id = models.CharField(max_length=20, blank=True, null=True, unique=True)
     is_active_staff = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    
+    ROLES_REQUIRING_2FA = ("ADMIN", "TEACHER", "FINANCE")
+
+    # --- brute-force protection ---
+    failed_login_attempts = models.PositiveSmallIntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    last_failed_login_at = models.DateTimeField(null=True, blank=True)
+
+    # --- 2FA (OTP) ---
+    otp_code = models.CharField(max_length=6, blank=True, null=True)
+    otp_expires_at = models.DateTimeField(null=True, blank=True)
+
+    # --- student-only password reset ---
+    password_reset_token = models.CharField(max_length=64, blank=True, null=True, db_index=True)
+    password_reset_expires_at = models.DateTimeField(null=True, blank=True)
+
+    
 
     class Meta:
         db_table = "users"
 
     def __str__(self):
         return f"{self.get_full_name() or self.username} ({self.role})"
+    
+    @property
+    def requires_2fa(self):
+            return self.role in self.ROLES_REQUIRING_2FA
+    
+    @property
+    def is_locked(self):
+            return bool(self.locked_until and self.locked_until > timezone.now())
 
+
+class LoginAttemptLog(models.Model):
+    """
+    Every login/OTP attempt, successful or not. Powers the admin
+    'Security' view and is what notify_admins_* references back to.
+    """
+
+    class Result(models.TextChoices):
+        SUCCESS = "SUCCESS", "Success"
+        BAD_PASSWORD = "BAD_PASSWORD", "Bad Password"
+        UNKNOWN_USER = "UNKNOWN_USER", "Unknown Username"
+        INVALID_FORMAT = "INVALID_FORMAT", "Invalid Username Format"
+        ACCOUNT_LOCKED = "ACCOUNT_LOCKED", "Blocked - Account Locked"
+        OTP_SENT = "OTP_SENT", "OTP Sent"
+        OTP_SUCCESS = "OTP_SUCCESS", "OTP Verified"
+        OTP_FAILED = "OTP_FAILED", "OTP Incorrect/Expired"
+
+    username_attempted = models.CharField(max_length=50)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="login_attempts")
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    result = models.CharField(max_length=20, choices=Result.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "login_attempt_logs"
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["user", "created_at"])]
+
+    def __str__(self):
+        return f"{self.username_attempted} - {self.result} @ {self.created_at:%Y-%m-%d %H:%M}"
 
 # ---------------------------------------------------------------------------
 # 2. SCHOOL / ACADEMIC CALENDAR

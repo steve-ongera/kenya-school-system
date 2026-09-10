@@ -2,6 +2,8 @@
 Small, reusable helpers: RBAC permission classes + misc utility functions.
 """
 from rest_framework.permissions import BasePermission, SAFE_METHODS
+import re
+from rest_framework.permissions import BasePermission
 
 from . import models
 
@@ -139,3 +141,30 @@ def teacher_can_message_student(user, student):
     if classroom.class_teacher_id == user.id:
         return True
     return models.TeacherSubjectAllocation.objects.filter(teacher=user, classroom=classroom).exists()
+
+
+
+
+USERNAME_MAX_LENGTH = 30
+# letters, numbers, - _ . / only, 3-30 chars — rejects the "garbage string" case entirely
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._\-/]{3,30}$")
+
+
+def get_client_ip(request):
+    xff = request.META.get("HTTP_X_FORWARDED_FOR")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.META.get("REMOTE_ADDR")
+
+
+def mask_contact(user):
+    """Never echo a full phone/email back in the OTP response."""
+    phone = (user.phone_number or "").strip()
+    if len(phone) >= 4:
+        return f"contact ending in {phone[-4:]}"
+    return "your registered contact"
+
+
+class IsAdminOnly(BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated and request.user.role == "ADMIN")
