@@ -8,13 +8,11 @@ import logo from "../assets/moi_forces.png"; // Adjust path as needed
  *   { label?: string, items: [{ to, icon, label }] }
  *
  * `label` is optional — omit it to render the group's items with no
- * section header. Only Admin gets section labels (per design: Admin's
- * sidebar is the one dense/varied enough to need them); every other
- * role keeps a flat, unlabeled list.
- *
- * Items within each Admin group are ordered so related tools sit next
- * to each other (e.g. Classes -> Subjects -> Exams -> Rankings ->
- * Promotions all live under "Academics"), instead of one long list.
+ * section header. Every role now uses section labels to keep related
+ * tools grouped together and the sidebar easy to scan, with items
+ * ordered by priority: primary dashboard/overview first, then core
+ * day-to-day tools, then reports/secondary tools, then communication,
+ * then account settings last.
  *
  * Every role includes a "Messages" link - 1:1 conversations are open
  * to all authenticated users (staff can start new threads, parents/
@@ -78,69 +76,125 @@ const NAV_BY_ROLE = {
       ],
     },
   ],
+
   TEACHER: [
     {
       items: [
         { to: "/teacher", icon: "bi-speedometer2", label: "Dashboard" },
+      ],
+    },
+    {
+      label: "Academics",
+      items: [
         { to: "/teacher/classes", icon: "bi-door-open", label: "My Classes" },
         { to: "/teacher/marks", icon: "bi-pencil-square", label: "Enter Marks" },
         { to: "/teacher/rankings", icon: "bi-bar-chart-line", label: "Class Rankings" },
+      ],
+    },
+    {
+      label: "Communication",
+      items: [
         { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
       ],
     },
     {
+      label: "Account",
       items: [
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
       ],
     },
   ],
+
   STUDENT: [
     {
       items: [
         { to: "/student", icon: "bi-speedometer2", label: "Dashboard" },
-        { to: "/student/results", icon: "bi-journal-text", label: "My Results" },
+      ],
+    },
+    {
+      label: "Academics",
+      items: [
         { to: "/student/subjects", icon: "bi-journal-bookmark", label: "My Subjects" },
+        { to: "/student/results", icon: "bi-journal-text", label: "My Results" },
+      ],
+    },
+    {
+      label: "Finance",
+      items: [
         { to: "/student/fees", icon: "bi-cash-coin", label: "Fee Statement" },
+      ],
+    },
+    {
+      label: "Communication",
+      items: [
         { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
       ],
     },
     {
+      label: "Account",
       items: [
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
       ],
     },
   ],
+
   PARENT: [
     {
       items: [
         { to: "/parent", icon: "bi-speedometer2", label: "Dashboard" },
+      ],
+    },
+    {
+      label: "Family",
+      items: [
         { to: "/parent/children", icon: "bi-people", label: "My Children" },
+      ],
+    },
+    {
+      label: "Academics",
+      items: [
         { to: "/parent/results", icon: "bi-journal-text", label: "Results" },
+      ],
+    },
+    {
+      label: "Finance",
+      items: [
         { to: "/parent/fees", icon: "bi-cash-coin", label: "Fee Statements" },
+      ],
+    },
+    {
+      label: "Communication",
+      items: [
         { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
       ],
     },
     {
+      label: "Account",
       items: [
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
       ],
     },
   ],
+
   FINANCE: [
     {
       items: [
         { to: "/finance", icon: "bi-speedometer2", label: "Dashboard" },
-        { to: "/finance/structures", icon: "bi-receipt", label: "Fee Structures" },
-        { to: "/finance/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
-        { to: "/finance/payments", icon: "bi-cash-coin", label: "Payments" },
-        { to: "/finance/communications", icon: "bi-megaphone", label: "Announcements" },
-        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
       ],
     },
     {
+      label: "Fee Management",
+      items: [
+        { to: "/finance/structures", icon: "bi-receipt", label: "Fee Structures" },
+        { to: "/finance/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
+        { to: "/finance/payments", icon: "bi-cash-coin", label: "Payments" },
+      ],
+    },
+    {
+      label: "Reports",
       items: [
         { to: "/finance/reports/collections", icon: "bi-graph-up-arrow", label: "Collections Report" },
         { to: "/finance/reports/class-analysis", icon: "bi-bar-chart-steps", label: "Class Analysis" },
@@ -148,6 +202,14 @@ const NAV_BY_ROLE = {
       ],
     },
     {
+      label: "Communication",
+      items: [
+        { to: "/finance/communications", icon: "bi-megaphone", label: "Announcements" },
+        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
+      ],
+    },
+    {
+      label: "Account",
       items: [
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
@@ -166,7 +228,7 @@ const NAV_BY_ROLE = {
  * drawer always shows full labels, matching the CSS's mobile override
  * of `.app-sidebar--collapsed`.
  *
- * Nav is now rendered as groups (see NAV_BY_ROLE above); a group's
+ * Nav is rendered as groups (see NAV_BY_ROLE above); a group's
  * `label`, when present and not collapsed, renders as a
  * `.app-sidebar__section-title` header above its items.
  *
@@ -258,7 +320,7 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
           )}
         </div>
 
-        {/* Navigation with internal scroll, grouped with optional section labels */}
+        {/* Navigation with internal scroll, grouped with section labels */}
         <nav className="app-sidebar__nav">
           {totalItems === 0 ? (
             <div style={{ 
@@ -312,7 +374,7 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
               letterSpacing: "0.04em",
               fontWeight: 500,
             }}>
-              Moi High School
+              InnovationHub Softwares
             </div>
             <div style={{ 
               fontSize: "0.55rem", 
