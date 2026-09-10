@@ -71,8 +71,20 @@ api.interceptors.response.use(
 // ---------------------------------------------------------------------------
 export const authApi = {
   login: (username, password) => api.post("/auth/login/", { username, password }),
+  verifyOtp: (challengeToken, otpCode) =>
+    api.post("/auth/verify-otp/", { challenge_token: challengeToken, otp_code: otpCode }),
+  forgotPassword: (admissionNo) => api.post("/auth/forgot-password/", { admission_no: admissionNo }),
+  resetPassword: (token, newPassword) =>
+    api.post("/auth/reset-password/", { token, new_password: newPassword }),
   me: () => api.get("/auth/me/"),
   changePassword: (payload) => api.post("/auth/change-password/", payload),
+};
+
+export const securityApi = {
+  lockedUsers: () => api.get("/users/locked/"),
+  unlockUser: (id) => api.post(`/users/${id}/unlock/`),
+  loginAttempts: (params) => api.get("/login-attempts/", { params }),
+  loginAttemptsSummary: () => api.get("/login-attempts/summary/"),
 };
 
 

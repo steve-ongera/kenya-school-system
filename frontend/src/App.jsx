@@ -3,6 +3,8 @@ import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import AppLayout from "./components/AppLayout";
 import Login from "./pages/Login";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 import Profile from "./pages/Profile";
 import ChangePassword from "./pages/ChangePassword";
 
@@ -17,6 +19,7 @@ import AdminRankings from "./pages/admin/Rankings";
 import AdminPromotions from "./pages/admin/Promotions";
 import AdminFees from "./pages/admin/Fees";
 import AdminUsers from "./pages/admin/Users";
+import AdminSecurityMonitor from "./pages/admin/SecurityMonitor";
 
 // admin finance reports
 import AdminFinanceCollections from "./pages/admin/finance/Collections";
@@ -71,6 +74,11 @@ export default function App() {
     <AuthProvider>
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* Student-only self-service password reset. Admin/Teacher/Finance
+            accounts are deliberately NOT reachable here - see AdminUsers /
+            SecurityMonitor for staff password resets and unlocks. */}
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password/:token" element={<ResetPassword />} />
 
         <Route element={<AppLayout />}>
           {/* shared - any authenticated role */}
@@ -89,6 +97,7 @@ export default function App() {
           <Route path="/admin/promotions" element={<RoleSection role="ADMIN"><AdminPromotions /></RoleSection>} />
           <Route path="/admin/fees" element={<RoleSection role="ADMIN"><AdminFees /></RoleSection>} />
           <Route path="/admin/users" element={<RoleSection role="ADMIN"><AdminUsers /></RoleSection>} />
+          <Route path="/admin/security" element={<RoleSection role="ADMIN"><AdminSecurityMonitor /></RoleSection>} />
 
           <Route path="/admin/reports" element={<RoleSection role="ADMIN"><AdminReports /></RoleSection>} />
           <Route path="/admin/calendar" element={<RoleSection role="ADMIN"><AdminCalendar /></RoleSection>} />
