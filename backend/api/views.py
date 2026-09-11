@@ -388,7 +388,7 @@ class StudentPagination(PageNumberPagination):
     max_page_size = 500
 
 class StudentProfileViewSet(viewsets.ModelViewSet):
-    queryset = models.StudentProfile.objects.select_related("user").all()
+    queryset = models.StudentProfile.objects.select_related("user").order_by("-user__date_joined")
     permission_classes = [utils.IsAdminOrTeacher]
     pagination_class = StudentPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
