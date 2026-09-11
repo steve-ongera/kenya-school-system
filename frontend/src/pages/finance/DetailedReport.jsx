@@ -339,6 +339,10 @@ export default function FinanceDetailedReport() {
           "",
         ]],
         theme: "grid",
+        styles: {
+          cellWidth: "wrap",
+          overflow: "ellipsize",
+        },
         headStyles: {
           fillColor: [15, 23, 42],
           textColor: [255, 255, 255],
@@ -346,6 +350,7 @@ export default function FinanceDetailedReport() {
           fontSize: 8.5,
           cellPadding: 2,
           halign: "left",
+          overflow: "ellipsize",
         },
         footStyles: {
           fillColor: [241, 245, 249],
@@ -353,6 +358,7 @@ export default function FinanceDetailedReport() {
           fontStyle: "bold",
           fontSize: 8,
           cellPadding: 2,
+          overflow: "ellipsize",
         },
         bodyStyles: {
           fontSize: 8,
@@ -361,17 +367,20 @@ export default function FinanceDetailedReport() {
           valign: "middle",
           lineWidth: 0.1,
           lineColor: [226, 232, 240],
+          overflow: "ellipsize",
         },
         alternateRowStyles: { fillColor: [248, 250, 252] },
+        // Adm No and Term widened so their values fit on one line;
+        // Student Name and Class trimmed to compensate (net width unchanged).
         columnStyles: {
-          0: { cellWidth: 22 },
-          1: { cellWidth: 60, overflow: "ellipsize" },
-          2: { cellWidth: 38 },
-          3: { cellWidth: 18, halign: "center" },
-          4: { cellWidth: 32, halign: "right" },
-          5: { cellWidth: 32, halign: "right" },
-          6: { cellWidth: 32, halign: "right" },
-          7: { cellWidth: 24, halign: "center" },
+          0: { cellWidth: 30, halign: "left",   overflow: "ellipsize" }, // Adm No
+          1: { cellWidth: 54, halign: "left",   overflow: "ellipsize" }, // Student Name
+          2: { cellWidth: 34, halign: "left",   overflow: "ellipsize" }, // Class
+          3: { cellWidth: 24, halign: "center", overflow: "ellipsize" }, // Term
+          4: { cellWidth: 30, halign: "right",  overflow: "ellipsize" }, // Due
+          5: { cellWidth: 30, halign: "right",  overflow: "ellipsize" }, // Paid
+          6: { cellWidth: 30, halign: "right",  overflow: "ellipsize" }, // Balance
+          7: { cellWidth: 24, halign: "center", overflow: "ellipsize" }, // Status
         },
         margin: { left: 12, right: 12 },
         didParseCell: (data) => {
@@ -433,6 +442,8 @@ export default function FinanceDetailedReport() {
   };
 
   // ---- Download the filtered Student Balances list as a landscape PDF ----
+  // Every cell forced onto a single line (no wrapping) via overflow: "ellipsize"
+  // and per-column widths sized so the real values actually fit.
   const handleDownloadBalancesPDF = async () => {
     try {
       setDownloadingBalancePdf(true);
@@ -554,6 +565,10 @@ export default function FinanceDetailedReport() {
           "",
         ]],
         theme: "grid",
+        styles: {
+          cellWidth: "wrap",
+          overflow: "ellipsize",
+        },
         headStyles: {
           fillColor: [15, 23, 42],
           textColor: [255, 255, 255],
@@ -561,6 +576,7 @@ export default function FinanceDetailedReport() {
           fontSize: 8.5,
           cellPadding: 2,
           halign: "left",
+          overflow: "ellipsize",
         },
         footStyles: {
           fillColor: [241, 245, 249],
@@ -568,6 +584,7 @@ export default function FinanceDetailedReport() {
           fontStyle: "bold",
           fontSize: 8,
           cellPadding: 2,
+          overflow: "ellipsize",
         },
         bodyStyles: {
           fontSize: 8,
@@ -576,17 +593,18 @@ export default function FinanceDetailedReport() {
           valign: "middle",
           lineWidth: 0.1,
           lineColor: [226, 232, 240],
+          overflow: "ellipsize",
         },
         alternateRowStyles: { fillColor: [248, 250, 252] },
         columnStyles: {
-          0: { cellWidth: 22 },
-          1: { cellWidth: 62, overflow: "ellipsize" },
-          2: { cellWidth: 40 },
-          3: { cellWidth: 28, halign: "center" },
-          4: { cellWidth: 30, halign: "right" },
-          5: { cellWidth: 30, halign: "right" },
-          6: { cellWidth: 30, halign: "right" },
-          7: { cellWidth: 24, halign: "center" },
+          0: { cellWidth: 26, halign: "left",   overflow: "ellipsize" },
+          1: { cellWidth: 60, halign: "left",   overflow: "ellipsize" },
+          2: { cellWidth: 40, halign: "left",   overflow: "ellipsize" },
+          3: { cellWidth: 40, halign: "left",   overflow: "ellipsize" },
+          4: { cellWidth: 28, halign: "right",  overflow: "ellipsize" },
+          5: { cellWidth: 28, halign: "right",  overflow: "ellipsize" },
+          6: { cellWidth: 28, halign: "right",  overflow: "ellipsize" },
+          7: { cellWidth: 24, halign: "center", overflow: "ellipsize" },
         },
         margin: { left: 12, right: 12 },
         didParseCell: (data) => {
