@@ -239,6 +239,7 @@ export const financeReportsApi = {
   collections: (params) => api.get("/finance-reports/collections/", { params }),
   classAnalysis: (params) => api.get("/finance-reports/class-analysis/", { params }),
   detailed: (params) => api.get("/finance-reports/detailed/", { params }),
+  studentBalances: (params) => api.get("/finance-reports/student-balances/", { params }), // <-- ADD
 };
 
 // ---------------------------------------------------------------------------
