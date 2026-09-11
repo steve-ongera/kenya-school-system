@@ -22,7 +22,7 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-secret-key-change-me-in-pr
 # Remember: with DEBUG=False, Django will refuse to serve requests at all
 # unless ALLOWED_HOSTS is set correctly, and error tracebacks no longer
 # appear in the HTTP response - check the server console/log for them.
-DEBUG = False
+DEBUG = True
 
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
