@@ -60,5 +60,6 @@ urlpatterns = [
     path("payments/<int:payment_id>/receipt/", views.ReceiptView.as_view(), name="payment-receipt"),
     path("receipts/verify/<str:receipt_no>/", views.VerifyReceiptView.as_view(), name="verify-receipt"),
     path("messaging/recipients/", views.RecipientSearchView.as_view(), name="messaging-recipients"),
+    path("finance-reports/student-balances/", views.FinanceStudentBalancesReportView.as_view()),
     path("", include(router.urls)),
 ]

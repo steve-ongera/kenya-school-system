@@ -2040,3 +2040,95 @@ class RecipientSearchView(APIView):
                 })
 
         return Response(results[:30])
+    
+    
+class FinanceStudentBalancesReportView(APIView):
+    """
+    GET /api/v1/finance-reports/student-balances/
+        ?classroom=<id>&grade_level=<id>&stream=<id>
+        &min_balance=&max_balance=&status=paid|partial|unpaid
+        &search=<name/admission_no>&page=&page_size=
+
+    Page 4 - Master Balance Ledger. ONE ROW PER STUDENT, aggregated
+    across EVERY invoice they've ever had (any academic year, any term).
+    This is the "who owes what, right now, overall" view finance actually
+    uses day-to-day - as opposed to FinanceDetailedReportView which is
+    per-invoice. Only currently active students are listed; the
+    class/grade/stream filters look at their CURRENT enrollment only,
+    but the balance itself is the lifetime sum.
+    """
+
+    permission_classes = [utils.IsAdminOrFinance]
+    pagination_class = FinanceReportPagination
+
+    def get(self, request):
+        students = models.StudentProfile.objects.filter(is_active=True).select_related("user")
+
+        classroom_id = request.query_params.get("classroom")
+        grade_level_id = request.query_params.get("grade_level")
+        stream_id = request.query_params.get("stream")
+
+        if classroom_id or grade_level_id or stream_id:
+            enrollment_filter = Q(enrollments__status=models.Enrollment.Status.ACTIVE)
+            if classroom_id:
+                enrollment_filter &= Q(enrollments__classroom_id=classroom_id)
+            if grade_level_id:
+                enrollment_filter &= Q(enrollments__classroom__grade_level_id=grade_level_id)
+            if stream_id:
+                enrollment_filter &= Q(enrollments__classroom__stream_id=stream_id)
+            students = students.filter(enrollment_filter).distinct()
+
+        search = request.query_params.get("search")
+        if search:
+            students = students.filter(
+                Q(admission_no__icontains=search)
+                | Q(user__first_name__icontains=search)
+                | Q(user__last_name__icontains=search)
+            )
+
+        students = students.annotate(
+            total_due=Sum("enrollments__invoices__amount_due"),
+            total_paid=Sum("enrollments__invoices__amount_paid"),
+        )
+
+        rows = []
+        for s in students:
+            due = float(s.total_due or 0)
+            paid = float(s.total_paid or 0)
+            balance = due - paid
+            enrollment = s.current_enrollment
+            status_label = "paid" if balance <= 0 else ("partial" if paid > 0 else "unpaid")
+            rows.append({
+                "id": s.id,
+                "admission_no": s.admission_no,
+                "student_name": s.user.get_full_name(),
+                "classroom": str(enrollment.classroom) if enrollment else "-",
+                "curriculum_type": s.get_curriculum_type_display(),
+                "phone_number": s.user.phone_number,
+                "total_due": due,
+                "total_paid": paid,
+                "balance": balance,
+                "status": status_label,
+            })
+
+        min_balance = request.query_params.get("min_balance")
+        max_balance = request.query_params.get("max_balance")
+        if min_balance not in (None, ""):
+            rows = [r for r in rows if r["balance"] >= float(min_balance)]
+        if max_balance not in (None, ""):
+            rows = [r for r in rows if r["balance"] <= float(max_balance)]
+
+        pay_status = request.query_params.get("status")
+        if pay_status:
+            rows = [r for r in rows if r["status"] == pay_status]
+
+        rows.sort(key=lambda r: r["balance"], reverse=True)
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        response = paginator.get_paginated_response(page)
+        response.data["summary"] = {
+            "total_students": len(rows),
+            "total_balance": sum(r["balance"] for r in rows),
+        }
+        return response
