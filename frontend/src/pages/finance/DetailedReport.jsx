@@ -217,6 +217,24 @@ export default function FinanceDetailedReport() {
   const hasActiveBalanceFilters =
     balanceSearchInput || balanceClassroomFilter || balanceStatusFilter || balanceMinInput || balanceMaxInput;
 
+  // Shared helper: load the Masomo logo as a base64 data URL
+  const getImageBase64 = (url) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "Anonymous";
+      img.src = url;
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        resolve(canvas.toDataURL("image/png"));
+      };
+      img.onerror = () => resolve(null);
+    });
+  };
+
   // Professional landscape PDF export with proper column balance, totals row and signature block
   const handleDownloadPDF = async () => {
     try {
@@ -237,23 +255,6 @@ export default function FinanceDetailedReport() {
       const doc = new jsPDF("l", "mm", "a4");
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
-
-      const getImageBase64 = (url) => {
-        return new Promise((resolve) => {
-          const img = new Image();
-          img.crossOrigin = "Anonymous";
-          img.src = url;
-          img.onload = () => {
-            const canvas = document.createElement("canvas");
-            canvas.width = img.width;
-            canvas.height = img.height;
-            const ctx = canvas.getContext("2d");
-            ctx.drawImage(img, 0, 0);
-            resolve(canvas.toDataURL("image/png"));
-          };
-          img.onerror = () => resolve(null);
-        });
-      };
 
       const base64Logo = await getImageBase64(logoImage);
 
@@ -370,17 +371,15 @@ export default function FinanceDetailedReport() {
           overflow: "ellipsize",
         },
         alternateRowStyles: { fillColor: [248, 250, 252] },
-        // Adm No and Term widened so their values fit on one line;
-        // Student Name and Class trimmed to compensate (net width unchanged).
         columnStyles: {
-          0: { cellWidth: 30, halign: "left",   overflow: "ellipsize" }, // Adm No
-          1: { cellWidth: 54, halign: "left",   overflow: "ellipsize" }, // Student Name
-          2: { cellWidth: 34, halign: "left",   overflow: "ellipsize" }, // Class
-          3: { cellWidth: 24, halign: "center", overflow: "ellipsize" }, // Term
-          4: { cellWidth: 30, halign: "right",  overflow: "ellipsize" }, // Due
-          5: { cellWidth: 30, halign: "right",  overflow: "ellipsize" }, // Paid
-          6: { cellWidth: 30, halign: "right",  overflow: "ellipsize" }, // Balance
-          7: { cellWidth: 24, halign: "center", overflow: "ellipsize" }, // Status
+          0: { cellWidth: 30, halign: "left",   overflow: "ellipsize" },
+          1: { cellWidth: 54, halign: "left",   overflow: "ellipsize" },
+          2: { cellWidth: 34, halign: "left",   overflow: "ellipsize" },
+          3: { cellWidth: 24, halign: "center", overflow: "ellipsize" },
+          4: { cellWidth: 30, halign: "right",  overflow: "ellipsize" },
+          5: { cellWidth: 30, halign: "right",  overflow: "ellipsize" },
+          6: { cellWidth: 30, halign: "right",  overflow: "ellipsize" },
+          7: { cellWidth: 24, halign: "center", overflow: "ellipsize" },
         },
         margin: { left: 12, right: 12 },
         didParseCell: (data) => {
@@ -463,23 +462,6 @@ export default function FinanceDetailedReport() {
       const doc = new jsPDF("l", "mm", "a4");
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
-
-      const getImageBase64 = (url) => {
-        return new Promise((resolve) => {
-          const img = new Image();
-          img.crossOrigin = "Anonymous";
-          img.src = url;
-          img.onload = () => {
-            const canvas = document.createElement("canvas");
-            canvas.width = img.width;
-            canvas.height = img.height;
-            const ctx = canvas.getContext("2d");
-            ctx.drawImage(img, 0, 0);
-            resolve(canvas.toDataURL("image/png"));
-          };
-          img.onerror = () => resolve(null);
-        });
-      };
 
       const base64Logo = await getImageBase64(logoImage);
 
@@ -638,10 +620,10 @@ export default function FinanceDetailedReport() {
   };
 
   // ---- Print a single student's balance statement ----
-  const handlePrintStudentBalance = (student) => {
-    const win = window.open("", "_blank", "width=700,height=900");
-    if (!win) return;
-
+  // Renders into a hidden iframe so the printed page mirrors the
+  // downloaded PDFs: logo + school header, bordered info table,
+  // and three signature/stamp blocks (Finance, Parent, Principal).
+  const handlePrintStudentBalance = async (student) => {
     const badge = STATUS_BADGE[student.status] || STATUS_BADGE.unpaid;
     const generatedOn = new Date().toLocaleDateString("en-KE", {
       year: "numeric",
@@ -649,40 +631,126 @@ export default function FinanceDetailedReport() {
       day: "numeric",
     });
 
-    win.document.write(`
+    const base64Logo = await getImageBase64(logoImage);
+    const logoTag = base64Logo
+      ? `<img src="${base64Logo}" alt="Masomo School" class="logo" />`
+      : "";
+
+    const statusClass =
+      student.status === "paid"
+        ? "status-paid"
+        : student.status === "partial"
+        ? "status-partial"
+        : "status-unpaid";
+
+    const html = `
       <!DOCTYPE html>
       <html>
         <head>
           <title>Fee Balance Statement - ${student.admission_no}</title>
           <style>
-            * { box-sizing: border-box; font-family: Arial, Helvetica, sans-serif; }
-            body { padding: 40px; color: #0f172a; }
-            .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #cbd5e1; padding-bottom: 12px; margin-bottom: 24px; }
-            .school-name { font-size: 20px; font-weight: bold; margin: 0; }
-            .subtitle { font-size: 13px; color: #475569; margin: 2px 0 0; }
-            .meta { font-size: 11px; color: #64748b; text-align: right; }
-            table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-            td, th { padding: 10px 12px; border: 1px solid #e2e8f0; font-size: 13px; text-align: left; }
-            th { background: #f1f5f9; width: 40%; color: #334155; }
-            .balance-row td { font-size: 16px; font-weight: bold; }
-            .status-paid { color: #16a34a; }
-            .status-partial { color: #d97706; }
-            .status-unpaid { color: #dc2626; }
-            .sign-block { display: flex; justify-content: space-between; margin-top: 60px; }
-            .sign-line { border-top: 1px solid #94a3b8; width: 220px; padding-top: 6px; font-size: 11px; color: #64748b; text-align: center; }
-            @media print { body { padding: 0 24px; } }
+            * { box-sizing: border-box; font-family: Helvetica, Arial, sans-serif; }
+            @page { size: A4 portrait; margin: 12mm; }
+            html, body { margin: 0; padding: 0; color: #0f172a; background: #fff; }
+            body { padding: 24px 28px; }
+
+            .header {
+              display: flex;
+              justify-content: space-between;
+              align-items: flex-start;
+              padding-bottom: 10px;
+              border-bottom: 2px solid #cbd5e1;
+            }
+            .header-left { display: flex; align-items: center; gap: 12px; }
+            .logo { width: 46px; height: 46px; object-fit: contain; }
+            .school-name { font-size: 18px; font-weight: bold; margin: 0; color: #0f172a; }
+            .subtitle { font-size: 12px; color: #475569; margin: 2px 0 0; }
+            .meta { font-size: 10px; color: #64748b; text-align: right; line-height: 1.5; }
+
+            .title-block { margin: 20px 0 14px; }
+            .title-block h2 {
+              font-size: 14px;
+              font-weight: bold;
+              color: #0f172a;
+              margin: 0;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+            }
+            .title-block p { margin: 3px 0 0; font-size: 11px; color: #64748b; }
+
+            table.info { width: 100%; border-collapse: collapse; margin-top: 6px; }
+            table.info td {
+              padding: 9px 12px;
+              border: 1px solid #e2e8f0;
+              font-size: 12px;
+              text-align: left;
+              vertical-align: middle;
+            }
+            table.info th {
+              padding: 9px 12px;
+              border: 1px solid #e2e8f0;
+              font-size: 12px;
+              text-align: left;
+              background: #f1f5f9;
+              color: #334155;
+              width: 42%;
+              font-weight: 600;
+            }
+            .balance-row th,
+            .balance-row td { font-size: 14px; font-weight: bold; background: #f8fafc; }
+            .status-paid { color: #16a34a; font-weight: 700; }
+            .status-partial { color: #d97706; font-weight: 700; }
+            .status-unpaid { color: #dc2626; font-weight: 700; }
+
+            .sign-block {
+              display: flex;
+              justify-content: space-between;
+              gap: 16px;
+              margin-top: 60px;
+            }
+            .sign-line {
+              flex: 1;
+              border-top: 1px solid #94a3b8;
+              padding-top: 6px;
+              font-size: 10.5px;
+              color: #64748b;
+              text-align: center;
+            }
+            .sign-role { font-weight: 700; color: #334155; font-size: 11px; }
+            .sign-note { font-size: 9.5px; color: #94a3b8; margin-top: 2px; }
+
+            .footer {
+              margin-top: 34px;
+              padding-top: 8px;
+              border-top: 1px solid #e2e8f0;
+              font-size: 9px;
+              color: #94a3b8;
+              display: flex;
+              justify-content: space-between;
+            }
           </style>
         </head>
         <body>
           <div class="header">
-            <div>
-              <p class="school-name">Masomo School</p>
-              <p class="subtitle">Student Fee Balance Statement</p>
+            <div class="header-left">
+              ${logoTag}
+              <div>
+                <p class="school-name">Masomo School</p>
+                <p class="subtitle">Student Fee Balance Statement</p>
+              </div>
             </div>
-            <div class="meta">Generated ${generatedOn}</div>
+            <div class="meta">
+              Generated ${generatedOn}<br />
+              Ref: ${student.admission_no}
+            </div>
           </div>
 
-          <table>
+          <div class="title-block">
+            <h2>Student Fee Balance Statement</h2>
+            <p>All-time fee ledger for the student identified below.</p>
+          </div>
+
+          <table class="info">
             <tr><th>Admission No</th><td>${student.admission_no}</td></tr>
             <tr><th>Student Name</th><td>${student.student_name}</td></tr>
             <tr><th>Class</th><td>${student.classroom}</td></tr>
@@ -690,21 +758,72 @@ export default function FinanceDetailedReport() {
             <tr><th>Total Fees Due (All Time)</th><td>${formatKES(student.total_due)}</td></tr>
             <tr><th>Total Fees Paid (All Time)</th><td>${formatKES(student.total_paid)}</td></tr>
             <tr class="balance-row"><th>Outstanding Balance</th><td>${formatKES(student.balance)}</td></tr>
-            <tr><th>Payment Status</th><td class="status-${student.status}">${badge.label}</td></tr>
+            <tr><th>Payment Status</th><td class="${statusClass}">${badge.label}</td></tr>
           </table>
 
           <div class="sign-block">
-            <div class="sign-line">Finance Officer's Signature</div>
-            <div class="sign-line">Parent/Guardian Acknowledgement</div>
+            <div class="sign-line">
+              <div class="sign-role">Finance Officer</div>
+              <div>Signature &amp; Official Stamp</div>
+            </div>
+            <div class="sign-line">
+              <div class="sign-role">Parent / Guardian</div>
+              <div>Acknowledgement &amp; Signature</div>
+            </div>
+            <div class="sign-line">
+              <div class="sign-role">Principal</div>
+              <div>Signature &amp; Official Stamp</div>
+            </div>
+          </div>
+
+          <div class="footer">
+            <span>Masomo School — Finance Department</span>
+            <span>Official fee balance statement</span>
           </div>
         </body>
       </html>
-    `);
-    win.document.close();
-    win.focus();
-    win.onload = () => {
-      win.print();
+    `;
+
+    // Render into a hidden iframe so we don't disturb the current page,
+    // then trigger the browser's print dialog (user can Save as PDF).
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    iframe.style.visibility = "hidden";
+    document.body.appendChild(iframe);
+
+    const cleanup = () => {
+      setTimeout(() => {
+        if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      }, 500);
     };
+
+    const frameDoc = iframe.contentWindow.document;
+    frameDoc.open();
+    frameDoc.write(html);
+    frameDoc.close();
+
+    const triggerPrint = () => {
+      try {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+      } catch (e) {
+        // ignore
+      } finally {
+        cleanup();
+      }
+    };
+
+    // Give the iframe a moment to lay out (and load the logo image).
+    if (iframe.contentWindow.document.readyState === "complete") {
+      setTimeout(triggerPrint, 120);
+    } else {
+      iframe.onload = () => setTimeout(triggerPrint, 120);
+    }
   };
 
   return (
