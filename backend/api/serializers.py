@@ -654,36 +654,92 @@ class StudentUserSerializer(serializers.ModelSerializer):
 
 class StudentProfileDetailSerializer(serializers.ModelSerializer):
     """
-    Full view used by the admin View/Edit modals: the student profile
-    together with its linked user account, nested under `user`.
+    Full view used by the admin View/Edit modals: the student profile,
+    linked user account, CURRENT classroom, and linked guardian all in
+    one payload.
 
-    GET   -> everything needed to populate a "view" or "edit" modal.
-    PATCH -> updates both StudentProfile fields AND the nested User fields
-             in one call, so the admin can edit "the student" as one unit
-             instead of juggling two separate forms/requests.
+    GET   -> everything needed to populate the View or Edit modal,
+             including `current_classroom` (read) and `guardian` (read).
+    PATCH -> updates User + StudentProfile fields, optionally reassigns
+             the student's CURRENT enrollment to a different classroom
+             (via `classroom_id`), and optionally creates/updates the
+             linked guardian (via `guardian_name` / `guardian_phone` /
+             `guardian_relationship`) — all in one call, so the admin
+             edits "the student" as one unit.
 
     Password is intentionally NOT settable here — use
-    /students/{id}/reset_password/ instead, so password changes always go
-    through one auditable, single-purpose path.
+    /students/{id}/reset_password/ instead.
     """
 
     user = StudentUserSerializer()
     full_name = serializers.CharField(source="user.get_full_name", read_only=True)
+
+    # ---- classroom: read as an object, write as just an id ----
     current_classroom = serializers.SerializerMethodField()
+    classroom_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.ClassRoom.objects.all(),
+        write_only=True,
+        required=False,
+        allow_null=True,
+        help_text="Reassigns the student's CURRENT enrollment to this classroom. "
+                   "Does not create a new enrollment/history row - use Promote for that.",
+    )
+
+    # ---- guardian: read as an object, write as flat fields ----
+    guardian = serializers.SerializerMethodField()
+    guardian_name = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    guardian_phone = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=20)
+    guardian_relationship = serializers.ChoiceField(
+        choices=models.ParentStudentLink.Relationship.choices,
+        write_only=True,
+        required=False,
+        default=models.ParentStudentLink.Relationship.GUARDIAN,
+    )
 
     class Meta:
         model = models.StudentProfile
         fields = [
             "id", "user", "admission_no", "full_name", "gender", "date_of_birth",
-            "curriculum_type", "date_admitted", "upi_number", "is_active", "current_classroom",
+            "curriculum_type", "date_admitted", "upi_number", "is_active",
+            "current_classroom", "classroom_id",
+            "guardian", "guardian_name", "guardian_phone", "guardian_relationship",
         ]
         read_only_fields = ["admission_no", "date_admitted"]
 
     def get_current_classroom(self, obj):
         enrollment = obj.current_enrollment
-        return str(enrollment.classroom) if enrollment else None
+        if not enrollment:
+            return None
+        return {
+            "id": enrollment.classroom_id,
+            "label": str(enrollment.classroom),
+            "grade_level_id": enrollment.classroom.grade_level_id,
+            "academic_year": enrollment.classroom.academic_year.year,
+        }
+
+    def get_guardian(self, obj):
+        link = models.ParentStudentLink.objects.filter(student=obj).select_related("parent__user").first()
+        if not link:
+            return None
+        return {
+            "id": link.parent.id,
+            "name": link.parent.user.get_full_name(),
+            "phone_number": link.parent.user.phone_number,
+            "email": link.parent.user.email,
+            "relationship": link.relationship,
+            "relationship_display": link.get_relationship_display(),
+        }
+
+    def validate_classroom_id(self, value):
+        if value and not value.academic_year.is_current:
+            raise serializers.ValidationError(
+                f"'{value}' belongs to {value.academic_year.year}, which is not the current "
+                "academic year. Choose a classroom from the current academic year."
+            )
+        return value
 
     def update(self, instance, validated_data):
+        # ---- User fields ----
         user_data = validated_data.pop("user", None)
         if user_data:
             user = instance.user
@@ -691,6 +747,29 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
                 if field in user_data:
                     setattr(user, field, user_data[field])
             user.save()
+
+        # ---- Classroom reassignment ----
+        new_classroom = validated_data.pop("classroom_id", None)
+        if new_classroom:
+            enrollment = instance.current_enrollment
+            if enrollment:
+                enrollment.classroom = new_classroom
+                enrollment.save(update_fields=["classroom"])
+            else:
+                models.Enrollment.objects.create(
+                    student=instance, classroom=new_classroom, academic_year=new_classroom.academic_year,
+                )
+
+        # ---- Guardian upsert ----
+        guardian_phone = validated_data.pop("guardian_phone", "").strip() if "guardian_phone" in validated_data else ""
+        guardian_name = validated_data.pop("guardian_name", "").strip() if "guardian_name" in validated_data else ""
+        guardian_relationship = validated_data.pop(
+            "guardian_relationship", models.ParentStudentLink.Relationship.GUARDIAN
+        )
+        if guardian_phone:
+            services.upsert_guardian(instance, guardian_name, guardian_phone, guardian_relationship)
+
+        # ---- Remaining StudentProfile fields ----
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.save()

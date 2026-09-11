@@ -1119,3 +1119,44 @@ def send_password_reset_link(student_user, token):
             from_email=None,
             recipient_list=[recipient_email],
         )
+        
+        
+
+def upsert_guardian(student: models.StudentProfile, full_name: str, phone_number: str, relationship: str):
+    """
+    Used by the admin Edit-Student form to keep "one guardian per student"
+    in sync with whatever's typed in the form:
+      - If the student already has a guardian with this SAME phone number,
+        just update their name/relationship in place (this reuses
+        attach_guardian's own dedup logic conceptually, but here we're
+        editing an existing link, not creating one).
+      - If the phone number changed (a different guardian entirely, or a
+        typo fix), the old link is removed and a new one is created/reused
+        via attach_guardian - which itself reuses an existing PARENT user
+        if one already exists with that phone (e.g. linking a second child
+        to an already-registered parent).
+    This intentionally supports one guardian per student through this form;
+    a student with multiple guardians can still be managed directly via
+    the parent-links endpoints.
+    """
+    if not phone_number:
+        return None
+
+    existing_links = models.ParentStudentLink.objects.filter(student=student).select_related("parent__user")
+    match = existing_links.filter(parent__user__phone_number=phone_number).first()
+
+    if match:
+        if match.relationship != relationship:
+            match.relationship = relationship
+            match.save(update_fields=["relationship"])
+        if full_name and match.parent.user.get_full_name() != full_name:
+            parts = full_name.split(" ", 1)
+            match.parent.user.first_name = parts[0]
+            match.parent.user.last_name = parts[1] if len(parts) > 1 else ""
+            match.parent.user.save(update_fields=["first_name", "last_name"])
+        return match.parent
+
+    # Phone number changed / no existing guardian - drop old link(s) and
+    # attach the (possibly newly created, possibly reused) guardian.
+    existing_links.delete()
+    return attach_guardian(student, full_name, phone_number, relationship)

@@ -22,7 +22,7 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-secret-key-change-me-in-pr
 # Remember: with DEBUG=False, Django will refuse to serve requests at all
 # unless ALLOWED_HOSTS is set correctly, and error tracebacks no longer
 # appear in the HTTP response - check the server console/log for them.
-DEBUG = True
+DEBUG = False
 
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
@@ -143,7 +143,7 @@ SIMPLE_JWT = {
 # CORS - React (Vite) dev server
 # ---------------------------------------------------------------------------
 CORS_ALLOWED_ORIGINS = os.environ.get(
-    "CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    "CORS_ALLOWED_ORIGINS", "http://localhost:5174,http://127.0.0.1:5174"
 ).split(",")
 CORS_ALLOW_CREDENTIALS = True
 
@@ -152,7 +152,7 @@ CORS_ALLOW_CREDENTIALS = True
 # ---------------------------------------------------------------------------
 # Used to build the reset-password link (student forgot-password flow) and
 # the QR-code verification link printed on fee receipts.
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5174")
 
 # ---------------------------------------------------------------------------
 # FEES / M-PESA (Safaricom Daraja STK Push)
