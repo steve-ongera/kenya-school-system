@@ -22,33 +22,36 @@ from . import models
 # ---------------------------------------------------------------------------
 def generate_admission_no(year: int) -> str:
     """
-    Generates a sequential admission number, e.g. 00001, 00081, 11871.
+    Generates a sequential admission number, e.g. ADM00001, ADM00081,
+    ADM11871.
 
-    Deliberately independent of the User.id (uuid) or any login
-    credential - admission numbers are printed on report forms and
-    must stay short, sequential and human-readable.
+    Admission numbers are independent of the User.id (UUID) and are
+    short, sequential and human-readable.
 
-    Purely numeric (zero-padded to 5 digits): this value is also used
-    directly, unchanged, as the student's login username (see
-    StudentEnrollSerializer.create()) - Django's default username
-    validator accepts digit-only strings.
+    The `year` argument is retained for backwards compatibility but does
+    not affect the sequence. Admission numbers are sequential across
+    all years.
 
-    Note: `year` is accepted for backwards compatibility with existing
-    callers but no longer affects the generated number - admission
-    numbers are now sequential across all years, not scoped per intake.
+    Format:
+        ADM + 5-digit zero-padded sequence
     """
+
     last = (
-        models.StudentProfile.objects.filter(admission_no__regex=r"^\d+$")
+        models.StudentProfile.objects
+        .filter(admission_no__regex=r"^ADM\d+$")
         .order_by("-admission_no")
         .first()
     )
+
     next_seq = 1
+
     if last:
         try:
-            next_seq = int(last.admission_no) + 1
-        except ValueError:
+            next_seq = int(last.admission_no[3:]) + 1
+        except (ValueError, TypeError):
             pass
-    return f"{next_seq:05d}"
+
+    return f"ADM{next_seq:05d}"
 
 # ---------------------------------------------------------------------------
 # SELF-SERVICE PROFILE UPDATES
@@ -673,32 +676,54 @@ def run_daily_invoice_generation() -> dict:
 # ---------------------------------------------------------------------------
 # PARENTS / GUARDIANS
 # ---------------------------------------------------------------------------
-def attach_guardian(student: models.StudentProfile, full_name: str, phone_number: str, relationship: str):
+def attach_guardian(
+        student: models.StudentProfile,
+        full_name: str,
+        phone_number: str,
+        relationship: str,
+        email: str = "",
+    ):
     """
     Links a parent/guardian to a newly admitted student.
 
     Reuses an existing ParentGuardianProfile if a PARENT user with this
     exact phone number already exists (e.g. admitting a second child of
     the same parent) instead of creating a duplicate account/login for
-    the same person. Only creates a new User+ParentGuardianProfile when
-    no match is found.
+    the same person.
+
+    If an existing parent has no email and a new email is provided,
+    the parent's email is updated.
+
+    Only creates a new User + ParentGuardianProfile when no matching
+    parent account is found.
     """
+
     existing_user = models.User.objects.filter(
-        role=models.User.Role.PARENT, phone_number=phone_number
+        role=models.User.Role.PARENT,
+        phone_number=phone_number
     ).first()
 
     if existing_user:
-        guardian_profile, _ = models.ParentGuardianProfile.objects.get_or_create(user=existing_user)
+        guardian_profile, _ = models.ParentGuardianProfile.objects.get_or_create(
+            user=existing_user
+        )
+
+        # Add email to existing parent if they don't already have one
+        if email and not existing_user.email:
+            existing_user.email = email
+            existing_user.save(update_fields=["email"])
+
     else:
         name_parts = full_name.split(" ", 1) if full_name else ["Guardian"]
+
         first_name = name_parts[0]
         last_name = name_parts[1] if len(name_parts) > 1 else ""
 
-        # phone number doubles as the login username for parents; guard
-        # against a collision the same way admission numbers never do
-        # (phone numbers can occasionally repeat across records/typos).
+        # Phone number doubles as the login username for parents.
+        # Guard against username collisions.
         username = phone_number
         suffix = 1
+
         while models.User.objects.filter(username=username).exists():
             suffix += 1
             username = f"{phone_number}-{suffix}"
@@ -708,16 +733,25 @@ def attach_guardian(student: models.StudentProfile, full_name: str, phone_number
             first_name=first_name,
             last_name=last_name,
             phone_number=phone_number,
+            email=email,
             role=models.User.Role.PARENT,
         )
+
         guardian_user.set_password("password123")
         guardian_user.save()
-        guardian_profile = models.ParentGuardianProfile.objects.create(user=guardian_user)
+
+        guardian_profile = models.ParentGuardianProfile.objects.create(
+            user=guardian_user
+        )
 
     models.ParentStudentLink.objects.get_or_create(
-        parent=guardian_profile, student=student,
-        defaults={"relationship": relationship},
+        parent=guardian_profile,
+        student=student,
+        defaults={
+            "relationship": relationship,
+        },
     )
+
     return guardian_profile
 
 
@@ -1122,41 +1156,73 @@ def send_password_reset_link(student_user, token):
         
         
 
-def upsert_guardian(student: models.StudentProfile, full_name: str, phone_number: str, relationship: str):
+def upsert_guardian(
+    student: models.StudentProfile,
+    full_name: str,
+    phone_number: str,
+    relationship: str,
+    email: str = "",
+):
     """
     Used by the admin Edit-Student form to keep "one guardian per student"
-    in sync with whatever's typed in the form:
-      - If the student already has a guardian with this SAME phone number,
-        just update their name/relationship in place (this reuses
-        attach_guardian's own dedup logic conceptually, but here we're
-        editing an existing link, not creating one).
-      - If the phone number changed (a different guardian entirely, or a
-        typo fix), the old link is removed and a new one is created/reused
-        via attach_guardian - which itself reuses an existing PARENT user
-        if one already exists with that phone (e.g. linking a second child
-        to an already-registered parent).
-    This intentionally supports one guardian per student through this form;
-    a student with multiple guardians can still be managed directly via
-    the parent-links endpoints.
+    in sync with whatever's typed in the form.
+
+    - If the student already has a guardian with the same phone number,
+      update their relationship, name, and email in place.
+    - If the phone number changed, remove the old guardian link and attach
+      the new guardian through attach_guardian().
+    - attach_guardian() handles reusing an existing PARENT account with
+      the same phone number.
+    - This intentionally supports one guardian per student through this form.
+      Students with multiple guardians can still be managed directly via
+      the parent-links endpoints.
     """
+
     if not phone_number:
         return None
 
-    existing_links = models.ParentStudentLink.objects.filter(student=student).select_related("parent__user")
-    match = existing_links.filter(parent__user__phone_number=phone_number).first()
+    existing_links = (
+        models.ParentStudentLink.objects
+        .filter(student=student)
+        .select_related("parent__user")
+    )
+
+    match = existing_links.filter(
+        parent__user__phone_number=phone_number
+    ).first()
 
     if match:
+        # Update relationship
         if match.relationship != relationship:
             match.relationship = relationship
             match.save(update_fields=["relationship"])
+
+        # Update guardian name
         if full_name and match.parent.user.get_full_name() != full_name:
             parts = full_name.split(" ", 1)
+
             match.parent.user.first_name = parts[0]
             match.parent.user.last_name = parts[1] if len(parts) > 1 else ""
-            match.parent.user.save(update_fields=["first_name", "last_name"])
+
+            match.parent.user.save(
+                update_fields=["first_name", "last_name"]
+            )
+
+        # Update guardian email
+        if email and match.parent.user.email != email:
+            match.parent.user.email = email
+            match.parent.user.save(update_fields=["email"])
+
         return match.parent
 
-    # Phone number changed / no existing guardian - drop old link(s) and
-    # attach the (possibly newly created, possibly reused) guardian.
+    # Phone number changed / no matching guardian.
+    # Remove the old guardian link(s) and attach the new/reused guardian.
     existing_links.delete()
-    return attach_guardian(student, full_name, phone_number, relationship)
+
+    return attach_guardian(
+        student,
+        full_name,
+        phone_number,
+        relationship,
+        email,
+    )

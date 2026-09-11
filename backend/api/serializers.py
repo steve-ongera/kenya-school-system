@@ -241,6 +241,7 @@ class StudentEnrollSerializer(serializers.Serializer):
     # notifications and communication have somewhere to go.
     parent_name = serializers.CharField(required=False, allow_blank=True)
     parent_phone = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    parent_email = serializers.EmailField(required=False, allow_blank=True)   # add near parent_name/parent_phone
     parent_relationship = serializers.ChoiceField(
         choices=models.ParentStudentLink.Relationship.choices,
         required=False,
@@ -274,6 +275,8 @@ class StudentEnrollSerializer(serializers.Serializer):
         classroom = validated_data.pop("classroom_id")
         parent_name = validated_data.pop("parent_name", "").strip()
         parent_phone = validated_data.pop("parent_phone", "").strip()
+        parent_email = validated_data.pop("parent_email", "").strip()
+        
         parent_relationship = validated_data.pop(
             "parent_relationship", models.ParentStudentLink.Relationship.GUARDIAN
         )
@@ -313,7 +316,7 @@ class StudentEnrollSerializer(serializers.Serializer):
         # Link (or create) the parent/guardian, if one was provided at
         # the admission desk.
         if parent_phone:
-            services.attach_guardian(profile, parent_name, parent_phone, parent_relationship)
+                   services.attach_guardian(profile, parent_name, parent_phone, parent_relationship, parent_email)
 
         # Invoice the student for the current term right away, so admitting
         # someone mid-term (e.g. a walk-in admission today) doesn't leave
@@ -351,6 +354,7 @@ class StudentEnrollSerializer(serializers.Serializer):
             "guardian": {
                 "name": guardian_link.parent.user.get_full_name(),
                 "phone_number": guardian_link.parent.user.phone_number,
+                "email": guardian_link.parent.user.email,
                 "relationship": guardian_link.get_relationship_display(),
             } if guardian_link else None,
         }
@@ -637,44 +641,23 @@ class ReceiptSerializer(serializers.Serializer):
 
 
 class StudentUserSerializer(serializers.ModelSerializer):
-    """
-    Nested user-account fields, editable alongside a StudentProfile.
-    `username` is deliberately read-only here: it's set once, at admission,
-    to equal admission_no (see StudentEnrollSerializer.create()), and must
-    never drift out of sync with it. If it ever needs to change, that has
-    to happen together with admission_no via a dedicated admin action, not
-    through this general-purpose edit form.
-    """
-
     class Meta:
         model = models.User
         fields = ["username", "email", "first_name", "last_name", "phone_number", "national_id"]
         read_only_fields = ["username"]
+        # national_id is unique=True on User. As a NESTED field this serializer
+        # has no way to know which user it's validating against, so DRF's
+        # auto-generated UniqueValidator always compares against the whole
+        # table and rejects even an unchanged value on every edit. Dropped
+        # here; StudentProfileDetailSerializer.validate() below does the
+        # real check, correctly excluding the student's own account.
+        extra_kwargs = {"national_id": {"validators": []}}
 
 
 class StudentProfileDetailSerializer(serializers.ModelSerializer):
-    """
-    Full view used by the admin View/Edit modals: the student profile,
-    linked user account, CURRENT classroom, and linked guardian all in
-    one payload.
-
-    GET   -> everything needed to populate the View or Edit modal,
-             including `current_classroom` (read) and `guardian` (read).
-    PATCH -> updates User + StudentProfile fields, optionally reassigns
-             the student's CURRENT enrollment to a different classroom
-             (via `classroom_id`), and optionally creates/updates the
-             linked guardian (via `guardian_name` / `guardian_phone` /
-             `guardian_relationship`) — all in one call, so the admin
-             edits "the student" as one unit.
-
-    Password is intentionally NOT settable here — use
-    /students/{id}/reset_password/ instead.
-    """
-
     user = StudentUserSerializer()
     full_name = serializers.CharField(source="user.get_full_name", read_only=True)
 
-    # ---- classroom: read as an object, write as just an id ----
     current_classroom = serializers.SerializerMethodField()
     classroom_id = serializers.PrimaryKeyRelatedField(
         queryset=models.ClassRoom.objects.all(),
@@ -685,10 +668,10 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
                    "Does not create a new enrollment/history row - use Promote for that.",
     )
 
-    # ---- guardian: read as an object, write as flat fields ----
     guardian = serializers.SerializerMethodField()
     guardian_name = serializers.CharField(write_only=True, required=False, allow_blank=True)
     guardian_phone = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=20)
+    guardian_email = serializers.EmailField(write_only=True, required=False, allow_blank=True)
     guardian_relationship = serializers.ChoiceField(
         choices=models.ParentStudentLink.Relationship.choices,
         write_only=True,
@@ -702,7 +685,7 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
             "id", "user", "admission_no", "full_name", "gender", "date_of_birth",
             "curriculum_type", "date_admitted", "upi_number", "is_active",
             "current_classroom", "classroom_id",
-            "guardian", "guardian_name", "guardian_phone", "guardian_relationship",
+            "guardian", "guardian_name", "guardian_phone", "guardian_email", "guardian_relationship",
         ]
         read_only_fields = ["admission_no", "date_admitted"]
 
@@ -730,6 +713,21 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
             "relationship_display": link.get_relationship_display(),
         }
 
+    def validate(self, attrs):
+        # Manual national_id uniqueness check, excluding THIS student's own
+        # account — see the note on StudentUserSerializer above for why the
+        # nested field can't safely do this itself.
+        national_id = (attrs.get("user") or {}).get("national_id")
+        if national_id:
+            qs = models.User.objects.filter(national_id=national_id)
+            if self.instance is not None:
+                qs = qs.exclude(pk=self.instance.user_id)
+            if qs.exists():
+                raise serializers.ValidationError(
+                    {"user": {"national_id": ["This national ID is already registered to another account."]}}
+                )
+        return attrs
+
     def validate_classroom_id(self, value):
         if value and not value.academic_year.is_current:
             raise serializers.ValidationError(
@@ -739,7 +737,6 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
         return value
 
     def update(self, instance, validated_data):
-        # ---- User fields ----
         user_data = validated_data.pop("user", None)
         if user_data:
             user = instance.user
@@ -748,7 +745,6 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
                     setattr(user, field, user_data[field])
             user.save()
 
-        # ---- Classroom reassignment ----
         new_classroom = validated_data.pop("classroom_id", None)
         if new_classroom:
             enrollment = instance.current_enrollment
@@ -760,16 +756,15 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
                     student=instance, classroom=new_classroom, academic_year=new_classroom.academic_year,
                 )
 
-        # ---- Guardian upsert ----
         guardian_phone = validated_data.pop("guardian_phone", "").strip() if "guardian_phone" in validated_data else ""
         guardian_name = validated_data.pop("guardian_name", "").strip() if "guardian_name" in validated_data else ""
+        guardian_email = validated_data.pop("guardian_email", "").strip() if "guardian_email" in validated_data else ""
         guardian_relationship = validated_data.pop(
             "guardian_relationship", models.ParentStudentLink.Relationship.GUARDIAN
         )
         if guardian_phone:
-            services.upsert_guardian(instance, guardian_name, guardian_phone, guardian_relationship)
+            services.upsert_guardian(instance, guardian_name, guardian_phone, guardian_relationship, guardian_email)
 
-        # ---- Remaining StudentProfile fields ----
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.save()

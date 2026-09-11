@@ -8,14 +8,14 @@ import Modal from "../../components/Modal";
 const emptyAddForm = {
   first_name: "", last_name: "", email: "", phone_number: "", national_id: "",
   gender: "M", curriculum_type: "CBC", classroom_id: "", date_of_birth: "", upi_number: "",
-  parent_name: "", parent_phone: "", parent_relationship: "GUARDIAN",
+  parent_name: "", parent_phone: "", parent_email: "", parent_relationship: "GUARDIAN",
 };
 
 const emptyEditForm = {
   first_name: "", last_name: "", email: "", phone_number: "", national_id: "",
   gender: "M", date_of_birth: "", curriculum_type: "CBC", upi_number: "", is_active: true,
   classroom_id: "",
-  guardian_name: "", guardian_phone: "", guardian_relationship: "GUARDIAN",
+  guardian_name: "", guardian_phone: "", guardian_email: "", guardian_relationship: "GUARDIAN",
 };
 
 const emptyFilters = {
@@ -204,7 +204,7 @@ export default function AdminStudents() {
       setMessage(
         `Admitted successfully. Admission No / login username: ${data.admission_no}` +
         (data.current_classroom ? ` — enrolled in ${data.current_classroom}` : "") +
-        (data.guardian ? ` — guardian ${data.guardian.name} linked` : "")
+        (data.guardian ? ` — guardian ${data.guardian.name} linked${data.guardian.email ? ` (${data.guardian.email})` : ""}` : "")
       );
       setMessageType("success");
       setShowAddModal(false);
@@ -257,6 +257,7 @@ export default function AdminStudents() {
         classroom_id: data.current_classroom?.id || "",
         guardian_name: data.guardian?.name || "",
         guardian_phone: data.guardian?.phone_number || "",
+        guardian_email: data.guardian?.email || "",
         guardian_relationship: data.guardian?.relationship || "GUARDIAN",
       });
     } catch (err) {
@@ -289,6 +290,7 @@ export default function AdminStudents() {
       if (editForm.guardian_phone) {
         payload.guardian_name = editForm.guardian_name;
         payload.guardian_phone = editForm.guardian_phone;
+        payload.guardian_email = editForm.guardian_email;
         payload.guardian_relationship = editForm.guardian_relationship;
       }
 
@@ -298,7 +300,14 @@ export default function AdminStudents() {
       setShowEditModal(false);
       await loadStudents();
     } catch (err) {
-      setMessage(err.response?.data?.detail || "Could not update student.");
+      const data = err.response?.data;
+      const detail =
+        data?.detail ||
+        data?.user?.national_id?.[0] ||
+        data?.user?.email?.[0] ||
+        (typeof data === "string" ? data : null) ||
+        "Could not update student.";
+      setMessage(detail);
       setMessageType("danger");
     } finally {
       setEditSaving(false);
@@ -700,14 +709,14 @@ export default function AdminStudents() {
 
           <h6 className="mt-4" style={{ fontWeight: 700 }}>Parent / Guardian</h6>
           <div className="row g-3">
-            <div className="col-md-6">
+            <div className="col-md-5">
               <label className="form-label">Parent/Guardian Name</label>
               <input className="form-control"
                 placeholder="e.g. Jane Wanjiku"
                 value={addForm.parent_name}
                 onChange={(e) => setAddForm({ ...addForm, parent_name: e.target.value })} />
             </div>
-            <div className="col-md-4">
+            <div className="col-md-3">
               <label className="form-label">Parent/Guardian Phone</label>
               <input className="form-control"
                 placeholder="07XXXXXXXX"
@@ -723,10 +732,18 @@ export default function AdminStudents() {
                 <option value="GUARDIAN">Guardian</option>
               </select>
             </div>
+            <div className="col-md-2">
+              <label className="form-label">Parent/Guardian Email</label>
+              <input type="email" className="form-control"
+                placeholder="optional"
+                value={addForm.parent_email}
+                onChange={(e) => setAddForm({ ...addForm, parent_email: e.target.value })} />
+            </div>
             <div className="col-12">
               <div className="form-text" style={{ fontSize: "var(--fs-xs)" }}>
                 If this phone number already belongs to a registered parent (e.g. an older sibling),
                 the student is linked to that existing parent account instead of creating a duplicate.
+                An email entered here fills in a blank one on that existing account, but never overwrites one already on file.
               </div>
             </div>
           </div>
@@ -761,7 +778,7 @@ export default function AdminStudents() {
               <div className="col-6"><strong>Date of Birth:</strong> {viewStudent.date_of_birth || "-"}</div>
               <div className="col-6"><strong>Curriculum:</strong> {viewStudent.curriculum_type}</div>
               <div className="col-6"><strong>UPI Number:</strong> {viewStudent.upi_number || "-"}</div>
-              {/* FIX: current_classroom from StudentProfileDetailSerializer is an
+              {/* current_classroom from StudentProfileDetailSerializer is an
                   object ({id, label, grade_level_id, academic_year}), not a
                   string - render .label instead of the object itself. */}
               <div className="col-6"><strong>Current Class:</strong> {viewStudent.current_classroom?.label || "-"}</div>
@@ -821,6 +838,9 @@ export default function AdminStudents() {
                 <label className="form-label">National ID / Birth No</label>
                 <input className="form-control" value={editForm.national_id}
                   onChange={(e) => setEditForm({ ...editForm, national_id: e.target.value })} />
+                <div className="form-text" style={{ fontSize: "var(--fs-xs)" }}>
+                  Leaving this exactly as-is is fine — saving no longer wrongly flags it as a duplicate.
+                </div>
               </div>
             </div>
 
@@ -883,15 +903,20 @@ export default function AdminStudents() {
 
             <h6 className="mt-4" style={{ fontWeight: 700 }}>Parent / Guardian</h6>
             <div className="row g-3">
-              <div className="col-md-6">
+              <div className="col-md-4">
                 <label className="form-label">Guardian Name</label>
                 <input className="form-control" value={editForm.guardian_name}
                   onChange={(e) => setEditForm({ ...editForm, guardian_name: e.target.value })} />
               </div>
-              <div className="col-md-4">
+              <div className="col-md-3">
                 <label className="form-label">Guardian Phone</label>
                 <input className="form-control" placeholder="07XXXXXXXX" value={editForm.guardian_phone}
                   onChange={(e) => setEditForm({ ...editForm, guardian_phone: e.target.value })} />
+              </div>
+              <div className="col-md-3">
+                <label className="form-label">Guardian Email</label>
+                <input type="email" className="form-control" placeholder="optional" value={editForm.guardian_email}
+                  onChange={(e) => setEditForm({ ...editForm, guardian_email: e.target.value })} />
               </div>
               <div className="col-md-2">
                 <label className="form-label">Relationship</label>
@@ -906,7 +931,8 @@ export default function AdminStudents() {
                 <div className="form-text" style={{ fontSize: "var(--fs-xs)" }}>
                   Leave phone blank to leave the current guardian link unchanged. Changing the phone
                   number replaces the linked guardian entirely (reusing an existing parent account if
-                  that number is already registered).
+                  that number is already registered). Email only fills in / updates the guardian's
+                  email — it never touches the phone-based link on its own.
                 </div>
               </div>
             </div>
