@@ -6,6 +6,7 @@ import { financeApi, paymentsApi, calendarApi, academicsApi } from "../../servic
 import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
 import Pagination from "../../components/Pagination";
+import logoImage from "../../assets/masomo_logo.png";
 
 const currency = (value) => Number(value || 0).toLocaleString();
 
@@ -45,6 +46,24 @@ const groupInvoicesByStudent = (invoiceList) => {
     byAdmission.get(inv.admission_no).invoices.push(inv);
   });
   return Array.from(byAdmission.values());
+};
+
+// Shared helper: load the Masomo logo as a base64 data URL
+const getImageBase64 = (url) => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.src = url;
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = () => resolve(null);
+  });
 };
 
 export default function FinancePayments() {
@@ -178,63 +197,397 @@ export default function FinancePayments() {
     }
   };
 
-  const downloadReceiptPdf = (r) => {
+  // ---- Download a professional A5 receipt PDF with logo, QR and signature/stamp blocks ----
+  const downloadReceiptPdf = async (r) => {
     const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a5" });
     const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
 
-    doc.setFontSize(14);
-    doc.setTextColor(33, 37, 41);
-    doc.text("Official Payment Receipt", pageWidth / 2, 16, { align: "center" });
+    const base64Logo = await getImageBase64(logoImage);
 
+    // --- Header: logo + school name + receipt title ---
+    if (base64Logo) {
+      doc.addImage(base64Logo, "PNG", 12, 10, 12, 12);
+    }
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Masomo School", base64Logo ? 27 : 12, 15);
+
+    doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
-    doc.setTextColor(108, 117, 125);
-    doc.text(`Receipt No: ${r.receipt_no}`, 14, 26);
-    doc.text(`Date: ${new Date(r.paid_at).toLocaleString("en-KE")}`, 14, 31);
+    doc.setTextColor(71, 85, 105);
+    doc.text("Official Payment Receipt", base64Logo ? 27 : 12, 20);
 
-    doc.setDrawColor(222, 226, 230);
-    doc.line(14, 35, pageWidth - 14, 35);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text(
+      `Generated ${new Date().toLocaleDateString("en-KE", { year: "numeric", month: "long", day: "numeric" })}`,
+      pageWidth - 12,
+      14,
+      { align: "right" }
+    );
 
+    doc.setDrawColor(203, 213, 225);
+    doc.setLineWidth(0.3);
+    doc.line(12, 24, pageWidth - 12, 24);
+
+    // --- Receipt number + date strip ---
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.setTextColor(51, 65, 85);
+    doc.text(`Receipt No: ${r.receipt_no}`, 12, 30);
+    doc.text(
+      `Date: ${new Date(r.paid_at).toLocaleString("en-KE")}`,
+      pageWidth - 12,
+      30,
+      { align: "right" }
+    );
+
+    // --- Info table ---
     const rows = [
       ["Student", r.student_name],
       ["Admission No", r.admission_no],
-      ["Term", r.term],
+      ["Class", r.classroom || "-"],
+      ["Term", r.term || "-"],
       ["Amount Paid", `KES ${currency(r.amount)}`],
       ["Method", METHOD_LABEL[r.method] || r.method],
       ["Reference", r.reference || "-"],
+      ["Recorded By", r.recorded_by_name || "-"],
     ];
 
     autoTable(doc, {
-      startY: 40,
+      startY: 34,
       body: rows,
-      theme: "plain",
-      styles: { fontSize: 10, cellPadding: 1.5 },
-      columnStyles: { 0: { fontStyle: "bold", cellWidth: 32 } },
+      theme: "grid",
+      styles: {
+        fontSize: 9,
+        cellPadding: 2,
+        lineColor: [226, 232, 240],
+        lineWidth: 0.1,
+        textColor: [51, 65, 85],
+        overflow: "ellipsize",
+      },
+      columnStyles: {
+        0: {
+          fontStyle: "bold",
+          cellWidth: 34,
+          fillColor: [241, 245, 249],
+          textColor: [51, 65, 85],
+        },
+        1: { cellWidth: "auto", overflow: "ellipsize" },
+      },
     });
 
     let cursorY = doc.lastAutoTable.finalY + 6;
 
+    // --- Excess / overpayment note ---
     if (r.excess > 0) {
-      doc.setFontSize(9);
+      doc.setFontSize(8.5);
       doc.setTextColor(25, 135, 84);
       const note = doc.splitTextToSize(
         `This payment exceeds the amount due by KES ${currency(r.excess)}. The excess has been ` +
           `recorded as a credit and will automatically reduce the student's next invoice.`,
-        pageWidth - 28
+        pageWidth - 24
       );
-      doc.text(note, 14, cursorY);
+      doc.text(note, 12, cursorY);
       cursorY += note.length * 4 + 4;
     }
 
+    // --- QR code ---
     if (r.qr_code_base64) {
       const qrSize = 28;
       const qrX = (pageWidth - qrSize) / 2;
-      doc.addImage(`data:image/png;base64,${r.qr_code_base64}`, "PNG", qrX, cursorY, qrSize, qrSize);
-      doc.setFontSize(8);
+      // If we're running out of vertical room, move to a fresh area
+      if (cursorY + qrSize + 24 > pageHeight - 24) {
+        doc.addPage();
+        cursorY = 24;
+      }
+      doc.addImage(
+        `data:image/png;base64,${r.qr_code_base64}`,
+        "PNG",
+        qrX,
+        cursorY,
+        qrSize,
+        qrSize
+      );
+      doc.setFontSize(7.5);
       doc.setTextColor(108, 117, 125);
-      doc.text("Scan to verify this receipt", pageWidth / 2, cursorY + qrSize + 5, { align: "center" });
+      doc.text("Scan to verify this receipt", pageWidth / 2, cursorY + qrSize + 4, {
+        align: "center",
+      });
+      cursorY += qrSize + 10;
     }
 
+    // --- Signature / stamp blocks: Finance Officer + Principal ---
+    const signY = Math.max(cursorY + 10, pageHeight - 34);
+    const lineY = signY + 12;
+
+    doc.setDrawColor(148, 163, 184);
+    doc.setLineWidth(0.2);
+
+    // Finance Officer (left)
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Finance Officer:", 12, signY);
+    doc.line(12, lineY, 12 + 62, lineY);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Signature & Official Stamp", 12, lineY + 4);
+
+    // Principal (right)
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Principal:", pageWidth - 74, signY);
+    doc.line(pageWidth - 74, lineY, pageWidth - 12, lineY);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Signature & Official Stamp", pageWidth - 74, lineY + 4);
+
+    // --- Footer ---
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(148, 163, 184);
+    doc.text("Masomo School — Finance Department", 12, pageHeight - 6);
+    doc.text("Official payment receipt", pageWidth - 12, pageHeight - 6, { align: "right" });
+
     doc.save(`receipt_${r.receipt_no}.pdf`);
+  };
+
+  // ---- Print a single receipt in the payment history list ----
+  // Fetches the full receipt payload (with QR) and renders it in a hidden
+  // iframe matching the printed Student Balance statement styling.
+  const [printingReceiptId, setPrintingReceiptId] = useState(null);
+
+  const handlePrintPaymentReceipt = async (payment) => {
+    try {
+      setPrintingReceiptId(payment.id);
+      const { data: r } = await paymentsApi.receipt(payment.id);
+
+      const base64Logo = await getImageBase64(logoImage);
+      const logoTag = base64Logo
+        ? `<img src="${base64Logo}" alt="Masomo School" class="logo" />`
+        : "";
+
+      const generatedOn = new Date().toLocaleDateString("en-KE", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+
+      const methodLabel = METHOD_LABEL[r.method] || r.method;
+
+      const html = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Receipt - ${r.receipt_no}</title>
+            <style>
+              * { box-sizing: border-box; font-family: Helvetica, Arial, sans-serif; }
+              @page { size: A5 portrait; margin: 10mm; }
+              html, body { margin: 0; padding: 0; color: #0f172a; background: #fff; }
+              body { padding: 20px 24px; }
+
+              .header {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                padding-bottom: 8px;
+                border-bottom: 2px solid #cbd5e1;
+              }
+              .header-left { display: flex; align-items: center; gap: 10px; }
+              .logo { width: 38px; height: 38px; object-fit: contain; }
+              .school-name { font-size: 15px; font-weight: bold; margin: 0; color: #0f172a; }
+              .subtitle { font-size: 11px; color: #475569; margin: 2px 0 0; }
+              .meta { font-size: 9px; color: #64748b; text-align: right; line-height: 1.5; }
+
+              .title-block { margin: 14px 0 10px; }
+              .title-block h2 {
+                font-size: 12.5px;
+                font-weight: bold;
+                color: #0f172a;
+                margin: 0;
+                text-transform: uppercase;
+                letter-spacing: 0.4px;
+              }
+              .title-block p { margin: 2px 0 0; font-size: 10px; color: #64748b; }
+
+              table.info { width: 100%; border-collapse: collapse; margin-top: 4px; }
+              table.info th,
+              table.info td {
+                padding: 7px 10px;
+                border: 1px solid #e2e8f0;
+                font-size: 11px;
+                text-align: left;
+                vertical-align: middle;
+              }
+              table.info th {
+                background: #f1f5f9;
+                color: #334155;
+                width: 38%;
+                font-weight: 600;
+              }
+              .amount-row td { font-size: 13px; font-weight: bold; color: #16a34a; background: #f8fafc; }
+
+              .excess {
+                margin-top: 10px;
+                padding: 8px 10px;
+                border: 1px solid #bbf7d0;
+                background: #f0fdf4;
+                color: #15803d;
+                font-size: 10px;
+                border-radius: 4px;
+              }
+
+              .qr-block { text-align: center; margin-top: 12px; }
+              .qr-block img { width: 90px; height: 90px; }
+              .qr-block .qr-caption { font-size: 9px; color: #64748b; margin-top: 3px; }
+
+              .sign-block {
+                display: flex;
+                justify-content: space-between;
+                gap: 14px;
+                margin-top: 34px;
+              }
+              .sign-line {
+                flex: 1;
+                border-top: 1px solid #94a3b8;
+                padding-top: 5px;
+                font-size: 9.5px;
+                color: #64748b;
+                text-align: center;
+              }
+              .sign-role { font-weight: 700; color: #334155; font-size: 10px; }
+
+              .footer {
+                margin-top: 20px;
+                padding-top: 6px;
+                border-top: 1px solid #e2e8f0;
+                font-size: 8.5px;
+                color: #94a3b8;
+                display: flex;
+                justify-content: space-between;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              <div class="header-left">
+                ${logoTag}
+                <div>
+                  <p class="school-name">Masomo School</p>
+                  <p class="subtitle">Official Payment Receipt</p>
+                </div>
+              </div>
+              <div class="meta">
+                Receipt No: <strong>${r.receipt_no}</strong><br />
+                Generated ${generatedOn}
+              </div>
+            </div>
+
+            <div class="title-block">
+              <h2>Official Payment Receipt</h2>
+              <p>Fee payment acknowledgement issued by the Finance Department.</p>
+            </div>
+
+            <table class="info">
+              <tr><th>Student</th><td>${r.student_name}</td></tr>
+              <tr><th>Admission No</th><td>${r.admission_no}</td></tr>
+              <tr><th>Class</th><td>${r.classroom || "-"}</td></tr>
+              <tr><th>Term</th><td>${r.term || "-"}</td></tr>
+              <tr class="amount-row"><th>Amount Paid</th><td>KES ${currency(r.amount)}</td></tr>
+              <tr><th>Method</th><td>${methodLabel}</td></tr>
+              <tr><th>Reference</th><td>${r.reference || "-"}</td></tr>
+              <tr><th>Recorded By</th><td>${r.recorded_by_name || "-"}</td></tr>
+              <tr><th>Date Paid</th><td>${new Date(r.paid_at).toLocaleString("en-KE")}</td></tr>
+            </table>
+
+            ${
+              Number(r.excess) > 0
+                ? `<div class="excess">
+                     <strong>Credit note:</strong> KES ${currency(r.excess)} was paid above the amount due
+                     and has been carried forward toward this student's next invoice.
+                   </div>`
+                : ""
+            }
+
+            ${
+              r.qr_code_base64
+                ? `<div class="qr-block">
+                     <img src="data:image/png;base64,${r.qr_code_base64}" alt="Receipt verification QR code" />
+                     <div class="qr-caption">Scan to verify this receipt</div>
+                   </div>`
+                : ""
+            }
+
+            <div class="sign-block">
+              <div class="sign-line">
+                <div class="sign-role">Finance Officer</div>
+                <div>Signature &amp; Official Stamp</div>
+              </div>
+              <div class="sign-line">
+                <div class="sign-role">Principal</div>
+                <div>Signature &amp; Official Stamp</div>
+              </div>
+            </div>
+
+            <div class="footer">
+              <span>Masomo School — Finance Department</span>
+              <span>Official payment receipt</span>
+            </div>
+          </body>
+        </html>
+      `;
+
+      const iframe = document.createElement("iframe");
+      iframe.style.position = "fixed";
+      iframe.style.right = "0";
+      iframe.style.bottom = "0";
+      iframe.style.width = "0";
+      iframe.style.height = "0";
+      iframe.style.border = "0";
+      iframe.style.visibility = "hidden";
+      document.body.appendChild(iframe);
+
+      const cleanup = () => {
+        setTimeout(() => {
+          if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+        }, 500);
+      };
+
+      const frameDoc = iframe.contentWindow.document;
+      frameDoc.open();
+      frameDoc.write(html);
+      frameDoc.close();
+
+      const triggerPrint = () => {
+        try {
+          iframe.contentWindow.focus();
+          iframe.contentWindow.print();
+        } catch (e) {
+          // ignore
+        } finally {
+          cleanup();
+        }
+      };
+
+      if (iframe.contentWindow.document.readyState === "complete") {
+        setTimeout(triggerPrint, 120);
+      } else {
+        iframe.onload = () => setTimeout(triggerPrint, 120);
+      }
+    } catch (err) {
+      setMessage("Could not prepare the receipt for printing.");
+      setMessageType("danger");
+    } finally {
+      setPrintingReceiptId(null);
+    }
   };
 
   // ---------------------------------------------------------------------
@@ -938,7 +1291,7 @@ export default function FinancePayments() {
         </div>
 
         {listLoading ? (
-          <TableSkeleton rows={5} columns={12} />
+          <TableSkeleton rows={5} columns={13} />
         ) : payments.length === 0 ? (
           <div className="empty-state">
             <i className="bi bi-cash-stack"></i>
@@ -967,6 +1320,7 @@ export default function FinancePayments() {
                     <th>Method</th>
                     <th>Reference</th>
                     <th>Recorded By</th>
+                    <th className="text-center">Receipt</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1003,6 +1357,21 @@ export default function FinancePayments() {
                         )}
                       </td>
                       <td style={{ fontSize: "var(--fs-sm)", color: "var(--ink-600)" }}>{p.recorded_by_name}</td>
+                      <td className="text-center">
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-primary"
+                          title="Print this receipt"
+                          onClick={() => handlePrintPaymentReceipt(p)}
+                          disabled={printingReceiptId === p.id}
+                        >
+                          {printingReceiptId === p.id ? (
+                            <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                          ) : (
+                            <i className="bi bi-printer"></i>
+                          )}
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
