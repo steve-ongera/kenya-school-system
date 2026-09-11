@@ -14,6 +14,8 @@ const emptyAddForm = {
 const emptyEditForm = {
   first_name: "", last_name: "", email: "", phone_number: "", national_id: "",
   gender: "M", date_of_birth: "", curriculum_type: "CBC", upi_number: "", is_active: true,
+  classroom_id: "",
+  guardian_name: "", guardian_phone: "", guardian_relationship: "GUARDIAN",
 };
 
 const emptyFilters = {
@@ -252,6 +254,10 @@ export default function AdminStudents() {
         curriculum_type: data.curriculum_type,
         upi_number: data.upi_number || "",
         is_active: data.is_active,
+        classroom_id: data.current_classroom?.id || "",
+        guardian_name: data.guardian?.name || "",
+        guardian_phone: data.guardian?.phone_number || "",
+        guardian_relationship: data.guardian?.relationship || "GUARDIAN",
       });
     } catch (err) {
       setMessage("Could not load student for editing.");
@@ -265,7 +271,7 @@ export default function AdminStudents() {
     if (!editTarget) return;
     setEditSaving(true);
     try {
-      await studentsApi.update(editTarget.id, {
+      const payload = {
         user: {
           first_name: editForm.first_name,
           last_name: editForm.last_name,
@@ -278,7 +284,15 @@ export default function AdminStudents() {
         curriculum_type: editForm.curriculum_type,
         upi_number: editForm.upi_number,
         is_active: editForm.is_active,
-      });
+      };
+      if (editForm.classroom_id) payload.classroom_id = editForm.classroom_id;
+      if (editForm.guardian_phone) {
+        payload.guardian_name = editForm.guardian_name;
+        payload.guardian_phone = editForm.guardian_phone;
+        payload.guardian_relationship = editForm.guardian_relationship;
+      }
+
+      await studentsApi.update(editTarget.id, payload);
       setMessage("Student updated successfully.");
       setMessageType("success");
       setShowEditModal(false);
@@ -636,7 +650,7 @@ export default function AdminStudents() {
                 onChange={(e) => setAddForm({ ...addForm, phone_number: e.target.value })} />
             </div>
             <div className="col-md-6">
-              <label className="form-label">National ID (optional)</label>
+              <label className="form-label">National ID / Birth No (optional)</label>
               <input className="form-control"
                 value={addForm.national_id}
                 onChange={(e) => setAddForm({ ...addForm, national_id: e.target.value })} />
@@ -742,15 +756,30 @@ export default function AdminStudents() {
               <div className="col-6"><strong>Username:</strong> {viewStudent.user.username}</div>
               <div className="col-6"><strong>Email:</strong> {viewStudent.user.email || "-"}</div>
               <div className="col-6"><strong>Phone:</strong> {viewStudent.user.phone_number || "-"}</div>
-              <div className="col-6"><strong>National ID:</strong> {viewStudent.user.national_id || "-"}</div>
+              <div className="col-6"><strong>National ID / Birth No:</strong> {viewStudent.user.national_id || "-"}</div>
               <div className="col-6"><strong>Gender:</strong> {viewStudent.gender === "M" ? "Male" : "Female"}</div>
               <div className="col-6"><strong>Date of Birth:</strong> {viewStudent.date_of_birth || "-"}</div>
               <div className="col-6"><strong>Curriculum:</strong> {viewStudent.curriculum_type}</div>
               <div className="col-6"><strong>UPI Number:</strong> {viewStudent.upi_number || "-"}</div>
-              <div className="col-6"><strong>Current Class:</strong> {viewStudent.current_classroom || "-"}</div>
+              {/* FIX: current_classroom from StudentProfileDetailSerializer is an
+                  object ({id, label, grade_level_id, academic_year}), not a
+                  string - render .label instead of the object itself. */}
+              <div className="col-6"><strong>Current Class:</strong> {viewStudent.current_classroom?.label || "-"}</div>
               <div className="col-6"><strong>Date Admitted:</strong> {viewStudent.date_admitted}</div>
               <div className="col-6"><strong>Status:</strong> {viewStudent.is_active ? "Active" : "Inactive"}</div>
             </div>
+
+            <h6 className="mt-4" style={{ fontWeight: 700 }}>Parent / Guardian</h6>
+            {viewStudent.guardian ? (
+              <div className="row g-2">
+                <div className="col-6"><strong>Name:</strong> {viewStudent.guardian.name}</div>
+                <div className="col-6"><strong>Relationship:</strong> {viewStudent.guardian.relationship_display}</div>
+                <div className="col-6"><strong>Phone:</strong> {viewStudent.guardian.phone_number}</div>
+                <div className="col-6"><strong>Email:</strong> {viewStudent.guardian.email || "-"}</div>
+              </div>
+            ) : (
+              <p className="text-muted-soft" style={{ fontSize: "var(--fs-sm)" }}>No guardian linked.</p>
+            )}
           </div>
         )}
       </Modal>
@@ -789,7 +818,7 @@ export default function AdminStudents() {
                   onChange={(e) => setEditForm({ ...editForm, phone_number: e.target.value })} />
               </div>
               <div className="col-md-6">
-                <label className="form-label">National ID</label>
+                <label className="form-label">National ID / Birth No</label>
                 <input className="form-control" value={editForm.national_id}
                   onChange={(e) => setEditForm({ ...editForm, national_id: e.target.value })} />
               </div>
@@ -829,6 +858,55 @@ export default function AdminStudents() {
                     checked={editForm.is_active}
                     onChange={(e) => setEditForm({ ...editForm, is_active: e.target.checked })} />
                   <label className="form-check-label" htmlFor="editIsActive">Active</label>
+                </div>
+              </div>
+            </div>
+
+            <h6 className="mt-4" style={{ fontWeight: 700 }}>Classroom</h6>
+            <div className="row g-3">
+              <div className="col-12">
+                <label className="form-label">Current Classroom</label>
+                <select className="form-select" value={editForm.classroom_id}
+                  onChange={(e) => setEditForm({ ...editForm, classroom_id: e.target.value })}>
+                  <option value="">Keep current classroom</option>
+                  {admitClassrooms.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.grade_level_name} {c.stream_name} - {c.academic_year}
+                    </option>
+                  ))}
+                </select>
+                <div className="form-text" style={{ fontSize: "var(--fs-xs)" }}>
+                  Only reassigns their current-year class. To move a student up a grade, use Promote instead.
+                </div>
+              </div>
+            </div>
+
+            <h6 className="mt-4" style={{ fontWeight: 700 }}>Parent / Guardian</h6>
+            <div className="row g-3">
+              <div className="col-md-6">
+                <label className="form-label">Guardian Name</label>
+                <input className="form-control" value={editForm.guardian_name}
+                  onChange={(e) => setEditForm({ ...editForm, guardian_name: e.target.value })} />
+              </div>
+              <div className="col-md-4">
+                <label className="form-label">Guardian Phone</label>
+                <input className="form-control" placeholder="07XXXXXXXX" value={editForm.guardian_phone}
+                  onChange={(e) => setEditForm({ ...editForm, guardian_phone: e.target.value })} />
+              </div>
+              <div className="col-md-2">
+                <label className="form-label">Relationship</label>
+                <select className="form-select" value={editForm.guardian_relationship}
+                  onChange={(e) => setEditForm({ ...editForm, guardian_relationship: e.target.value })}>
+                  <option value="MOTHER">Mother</option>
+                  <option value="FATHER">Father</option>
+                  <option value="GUARDIAN">Guardian</option>
+                </select>
+              </div>
+              <div className="col-12">
+                <div className="form-text" style={{ fontSize: "var(--fs-xs)" }}>
+                  Leave phone blank to leave the current guardian link unchanged. Changing the phone
+                  number replaces the linked guardian entirely (reusing an existing parent account if
+                  that number is already registered).
                 </div>
               </div>
             </div>
