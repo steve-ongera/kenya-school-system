@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { studentsApi, examsApi, calendarApi, academicsApi, profileApi } from "../../services/api";
 import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import logoImage from "../../assets/masomo_logo.png";
 
 // ---------------------------------------------------------------------------
 // Fallback grading bands, used ONLY when /grading-scales/ isn't reachable or
-// doesn't have a row that covers a given percentage. Real schools should
-// configure GradingScale rows in the admin so these never actually fire -
-// they exist so the page still shows *something* sensible out of the box.
+// doesn't have a row that covers a given percentage.
 // ---------------------------------------------------------------------------
 const FALLBACK_844 = [
   { min: 80, max: 100, letter: "A", points: 12 },
@@ -36,11 +37,28 @@ function fallbackGrade(curriculumType, percentage) {
   return table.find((b) => percentage >= b.min && percentage <= b.max) || null;
 }
 
+// Load an image URL as a base64 data URL (for embedding the logo in PDFs)
+const getImageBase64 = (url) =>
+  new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.src = url;
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = () => resolve(null);
+  });
+
 export default function StudentResults() {
   // ---- identity / curriculum ----
   const [profile, setProfile] = useState(null);
 
-  // ---- full academic history (every enrollment, every year, any status) ----
+  // ---- full academic history ----
   const [enrollmentHistory, setEnrollmentHistory] = useState([]);
   const [classroomsById, setClassroomsById] = useState({});
   const [academicYears, setAcademicYears] = useState([]);
@@ -60,19 +78,16 @@ export default function StudentResults() {
   const [results, setResults] = useState([]);
   const [resultsLoading, setResultsLoading] = useState(false);
 
-  // ---- ranking: fetched automatically, no manual checkpoint picker ----
-  // We prefer the End of Term ranking (the fuller picture), but fall back
-  // to Midterm automatically if end-of-term hasn't been computed yet, so
-  // the student always sees a position when one exists, without having to
-  // choose anything themselves.
+  // ---- ranking ----
   const [ranking, setRanking] = useState(null);
   const [rankingCheckpoint, setRankingCheckpoint] = useState(null);
   const [rankingLoading, setRankingLoading] = useState(false);
 
+  // ---- PDF download state ----
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+
   // ---------------------------------------------------------------------
-  // Initial load: who is this student, their whole enrollment history,
-  // every classroom (to resolve grade_level ids), every academic year
-  // (for labels), and the grading scale (for correct grade/points).
+  // Initial load
   // ---------------------------------------------------------------------
   useEffect(() => {
     (async () => {
@@ -80,8 +95,6 @@ export default function StudentResults() {
       try {
         const [profileRes, enrollRes, classroomsRes, yearsRes] = await Promise.all([
           profileApi.me(),
-          // no status filter - we want EVERY year this student has ever
-          // been enrolled in, not just the current active one
           studentsApi.enrollments({ page_size: 200 }),
           academicsApi.classrooms({ page_size: 500 }),
           calendarApi.academicYears(),
@@ -101,8 +114,6 @@ export default function StudentResults() {
         const yearsList = yearsRes.data.results ?? yearsRes.data;
         setAcademicYears(yearsList);
 
-        // grading scale is optional - if the endpoint isn't wired up yet
-        // we just fall back to the hardcoded bands above
         try {
           if (academicsApi.gradingScales) {
             const { data } = await academicsApi.gradingScales();
@@ -112,8 +123,6 @@ export default function StudentResults() {
           setGradingScales([]);
         }
 
-        // default to the most recent year the student was actually
-        // enrolled in (prefers the current academic year if it's among them)
         if (history.length > 0) {
           const currentYearObj = yearsList.find((y) => y.is_current);
           const hasCurrent = currentYearObj && history.some((e) => e.academic_year === currentYearObj.id);
@@ -132,7 +141,6 @@ export default function StudentResults() {
 
   const yearLabel = (yearId) => academicYears.find((y) => y.id === yearId)?.year ?? yearId;
 
-  // the enrollment record that matches whichever year is selected
   const currentEnrollment = useMemo(
     () => enrollmentHistory.find((e) => String(e.academic_year) === String(selectedYear)),
     [enrollmentHistory, selectedYear]
@@ -140,7 +148,7 @@ export default function StudentResults() {
   const currentClassroom = currentEnrollment ? classroomsById[currentEnrollment.classroom] : null;
 
   // ---------------------------------------------------------------------
-  // Terms for the selected year
+  // Terms
   // ---------------------------------------------------------------------
   useEffect(() => {
     setSelectedTerm("");
@@ -159,9 +167,7 @@ export default function StudentResults() {
   }, [selectedYear]);
 
   // ---------------------------------------------------------------------
-  // Exams for the selected term, scoped to the grade_level the student was
-  // actually in during that year - and published only, since students
-  // shouldn't see draft/unpublished exams.
+  // Exams
   // ---------------------------------------------------------------------
   useEffect(() => {
     setSelectedExam("");
@@ -174,8 +180,6 @@ export default function StudentResults() {
           .filter((ex) => ex.is_published)
           .sort((a, b) => new Date(a.start_date) - new Date(b.start_date));
         setExams(list);
-        // default to the most recent exam so the page shows something
-        // useful immediately, but the student can switch freely
         setSelectedExam(list.length ? list[list.length - 1].id : "");
       })
       .catch((err) => { console.error("Failed to load exams:", err); setExams([]); })
@@ -183,8 +187,7 @@ export default function StudentResults() {
   }, [selectedTerm, currentClassroom]);
 
   // ---------------------------------------------------------------------
-  // Results for the selected exam - properly scoped this time, unlike the
-  // old "fetch everything, filter nothing" version.
+  // Results
   // ---------------------------------------------------------------------
   useEffect(() => {
     setResults([]);
@@ -197,13 +200,7 @@ export default function StudentResults() {
   }, [currentEnrollment, selectedExam]);
 
   // ---------------------------------------------------------------------
-  // Ranking (class/grade position) - a term-level checkpoint aggregate,
-  // not tied to one specific exam, so it's fetched separately.
-  //
-  // No manual checkpoint picker: we ask for the End of Term ranking first
-  // since it's the fuller picture, and only fall back to Midterm if
-  // end-of-term hasn't been computed yet. Whichever one actually has data
-  // is what gets shown, labelled accordingly.
+  // Ranking
   // ---------------------------------------------------------------------
   useEffect(() => {
     setRanking(null);
@@ -225,7 +222,6 @@ export default function StudentResults() {
           setRankingCheckpoint("ENDTERM");
           return;
         }
-        // End of term isn't ready yet - try midterm instead of showing nothing
         return fetchCheckpoint("MIDTERM").then((midterm) => {
           if (cancelled) return;
           if (midterm) {
@@ -241,9 +237,7 @@ export default function StudentResults() {
   }, [currentEnrollment, selectedTerm]);
 
   // ---------------------------------------------------------------------
-  // Group raw ExamResult rows (one per subject+paper) into one row per
-  // subject, combining papers (e.g. Math PP1 + PP2) the way a report card
-  // would, and attach grade/points via the grading scale.
+  // Group papers into one row per subject + attach grade
   // ---------------------------------------------------------------------
   const curriculumType = profile?.student_profile?.curriculum_type;
 
@@ -285,7 +279,7 @@ export default function StudentResults() {
   }, [results, gradingScales, curriculumType]);
 
   // ---------------------------------------------------------------------
-  // Overall stats for the selected exam
+  // Overall stats
   // ---------------------------------------------------------------------
   const stats = useMemo(() => {
     const scored = subjectRows.filter((r) => r.percentage !== null);
@@ -309,9 +303,247 @@ export default function StudentResults() {
   const selectedExamObj = exams.find((e) => String(e.id) === String(selectedExam));
   const selectedTermObj = terms.find((t) => String(t.id) === String(selectedTerm));
 
+  // ---------------------------------------------------------------------
+  // Download report card PDF — only Percentage, Grade, Points/Remark
+  // ---------------------------------------------------------------------
+  const handleDownloadReportPdf = async () => {
+    if (!subjectRows.length) return;
+    try {
+      setDownloadingPdf(true);
+
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+
+      const base64Logo = await getImageBase64(logoImage);
+
+      const generatedOn = new Date().toLocaleDateString("en-KE", {
+        year: "numeric", month: "long", day: "numeric",
+      });
+
+      // --- Header ---
+      if (base64Logo) {
+        doc.addImage(base64Logo, "PNG", 12, 10, 14, 14);
+      }
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(15);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Masomo School", base64Logo ? 30 : 12, 17);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(71, 85, 105);
+      doc.text("Student Report Card", base64Logo ? 30 : 12, 23);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Generated ${generatedOn}`, pageWidth - 12, 16, { align: "right" });
+
+      doc.setDrawColor(203, 213, 225);
+      doc.setLineWidth(0.3);
+      doc.line(12, 28, pageWidth - 12, 28);
+
+      // --- Student meta block ---
+      const studentName = `${profile?.first_name || ""} ${profile?.last_name || ""}`.trim() || "-";
+      const admissionNo = profile?.student_profile?.admission_no || "-";
+      const className = currentClassroom
+        ? `${currentClassroom.grade_level_name} ${currentClassroom.stream_name || ""}`.trim()
+        : "-";
+      const termName = selectedTermObj ? `Term ${selectedTermObj.term_number}` : "-";
+      const yearName = yearLabel(selectedYear);
+
+      autoTable(doc, {
+        startY: 32,
+        theme: "grid",
+        body: [
+          ["Student", studentName, "Admission No", admissionNo],
+          ["Class", className, "Curriculum", curriculumType === "CBC" ? "CBC" : "8-4-4"],
+          ["Academic Year", String(yearName), "Term", termName],
+          ["Exam", selectedExamObj?.name || "-", "Exam Type", selectedExamObj?.exam_type_name || "-"],
+        ],
+        styles: {
+          fontSize: 9,
+          cellPadding: 2.5,
+          lineColor: [226, 232, 240],
+          lineWidth: 0.1,
+          textColor: [51, 65, 85],
+        },
+        columnStyles: {
+          0: { cellWidth: 32, fontStyle: "bold", fillColor: [241, 245, 249], textColor: [71, 85, 105] },
+          1: { cellWidth: 58 },
+          2: { cellWidth: 32, fontStyle: "bold", fillColor: [241, 245, 249], textColor: [71, 85, 105] },
+          3: { cellWidth: "auto" },
+        },
+        margin: { left: 12, right: 12 },
+      });
+
+      let cursorY = doc.lastAutoTable.finalY + 6;
+
+      // --- Summary strip ---
+      const summaryLeft = ranking
+        ? [
+            `Class Position: #${ranking.class_position}${ranking.grade_position ? ` (Grade-wide #${ranking.grade_position})` : ""}`,
+            `Term Average (${rankingCheckpoint === "MIDTERM" ? "Midterm" : "End of Term"}): ${ranking.average_marks}%`,
+          ]
+        : [`Exam Average: ${stats ? stats.average.toFixed(1) : "0.0"}%`];
+
+      if (stats && ranking) {
+        summaryLeft.push(`This Exam Average: ${stats.average.toFixed(1)}%`);
+      }
+
+      autoTable(doc, {
+        startY: cursorY,
+        theme: "plain",
+        body: summaryLeft.map((line) => [line]),
+        styles: {
+          fontSize: 9,
+          cellPadding: 1.8,
+          textColor: [15, 23, 42],
+        },
+        margin: { left: 12, right: 12 },
+      });
+
+      cursorY = doc.lastAutoTable.finalY + 6;
+
+      // --- Subjects table ---
+      const tableColumn =
+        curriculumType === "CBC"
+          ? ["Subject", "Percentage", "Grade", "Remark"]
+          : ["Subject", "Percentage", "Grade", "Points"];
+
+      const tableRows = subjectRows.map((row) => {
+        const pct = row.percentage !== null ? `${row.percentage.toFixed(1)}%` : "-";
+        const grade = row.grade?.letter || "-";
+        if (curriculumType === "CBC") {
+          const remark = row.grade?.remark || "-";
+          return [row.subject_name, pct, grade, remark];
+        }
+        const pts = row.grade?.points !== null && row.grade?.points !== undefined ? String(row.grade.points) : "-";
+        return [row.subject_name, pct, grade, pts];
+      });
+
+      autoTable(doc, {
+        startY: cursorY,
+        head: [tableColumn],
+        body: tableRows,
+        theme: "grid",
+        styles: {
+          fontSize: 9,
+          cellPadding: 2.5,
+          lineColor: [226, 232, 240],
+          lineWidth: 0.1,
+          textColor: [51, 65, 85],
+          overflow: "ellipsize",
+        },
+        headStyles: {
+          fillColor: [15, 23, 42],
+          textColor: [255, 255, 255],
+          fontStyle: "bold",
+          fontSize: 9,
+          cellPadding: 2.5,
+          halign: "left",
+        },
+        bodyStyles: {
+          fontSize: 9,
+          textColor: [51, 65, 85],
+          cellPadding: 2.5,
+          valign: "middle",
+        },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles:
+          curriculumType === "CBC"
+            ? {
+                0: { cellWidth: "auto", halign: "left" },
+                1: { cellWidth: 32, halign: "right" },
+                2: { cellWidth: 24, halign: "center" },
+                3: { cellWidth: 60, halign: "left" },
+              }
+            : {
+                0: { cellWidth: "auto", halign: "left" },
+                1: { cellWidth: 36, halign: "right" },
+                2: { cellWidth: 28, halign: "center" },
+                3: { cellWidth: 28, halign: "center" },
+              },
+        margin: { left: 12, right: 12 },
+        didParseCell: (data) => {
+          if (data.section === "body") {
+            const row = subjectRows[data.row.index];
+            if (!row) return;
+            const pct = row.percentage;
+            if (pct === null || pct === undefined) return;
+            const gradeCol = 2;
+            const pctCol = 1;
+            if (data.column.index === gradeCol) {
+              if (pct >= 80) data.cell.styles.textColor = [22, 163, 74];
+              else if (pct >= 60) data.cell.styles.textColor = [217, 140, 31];
+              else if (pct >= 40) data.cell.styles.textColor = [37, 99, 201];
+              else data.cell.styles.textColor = [220, 38, 38];
+              data.cell.styles.fontStyle = "bold";
+            }
+            if (data.column.index === pctCol) {
+              data.cell.styles.fontStyle = "bold";
+              data.cell.styles.textColor = [15, 23, 42];
+            }
+          }
+        },
+        didDrawPage: () => {
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(7);
+          doc.setTextColor(148, 163, 184);
+          doc.text(
+            `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
+            pageWidth - 12,
+            pageHeight - 6,
+            { align: "right" }
+          );
+          doc.text("Masomo School — Academics Office", 12, pageHeight - 6);
+        },
+      });
+
+      // --- Signature blocks: Class Teacher + Principal ---
+      let finalY = doc.lastAutoTable.finalY + 16;
+      if (finalY > pageHeight - 30) {
+        doc.addPage();
+        finalY = 24;
+      }
+
+      doc.setDrawColor(148, 163, 184);
+      doc.setLineWidth(0.2);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Class Teacher's Signature:", 12, finalY);
+      doc.line(12, finalY + 10, 90, finalY + 10);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Sign & Official Stamp", 12, finalY + 14);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Principal's Signature:", pageWidth - 90, finalY);
+      doc.line(pageWidth - 90, finalY + 10, pageWidth - 12, finalY + 10);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Sign & Official Stamp", pageWidth - 90, finalY + 14);
+
+      const safeName = (studentName || "student").replace(/\s+/g, "_");
+      const safeExam = (selectedExamObj?.name || "exam").replace(/\s+/g, "_");
+      doc.save(`Report_Card_${safeName}_${safeExam}.pdf`);
+    } catch (err) {
+      console.error("Failed to generate report card PDF:", err);
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
   return (
     <div>
-      {/* print-only styling: hides everything except #printable-report */}
       <style>{`
         @media print {
           body * { visibility: hidden; }
@@ -448,7 +680,7 @@ export default function StudentResults() {
       {/* ================= PRINTABLE REPORT AREA ================= */}
       {selectedExam && (
         <div id="printable-report">
-          {/* print-only header, hidden on screen */}
+          {/* print-only header */}
           <div className="d-none d-print-block mb-3">
             <h4 className="mb-0">Report Card</h4>
             <div style={{ fontSize: "0.9rem" }}>
@@ -460,7 +692,7 @@ export default function StudentResults() {
             <hr />
           </div>
 
-          {/* ---- Ranking summary (auto-fetched, no picker needed) ---- */}
+          {/* ---- Ranking summary ---- */}
           {rankingLoading && (
             <div className="alert alert-light no-print" style={{ padding: "0.75rem 1.25rem" }}>
               <span className="text-muted-soft">
@@ -500,7 +732,7 @@ export default function StudentResults() {
             </div>
           )}
 
-          {/* ---- Stats for this specific exam ---- */}
+          {/* ---- Stats ---- */}
           {stats && !resultsLoading && (
             <div className="row g-3 mb-3">
               <div className="col-6 col-md-3">
@@ -546,9 +778,9 @@ export default function StudentResults() {
             </div>
           )}
 
-          {/* ---- Per-subject table ---- */}
+          {/* ---- Per-subject table (clean: no Marks / Out of) ---- */}
           {resultsLoading ? (
-            <TableSkeleton rows={5} columns={5} />
+            <TableSkeleton rows={5} columns={4} />
           ) : subjectRows.length === 0 ? (
             <div className="table-wrap">
               <div className="empty-state">
@@ -577,60 +809,22 @@ export default function StudentResults() {
                   <thead>
                     <tr>
                       <th>Subject</th>
-                      <th style={{ width: "160px" }}>Marks</th>
-                      <th style={{ width: "100px" }}>Out of</th>
-                      <th style={{ width: "100px" }}>%</th>
-                      <th style={{ width: "80px" }}>Grade</th>
-                      {curriculumType !== "CBC" && <th style={{ width: "80px" }}>Points</th>}
+                      <th style={{ width: "120px" }} className="text-end">Percentage</th>
+                      <th style={{ width: "100px" }} className="text-center">Grade</th>
+                      {curriculumType === "CBC" ? (
+                        <th style={{ width: "200px" }}>Remark</th>
+                      ) : (
+                        <th style={{ width: "100px" }} className="text-center">Points</th>
+                      )}
                     </tr>
                   </thead>
                   <tbody>
                     {subjectRows.map((row) => (
-                      <tr key={row.subject_id} className={row.anyAbsent && !row.hasMarks ? "table-light" : ""}>
+                      <tr key={row.subject_id}>
                         <td>
                           <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>{row.subject_name}</span>
                         </td>
-                        <td>
-                          {row.anyAbsent && !row.hasMarks ? (
-                            <span className="badge badge-danger">
-                              <i className="bi bi-person-x me-1"></i>Absent
-                            </span>
-                          ) : row.papers.length > 1 ? (
-                            <span style={{ fontSize: "var(--fs-xs)", color: "var(--ink-600)" }}>
-                              {row.papers.map((p, i) => (
-                                <span key={p.id}>
-                                  <span className="text-muted-soft">{p.paper_name || `Paper ${i + 1}`}: </span>
-                                  {p.is_absent ? "Abs" : p.marks_obtained ?? "-"}
-                                  {i < row.papers.length - 1 ? "  •  " : ""}
-                                </span>
-                              ))}
-                              <br />
-                              <strong style={{ color: "var(--ink-900)" }}>Total: {row.marksTotal}</strong>
-                            </span>
-                          ) : (
-                            <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
-                              {row.hasMarks ? row.marksTotal : "-"}
-                            </span>
-                          )}
-                        </td>
-                        <td style={{ color: "var(--ink-600)" }}>
-                          {row.papers.length > 1 ? (
-                            <span style={{ fontSize: "var(--fs-xs)" }}>
-                              {row.papers.map((p, i) => (
-                                <span key={p.id}>
-                                  <span className="text-muted-soft">{p.paper_name || `Paper ${i + 1}`}: </span>
-                                  {Number(p.max_marks)}
-                                  {i < row.papers.length - 1 ? "  •  " : ""}
-                                </span>
-                              ))}
-                              <br />
-                              <strong>Total: {row.maxTotal}</strong>
-                            </span>
-                          ) : (
-                            row.maxTotal || "-"
-                          )}
-                        </td>
-                        <td>
+                        <td className="text-end">
                           {row.percentage !== null ? (
                             <span className={`badge ${perfBadgeClass(row.percentage)}`}>
                               {row.percentage.toFixed(1)}%
@@ -639,7 +833,7 @@ export default function StudentResults() {
                             <span className="text-muted-soft">-</span>
                           )}
                         </td>
-                        <td>
+                        <td className="text-center">
                           {row.grade ? (
                             <span className={`badge ${perfBadgeClass(row.percentage)}`} style={{ fontWeight: 700 }}>
                               {row.grade.letter}
@@ -648,9 +842,15 @@ export default function StudentResults() {
                             <span className="text-muted-soft">-</span>
                           )}
                         </td>
-                        {curriculumType !== "CBC" && (
+                        {curriculumType === "CBC" ? (
                           <td style={{ color: "var(--ink-600)" }}>
-                            {row.grade?.points !== null && row.grade?.points !== undefined ? row.grade.points : "-"}
+                            {row.grade?.remark || <span className="text-muted-soft">-</span>}
+                          </td>
+                        ) : (
+                          <td className="text-center" style={{ color: "var(--ink-600)" }}>
+                            {row.grade?.points !== null && row.grade?.points !== undefined
+                              ? row.grade.points
+                              : <span className="text-muted-soft">-</span>}
                           </td>
                         )}
                       </tr>
@@ -662,10 +862,30 @@ export default function StudentResults() {
                 <span className="table-wrap__footer-info">
                   Showing <strong>{subjectRows.length}</strong> subject{subjectRows.length !== 1 ? "s" : ""}
                 </span>
-                <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => window.print()}>
-                  <i className="bi bi-printer me-1"></i>
-                  Print Report Card
-                </button>
+                <div className="d-flex gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-primary"
+                    onClick={handleDownloadReportPdf}
+                    disabled={downloadingPdf || subjectRows.length === 0}
+                  >
+                    {downloadingPdf ? (
+                      <>
+                        <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                        Preparing...
+                      </>
+                    ) : (
+                      <>
+                        <i className="bi bi-file-earmark-pdf me-1"></i>
+                        Download Report Card (PDF)
+                      </>
+                    )}
+                  </button>
+                  <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => window.print()}>
+                    <i className="bi bi-printer me-1"></i>
+                    Print Report Card
+                  </button>
+                </div>
               </div>
             </div>
           )}
