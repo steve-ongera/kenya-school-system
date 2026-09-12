@@ -1226,3 +1226,171 @@ def upsert_guardian(
         relationship,
         email,
     )
+    
+    
+    
+# ===========================================================================
+# TIMETABLE MANAGEMENT - append to services.py
+# ===========================================================================
+from collections import defaultdict
+from itertools import cycle
+
+
+def get_unallocated_subjects(academic_year, classroom=None):
+    """
+    For each classroom in academic_year (or just one, if given), returns the
+    subjects that GradeSubject says are offered at that grade but have no
+    TeacherSubjectAllocation row yet. This is what powers the "Unallocated
+    Subjects" tab on the Teacher Allocation page.
+    """
+    classrooms = models.ClassRoom.objects.filter(academic_year=academic_year).select_related(
+        "grade_level", "stream"
+    )
+    if classroom:
+        classrooms = classrooms.filter(pk=classroom.pk)
+
+    result = []
+    for room in classrooms:
+        offered_ids = set(
+            models.GradeSubject.objects.filter(grade_level=room.grade_level).values_list("subject_id", flat=True)
+        )
+        allocated_ids = set(
+            models.TeacherSubjectAllocation.objects.filter(
+                classroom=room, academic_year=academic_year
+            ).values_list("subject_id", flat=True)
+        )
+        missing_ids = offered_ids - allocated_ids
+        if missing_ids:
+            result.append({"classroom": room, "subjects": models.Subject.objects.filter(id__in=missing_ids)})
+    return result
+
+
+def full_allocation_check(academic_year):
+    """True/False + the gap list - the auto-generator's precondition."""
+    gaps = get_unallocated_subjects(academic_year)
+    return (len(gaps) == 0, gaps)
+
+
+@transaction.atomic
+def auto_generate_timetable(term):
+    """
+    Greedy weekly scheduler. Preconditions: every classroom in
+    term.academic_year must have every offered subject allocated to a
+    teacher (see full_allocation_check) - raises ValueError otherwise so
+    the frontend can show exactly which classroom/subject is still open.
+
+    Algorithm (per classroom, subjects interleaved so the same subject
+    doesn't cluster on one day):
+      - build a "todo" queue from each TeacherSubjectAllocation's
+        periods_per_week / double_lesson
+      - walk the week's days in round-robin, and for each todo item find
+        the first day where: the subject hasn't already been placed that
+        day (skipped for double lessons, which may still take 2 days) AND
+        there's a free block of the right size (1 or 2 consecutive
+        LESSON slots) AND the teacher isn't already busy in that slot
+        (checked against every other classroom too)
+      - anything that can't be placed after a full pass is reported back
+        as "skipped" for manual placement on the grid
+
+    This clears and regenerates only the slots this function created for
+    this term/classroom that are still auto_generated=True (hand-placed
+    entries are left alone) before writing the new layout.
+    """
+    ok, gaps = full_allocation_check(term.academic_year)
+    if not ok:
+        raise ValueError({
+            "detail": "Cannot auto-generate: some classrooms still have unallocated subjects.",
+            "gaps": [
+                {"classroom": str(g["classroom"]), "subjects": [s.name for s in g["subjects"]]}
+                for g in gaps
+            ],
+        })
+
+    lesson_slots_by_day = defaultdict(list)
+    for slot in models.PeriodSlot.objects.filter(slot_type=models.PeriodSlot.SlotType.LESSON).order_by(
+        "day", "order"
+    ):
+        lesson_slots_by_day[slot.day].append(slot)
+    days = [d for d, _ in models.PeriodSlot.Day.choices if d in lesson_slots_by_day]
+    if not days:
+        raise ValueError({"detail": "No LESSON period slots configured yet. Set up the timetable structure first."})
+
+    classrooms = models.ClassRoom.objects.filter(academic_year=term.academic_year)
+
+    # wipe only the auto-generated entries for this term - manual edits survive
+    models.TimetableEntry.objects.filter(term=term, auto_generated=True).delete()
+
+    teacher_busy = defaultdict(set)  # period_slot_id -> {teacher_id, ...}
+    for entry in models.TimetableEntry.objects.filter(term=term).select_related("allocation"):
+        teacher_busy[entry.period_slot_id].add(entry.allocation.teacher_id)
+
+    created, skipped = [], []
+
+    for classroom in classrooms:
+        allocations = models.TeacherSubjectAllocation.objects.filter(
+            classroom=classroom, academic_year=term.academic_year
+        ).select_related("teacher", "subject")
+
+        queue = []
+        for alloc in allocations:
+            periods = alloc.periods_per_week or 5
+            if alloc.double_lesson:
+                pairs, remainder = divmod(periods, 2)
+                queue += [(alloc, 2)] * pairs + ([(alloc, 1)] if remainder else [])
+            else:
+                queue += [(alloc, 1)] * periods
+
+        # interleave so the same subject isn't queued back-to-back
+        by_subject = defaultdict(list)
+        for item in queue:
+            by_subject[item[0].subject_id].append(item)
+        interleaved = []
+        while any(by_subject.values()):
+            for subj_id in list(by_subject):
+                if by_subject[subj_id]:
+                    interleaved.append(by_subject[subj_id].pop(0))
+        queue = interleaved
+
+        day_cycle = cycle(days)
+        subjects_placed_today = defaultdict(set)  # day -> {subject_id, ...}
+
+        # occupied slots for THIS classroom, refreshed as we place entries
+        classroom_occupied = set(
+            models.TimetableEntry.objects.filter(classroom=classroom, term=term).values_list(
+                "period_slot_id", flat=True
+            )
+        )
+
+        for alloc, block_size in queue:
+            placed = False
+            for _ in range(len(days) * 2):  # bounded attempts across the week
+                day = next(day_cycle)
+                if alloc.subject_id in subjects_placed_today[day] and not alloc.double_lesson:
+                    continue
+                slots = lesson_slots_by_day[day]
+                for start in range(len(slots) - block_size + 1):
+                    block = slots[start:start + block_size]
+                    if any(s.id in classroom_occupied for s in block):
+                        continue
+                    if any(alloc.teacher_id in teacher_busy[s.id] for s in block):
+                        continue
+                    for s in block:
+                        entry = models.TimetableEntry.objects.create(
+                            classroom=classroom, period_slot=s, term=term, allocation=alloc,
+                            is_double=(block_size == 2), auto_generated=True,
+                        )
+                        created.append(entry.id)
+                        classroom_occupied.add(s.id)
+                        teacher_busy[s.id].add(alloc.teacher_id)
+                    subjects_placed_today[day].add(alloc.subject_id)
+                    placed = True
+                    break
+                if placed:
+                    break
+            if not placed:
+                skipped.append({
+                    "classroom": str(classroom), "subject": alloc.subject.name,
+                    "teacher": alloc.teacher.get_full_name(),
+                })
+
+    return {"created_count": len(created), "skipped": skipped}

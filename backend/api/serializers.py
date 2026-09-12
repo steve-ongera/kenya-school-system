@@ -4,7 +4,7 @@ from decimal import Decimal
 from django.db.models import Count
 from . import utils
 from . import models, services
-
+from django.db import transaction
 
 # ---------------------------------------------------------------------------
 # USERS / AUTH
@@ -1097,3 +1097,99 @@ class ConversationCreateSerializer(serializers.Serializer):
         message = models.DirectMessage.objects.create(conversation=conversation, sender=sender, body=validated_data["body"])
         message.read_by.add(sender)
         return conversation
+    
+    
+    
+# ===========================================================================
+# TIMETABLE MANAGEMENT - append to serializers.py
+# ===========================================================================
+
+class PeriodSlotSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.PeriodSlot
+        fields = "__all__"
+
+
+class PeriodSlotBulkItemSerializer(serializers.Serializer):
+    """One row of the structure-builder form."""
+    day = serializers.ChoiceField(choices=models.PeriodSlot.Day.choices)
+    order = serializers.IntegerField(min_value=1)
+    slot_type = serializers.ChoiceField(choices=models.PeriodSlot.SlotType.choices)
+    label = serializers.CharField(required=False, allow_blank=True, max_length=40)
+    start_time = serializers.TimeField()
+    end_time = serializers.TimeField()
+
+
+class PeriodSlotBulkSetSerializer(serializers.Serializer):
+    """
+    POST body: { "slots": [ {day, order, slot_type, label, start_time, end_time}, ... ] }
+    Replaces the ENTIRE weekly structure in one call - this is what the
+    Structure Setup tab submits. Wipes existing PeriodSlots first, since a
+    structure change (e.g. removing a period) can't be reconciled row by
+    row without leaving stale slots (and their TimetableEntries) behind.
+    """
+    slots = PeriodSlotBulkItemSerializer(many=True)
+
+    def validate_slots(self, value):
+        if not value:
+            raise serializers.ValidationError("At least one slot is required.")
+        seen = set()
+        for row in value:
+            key = (row["day"], row["order"])
+            if key in seen:
+                raise serializers.ValidationError(f"Duplicate day/order: {key}")
+            seen.add(key)
+        return value
+
+    def save(self):
+        with transaction.atomic():
+            models.PeriodSlot.objects.all().delete()  # cascades TimetableEntry too
+            objs = [models.PeriodSlot(**row) for row in self.validated_data["slots"]]
+            return models.PeriodSlot.objects.bulk_create(objs)
+
+
+class TimetableEntrySerializer(serializers.ModelSerializer):
+    subject_name = serializers.CharField(source="allocation.subject.name", read_only=True)
+    subject_code = serializers.CharField(source="allocation.subject.code", read_only=True)
+    teacher_name = serializers.CharField(source="allocation.teacher.get_full_name", read_only=True)
+    day = serializers.CharField(source="period_slot.day", read_only=True)
+    period_order = serializers.IntegerField(source="period_slot.order", read_only=True)
+    period_label = serializers.CharField(source="period_slot.label", read_only=True)
+
+    class Meta:
+        model = models.TimetableEntry
+        fields = "__all__"
+        read_only_fields = ["auto_generated"]
+
+    def validate(self, attrs):
+        classroom = attrs.get("classroom") or getattr(self.instance, "classroom", None)
+        period_slot = attrs.get("period_slot") or getattr(self.instance, "period_slot", None)
+        term = attrs.get("term") or getattr(self.instance, "term", None)
+        allocation = attrs.get("allocation") or getattr(self.instance, "allocation", None)
+
+        if period_slot and period_slot.slot_type != models.PeriodSlot.SlotType.LESSON:
+            raise serializers.ValidationError("Can only schedule a lesson into a LESSON slot.")
+        if allocation and classroom and allocation.classroom_id != classroom.id:
+            raise serializers.ValidationError("This allocation does not belong to the selected classroom.")
+
+        # teacher clash: same period_slot+term, different classroom, same teacher
+        if period_slot and term and allocation:
+            clash = models.TimetableEntry.objects.filter(
+                period_slot=period_slot, term=term, allocation__teacher=allocation.teacher
+            ).exclude(classroom=classroom)
+            if self.instance:
+                clash = clash.exclude(pk=self.instance.pk)
+            if clash.exists():
+                raise serializers.ValidationError(
+                    f"{allocation.teacher.get_full_name()} is already teaching another class in this slot."
+                )
+        return attrs
+
+
+class TimetableGridQuerySerializer(serializers.Serializer):
+    term = serializers.PrimaryKeyRelatedField(queryset=models.Term.objects.all())
+    classroom = serializers.PrimaryKeyRelatedField(queryset=models.ClassRoom.objects.all())
+
+
+class AutoGenerateTimetableSerializer(serializers.Serializer):
+    term = serializers.PrimaryKeyRelatedField(queryset=models.Term.objects.all())
