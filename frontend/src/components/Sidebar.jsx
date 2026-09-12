@@ -35,6 +35,7 @@ const NAV_BY_ROLE = {
         { to: "/admin/rankings", icon: "bi-bar-chart-line", label: "Rankings" },
         { to: "/admin/promotions", icon: "bi-arrow-up-circle", label: "Promotions" },
         { to: "/admin/calendar", icon: "bi-calendar-week", label: "Academic Calendar" },
+        { to: "/admin/timetable", icon: "bi-grid-3x3", label: "Timetable Management" }, // NEW
       ],
     },
     {

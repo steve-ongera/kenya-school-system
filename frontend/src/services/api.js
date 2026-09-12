@@ -173,12 +173,24 @@ export const studentsApi = {
     api.post(`/enrollments/${enrollmentId}/subjects/`, { subject_ids: subjectIds }),
 };
 
+
+export const timetableApi = {
+  periodSlots: () => api.get("/period-slots/"),
+  bulkSetStructure: (slots) => api.post("/period-slots/bulk_set/", { slots }),
+  grid: (term, classroom) => api.get("/timetable-entries/grid/", { params: { term, classroom } }),
+  createEntry: (payload) => api.post("/timetable-entries/", payload),
+  updateEntry: (id, payload) => api.patch(`/timetable-entries/${id}/`, payload),
+  deleteEntry: (id) => api.delete(`/timetable-entries/${id}/`),
+  autoGenerate: (term) => api.post("/timetable-entries/auto_generate/", { term }),
+};
+
 // ---------------------------------------------------------------------------
 // TEACHER ALLOCATION
 // ---------------------------------------------------------------------------
 export const teacherApi = {
   myAllocations: () => api.get("/my-allocations/"),
   allAllocations: (params) => api.get("/teacher-allocations/", { params }),
+  unallocated: (params) => api.get("/teacher-allocations/unallocated/", { params }),
 };
 
 // ---------------------------------------------------------------------------
