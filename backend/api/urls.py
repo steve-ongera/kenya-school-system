@@ -34,6 +34,8 @@ router.register(r"communications", views.CommunicationViewSet, basename="communi
 router.register(r"notifications", views.NotificationViewSet, basename="notification")
 router.register(r"conversations", views.ConversationViewSet, basename="conversation")
 router.register(r"login-attempts", views.LoginAttemptLogViewSet, basename="login-attempt")
+router.register(r"period-slots", views.PeriodSlotViewSet, basename="period-slots")
+router.register(r"timetable-entries", views.TimetableEntryViewSet, basename="timetable-entries")
 
 urlpatterns = [
     path("auth/login/", views.LoginView.as_view(), name="login"),  # replaces old login route
