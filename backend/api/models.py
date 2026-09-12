@@ -438,6 +438,15 @@ class TeacherSubjectAllocation(models.Model):
     subject = models.ForeignKey(Subject, on_delete=models.CASCADE, related_name="allocations")
     classroom = models.ForeignKey(ClassRoom, on_delete=models.CASCADE, related_name="allocations")
     academic_year = models.ForeignKey(AcademicYear, on_delete=models.CASCADE, related_name="allocations")
+    
+    periods_per_week = models.PositiveSmallIntegerField(
+        default=5, help_text="How many lesson periods/week this allocation needs."
+    )
+    double_lesson = models.BooleanField(
+        default=False,
+        help_text="Schedule periods in consecutive pairs (e.g. double Maths) instead of singles.",
+    )
+
 
     class Meta:
         db_table = "teacher_subject_allocations"
