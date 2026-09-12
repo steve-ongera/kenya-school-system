@@ -382,25 +382,33 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="results")
     def results(self, request, pk=None):
         """
-        GET /classrooms/{id}/results/?term=<id>
+        GET /classrooms/{id}/results/?term=<id>&exam=<id>
 
         Ranked results for every ACTIVE student in this classroom for one
         term: overall average/position and a per-subject average % and grade
-        letter for that term. This is what powers the View modal's ranking
-        table and the individual/bulk report-card PDFs on the frontend.
+        letter. Ranking and averages are computed LIVE from ExamResult rows -
+        no dependency on /rank/ having been run separately.
 
-        Ranking and averages are computed LIVE from whatever ExamResult rows
-        exist right now - there is no dependency on /rank/ having been run
-        separately. Students with at least one recorded mark are ranked by
-        average percentage (ties share a rank). Students with NO marks at
-        all for the term are still included, ranked after everyone with
-        marks, ordered by admission number, instead of being left unranked.
+        - Omit `exam` (or leave it blank) to combine EVERY exam in the term
+        (CAT + Midterm + Endterm etc. all averaged together) - this is the
+        original behaviour.
+        - Pass `exam=<Exam id>` to scope everything (subjects, averages,
+        ranking, remarks) to just that one exam - e.g. rank the class on
+        the Midterm Exam alone, separately from the End-term Exam.
+
+        Students with at least one recorded mark in scope are ranked by
+        average percentage (ties share a rank). Students with NO marks in
+        scope are still included, ranked after everyone with marks, ordered
+        by admission number, instead of being left unranked.
 
         The subject list is the UNION of subjects officially offered at this
         grade (GradeSubject) and any subject that actually has marks recorded
-        for this classroom/term - so a subject a teacher has entered marks
-        for is never silently dropped just because Grade Offerings hasn't
-        been updated yet.
+        in scope - so a subject a teacher has entered marks for is never
+        silently dropped just because Grade Offerings hasn't been updated yet.
+
+        The response also includes `available_exams` - every Exam configured
+        for this classroom's grade level in this term - so the frontend can
+        render the exam filter dropdown without a second API call.
         """
         classroom = self.get_object()
         term_id = request.query_params.get("term")
@@ -411,6 +419,25 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
         if not term:
             return Response(
                 {"detail": "No term specified and no current term is configured."}, status=400
+            )
+
+        available_exams = models.Exam.objects.filter(
+            term=term, grade_level=classroom.grade_level
+        ).select_related("exam_type").order_by("exam_type__order")
+
+        exam_id = request.query_params.get("exam")
+        selected_exam = None
+        if exam_id:
+            selected_exam = generics.get_object_or_404(
+                models.Exam, pk=exam_id, term=term, grade_level=classroom.grade_level
+            )
+
+        def result_filter(**extra):
+            base = {"exam__term": term, **extra}
+            if selected_exam:
+                base = {"exam": selected_exam, **extra}
+            return models.ExamResult.objects.filter(
+                is_absent=False, marks_obtained__isnull=False, max_marks__gt=0, **base
             )
 
         enrollments = (
@@ -424,10 +451,7 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
             .values_list("id", flat=True)
         )
         scored_subject_ids = set(
-            models.ExamResult.objects.filter(
-                enrollment__in=enrollments, exam__term=term,
-                is_absent=False, marks_obtained__isnull=False, max_marks__gt=0,
-            ).values_list("subject_id", flat=True)
+            result_filter(enrollment__in=enrollments).values_list("subject_id", flat=True)
         )
         subjects = (
             models.Subject.objects.filter(id__in=(offered_subject_ids | scored_subject_ids))
@@ -453,10 +477,7 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
             subject_marks = []
             pct_values = []
             for subject in subjects:
-                qs = models.ExamResult.objects.filter(
-                    enrollment=enrollment, subject=subject, exam__term=term,
-                    is_absent=False, marks_obtained__isnull=False, max_marks__gt=0,
-                )
+                qs = result_filter(enrollment=enrollment, subject=subject)
                 if qs.exists():
                     total_pct = sum(
                         float(r.marks_obtained) / float(r.max_marks) * 100 for r in qs
@@ -527,8 +548,18 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
             "classroom": str(classroom),
             "term": str(term),
             "term_id": term.id,
+            "selected_exam_id": selected_exam.id if selected_exam else None,
             "subjects": [s.name for s in subjects],
             "results": results_payload,
+            "available_exams": [
+                {
+                    "id": ex.id,
+                    "name": ex.name,
+                    "exam_type_name": ex.exam_type.name,
+                    "is_published": ex.is_published,
+                }
+                for ex in available_exams
+            ],
         })
 
 # ---------------------------------------------------------------------------
