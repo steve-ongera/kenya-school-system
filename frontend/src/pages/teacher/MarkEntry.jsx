@@ -1,6 +1,26 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import api, { teacherApi, examsApi, studentsApi, calendarApi, academicsApi } from "../../services/api";
 import Breadcrumb from "../../components/Breadcrumb";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import logoImage from "../../assets/masomo_logo.png";
+
+// Load an image URL as a base64 data URL (for embedding the logo in PDFs)
+const getImageBase64 = (url) =>
+  new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.src = url;
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = () => resolve(null);
+  });
 
 export default function TeacherMarkEntry() {
   const [allocations, setAllocations] = useState([]);
@@ -12,9 +32,6 @@ export default function TeacherMarkEntry() {
   const [selectedExam, setSelectedExam] = useState("");
   const [maxMarks, setMaxMarks] = useState(100);
   const [enrollments, setEnrollments] = useState([]);
-  // marks[enrollment_id][columnKey] = { marks_obtained, is_absent }
-  // columnKey is "single" when the subject has no configured papers,
-  // or the SubjectPaper id (as a string) when it does.
   const [marks, setMarks] = useState({});
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("info");
@@ -22,14 +39,11 @@ export default function TeacherMarkEntry() {
   const [addingPaper, setAddingPaper] = useState(false);
   const [loading, setLoading] = useState(false);
   const [marksLoading, setMarksLoading] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
-  // Keeps a live copy of subjectsById for effects that shouldn't
-  // re-run (and wipe entered marks) every time subjectsById changes.
   const subjectsByIdRef = useRef({});
   useEffect(() => { subjectsByIdRef.current = subjectsById; }, [subjectsById]);
 
-  // ---- initial load: allocations + classrooms (for grade_level lookup)
-  // + subjects (for paper configuration) ----
   useEffect(() => {
     const loadStatic = async () => {
       setLoading(true);
@@ -59,8 +73,6 @@ export default function TeacherMarkEntry() {
 
   const allocation = allocations.find((a) => String(a.id) === String(selectedAllocation));
 
-  // ---- auto-load exams for this allocation's grade level + active
-  // academic year, published or not, as soon as a class/subject is picked ----
   useEffect(() => {
     setSelectedExam("");
     if (!allocation) { setExams([]); return; }
@@ -77,8 +89,6 @@ export default function TeacherMarkEntry() {
         ]);
         const termIds = new Set((termsRes.data.results ?? termsRes.data).map((t) => t.id));
         const allExams = examsRes.data.results ?? examsRes.data;
-        // grade_level already narrows it down; this pins it further to
-        // the specific academic year the allocation belongs to.
         setExams(allExams.filter((ex) => termIds.has(ex.term)));
       } catch (error) {
         console.error("Failed to load exams:", error);
@@ -90,8 +100,6 @@ export default function TeacherMarkEntry() {
     load();
   }, [selectedAllocation, allocation, classroomsById]);
 
-  // ---- columns to render: one per configured SubjectPaper, or a
-  // single unlabeled box when the subject has none ----
   const subject = allocation ? subjectsById[allocation.subject] : null;
   const configuredPapers = (subject?.papers ?? [])
     .slice()
@@ -105,12 +113,6 @@ export default function TeacherMarkEntry() {
       }))
     : [{ key: "single", id: null, label: "Marks", max_marks: Number(maxMarks) || 100 }];
 
-  // ---- walks every page of the enrollments endpoint for a classroom.
-  // The endpoint is paginated (25/page by default), which was silently
-  // truncating a class to its first page of students — e.g. a 28-student
-  // class only showed 25. This follows `next` until DRF says there's no
-  // more, so it's correct no matter how large a class gets or what the
-  // page size is configured to. ----
   const fetchAllEnrollments = async (classroomId) => {
     let results = [];
     let nextUrl = null;
@@ -120,13 +122,12 @@ export default function TeacherMarkEntry() {
       const { data } = nextUrl ? await api.get(nextUrl) : await studentsApi.enrollments(params);
       results = results.concat(data.results ?? data);
       nextUrl = data.next || null;
-      params = null; // params are baked into `next` after the first call
+      params = null;
     } while (nextUrl);
 
     return results;
   };
 
-  // ---- load the roster + seed blank marks whenever the allocation changes ----
   useEffect(() => {
     if (!allocation) { setEnrollments([]); setMarks({}); return; }
     setLoading(true);
@@ -147,17 +148,9 @@ export default function TeacherMarkEntry() {
       setMarks(initial);
       setLoading(false);
     }).catch(() => setLoading(false));
-    // subjectsById is read via ref on purpose, so adding a paper later
-    // doesn't re-trigger this and wipe marks already entered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAllocation]);
 
-  // ---- once class+exam are both chosen and the roster is loaded, pull
-  // back any marks already saved for this exam/subject/classroom and
-  // overlay them onto the blank grid seeded above. This is what makes
-  // "come back later and see what you already entered" work - previously
-  // the grid was always reset to blank and existing ExamResult rows were
-  // never fetched. ----
   useEffect(() => {
     if (!allocation || !selectedExam || enrollments.length === 0) return;
 
@@ -171,22 +164,19 @@ export default function TeacherMarkEntry() {
       exam: selectedExam,
       subject: allocation.subject,
       enrollment__classroom: allocation.classroom,
-      page_size: 1000, // large enough to cover any single class roster
+      page_size: 1000,
     }).then(({ data }) => {
       if (cancelled) return;
       const list = data.results ?? data;
 
       setMarks((prev) => {
         const next = { ...prev };
-        // make sure every student/column pair exists first, in case this
-        // runs before (or without) the roster-seed effect above
         enrollments.forEach((en) => {
           next[en.id] = { ...next[en.id] };
           cols.forEach((key) => {
             next[en.id][key] = next[en.id][key] || { marks_obtained: "", is_absent: false };
           });
         });
-        // overlay whatever was already saved for this exam
         list.forEach((r) => {
           const key = r.paper ? String(r.paper) : "single";
           if (!next[r.enrollment]) return;
@@ -207,8 +197,6 @@ export default function TeacherMarkEntry() {
     });
 
     return () => { cancelled = true; };
-    // enrollments is included so this re-runs once the roster for a newly
-    // selected allocation has actually finished loading
   }, [selectedExam, selectedAllocation, enrollments, allocation]);
 
   const updateMark = (enrollmentId, columnKey, field, value) => {
@@ -221,10 +209,6 @@ export default function TeacherMarkEntry() {
     }));
   };
 
-  // ---- "she can add a box" — creates a real SubjectPaper via the API so
-  // it's a genuine extra paper for this subject from now on, not just a
-  // one-off visual column. Requires SubjectPaperViewSet to allow teacher
-  // writes (see note below the component). ----
   const addPaperColumn = async () => {
     if (!subject) return;
     setAddingPaper(true);
@@ -232,7 +216,7 @@ export default function TeacherMarkEntry() {
     try {
       const nextNumber = configuredPapers.length
         ? configuredPapers[configuredPapers.length - 1].paper_number + 1
-        : 2; // subject had one implicit "Paper 1" box before this
+        : 2;
       const { data: newPaper } = await academicsApi.addSubjectPaper({
         subject: subject.id,
         paper_number: nextNumber,
@@ -249,8 +233,6 @@ export default function TeacherMarkEntry() {
         },
       }));
 
-      // seed the new column for every student already on screen, without
-      // touching what's already been typed into the existing columns
       setMarks((prev) => {
         const next = { ...prev };
         enrollments.forEach((en) => {
@@ -277,8 +259,6 @@ export default function TeacherMarkEntry() {
     try {
       let totalSaved = 0;
       let totalErrors = 0;
-      // one bulk_entry call per paper column — the backend stores one
-      // ExamResult row per (exam, enrollment, subject, paper)
       for (const col of paperColumns) {
         const rows = enrollments.map((en) => {
           const cell = marks[en.id]?.[col.key] || {};
@@ -324,27 +304,285 @@ export default function TeacherMarkEntry() {
   const totalStudents = enrollments.length;
   const totalCells = totalStudents * paperColumns.length;
 
+  // ---------------------------------------------------------------------
+  // Per-student aggregate — total % across all papers, sorted best first.
+  // Keeps the raw per-paper mark for the PDF, so we can show them exactly.
+  // ---------------------------------------------------------------------
+  const sortedStudents = useMemo(() => {
+    const list = enrollments.map((en) => {
+      let marksTotal = 0;
+      let maxTotal = 0;
+      let hasAny = false;
+
+      const perPaper = paperColumns.map((col) => {
+        const cell = marks[en.id]?.[col.key] || {};
+        const maxM = Number(col.max_marks) || 0;
+        if (cell.is_absent) {
+          maxTotal += maxM;
+          return { key: col.key, value: "Abs", absent: true };
+        }
+        if (cell.marks_obtained !== "" && cell.marks_obtained != null) {
+          const v = Number(cell.marks_obtained);
+          marksTotal += v;
+          maxTotal += maxM;
+          hasAny = true;
+          return { key: col.key, value: String(v), absent: false };
+        }
+        return { key: col.key, value: "-", absent: false };
+      });
+
+      const percentage = maxTotal > 0 && hasAny ? (marksTotal / maxTotal) * 100 : null;
+
+      return {
+        enrollment: en,
+        perPaper,
+        marksTotal,
+        maxTotal,
+        percentage,
+      };
+    });
+
+    return list.sort((a, b) => {
+      if (a.percentage === null && b.percentage === null) return 0;
+      if (a.percentage === null) return 1;
+      if (b.percentage === null) return -1;
+      return b.percentage - a.percentage;
+    });
+  }, [enrollments, marks, paperColumns]);
+
+  // ---------------------------------------------------------------------
+  // Download the class performance PDF — per-paper exact marks, no grade.
+  // ---------------------------------------------------------------------
+  const handleDownloadClassPdf = async () => {
+    if (!enrollments.length) return;
+    try {
+      setDownloadingPdf(true);
+
+      // Landscape when there are multiple papers so the per-paper columns
+      // have room; portrait for a single-paper subject (cleaner look).
+      const hasMultiplePapers = paperColumns.length > 1;
+      const orientation = hasMultiplePapers ? "landscape" : "portrait";
+      const doc = new jsPDF({ orientation, unit: "mm", format: "a4" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+
+      const base64Logo = await getImageBase64(logoImage);
+
+      const generatedOn = new Date().toLocaleDateString("en-KE", {
+        year: "numeric", month: "long", day: "numeric",
+      });
+
+      const examObj = exams.find((e) => String(e.id) === String(selectedExam));
+
+      // --- Header ---
+      if (base64Logo) {
+        doc.addImage(base64Logo, "PNG", 12, 10, 14, 14);
+      }
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(15);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Masomo School", base64Logo ? 30 : 12, 17);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(71, 85, 105);
+      doc.text("Class Performance Report", base64Logo ? 30 : 12, 23);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Generated ${generatedOn}`, pageWidth - 12, 16, { align: "right" });
+
+      doc.setDrawColor(203, 213, 225);
+      doc.setLineWidth(0.3);
+      doc.line(12, 28, pageWidth - 12, 28);
+
+      // --- Meta block ---
+      autoTable(doc, {
+        startY: 32,
+        theme: "grid",
+        body: [
+          ["Subject", allocation?.subject_name || "-", "Class", allocation?.classroom_label || "-"],
+          ["Exam", examObj?.name || "-", "Exam Type", examObj?.exam_type_name || "-"],
+          ["Papers", String(paperColumns.length), "Students", String(sortedStudents.length)],
+        ],
+        styles: {
+          fontSize: 9,
+          cellPadding: 2.5,
+          lineColor: [226, 232, 240],
+          lineWidth: 0.1,
+          textColor: [51, 65, 85],
+        },
+        columnStyles: {
+          0: { cellWidth: 30, fontStyle: "bold", fillColor: [241, 245, 249], textColor: [71, 85, 105] },
+          1: { cellWidth: hasMultiplePapers ? 80 : 60 },
+          2: { cellWidth: 30, fontStyle: "bold", fillColor: [241, 245, 249], textColor: [71, 85, 105] },
+          3: { cellWidth: "auto" },
+        },
+        margin: { left: 12, right: 12 },
+      });
+
+      const cursorY = doc.lastAutoTable.finalY + 6;
+
+      // --- Ranked students table: per-paper mark columns + overall % ---
+      // Build column headers: "#", "Adm No", "Student", <Paper 1>, <Paper 2>, ..., "Overall %"
+      const tableColumn = ["#", "Adm No", "Student", ...paperColumns.map((c) => c.label), "Overall %"];
+
+      const tableRows = sortedStudents.map((s, i) => {
+        const pct = s.percentage !== null ? `${s.percentage.toFixed(1)}%` : "-";
+        const paperCells = paperColumns.map((col) => {
+          const cell = s.perPaper.find((p) => p.key === col.key);
+          return cell ? cell.value : "-";
+        });
+        return [i + 1, s.enrollment.admission_no, s.enrollment.student_name, ...paperCells, pct];
+      });
+
+            // Base column widths for the fixed columns
+      const colStyles = {
+        0: { cellWidth: 10, halign: "center" },                                                  // #
+        1: { cellWidth: hasMultiplePapers ? 40 : 42, halign: "left" },                           // Adm No
+        2: { cellWidth: hasMultiplePapers ? 72 : 76, halign: "left", overflow: "ellipsize" },    // Student (widened)
+      };
+      // Per-paper columns — equal share of remaining width
+      const perPaperWidth = hasMultiplePapers ? 22 : 26;
+      paperColumns.forEach((_, idx) => {
+        colStyles[3 + idx] = { cellWidth: perPaperWidth, halign: "center" };
+      });
+      // Overall % is the last column
+      colStyles[3 + paperColumns.length] = { cellWidth: 26, halign: "right" };
+
+      autoTable(doc, {
+        startY: cursorY,
+        head: [tableColumn],
+        body: tableRows,
+        theme: "grid",
+        styles: {
+          fontSize: 9,
+          cellPadding: 2.5,
+          lineColor: [226, 232, 240],
+          lineWidth: 0.1,
+          textColor: [51, 65, 85],
+          overflow: "ellipsize",
+        },
+        headStyles: {
+          fillColor: [15, 23, 42],
+          textColor: [255, 255, 255],
+          fontStyle: "bold",
+          fontSize: 9,
+          cellPadding: 2.5,
+          halign: "left",
+        },
+        bodyStyles: {
+          fontSize: 9,
+          textColor: [51, 65, 85],
+          cellPadding: 2.5,
+          valign: "middle",
+        },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles: colStyles,
+        margin: { left: 12, right: 12 },
+        didParseCell: (data) => {
+          if (data.section !== "body") return;
+          const row = sortedStudents[data.row.index];
+          if (!row) return;
+
+          const overallColIdx = 3 + paperColumns.length;
+          // Bold the Overall % cell
+          if (data.column.index === overallColIdx) {
+            data.cell.styles.fontStyle = "bold";
+            data.cell.styles.textColor = [15, 23, 42];
+          }
+          // Flag absent cells in red
+          const isPaperCol = data.column.index >= 3 && data.column.index < overallColIdx;
+          if (isPaperCol && String(data.cell.raw).toLowerCase() === "abs") {
+            data.cell.styles.textColor = [220, 38, 38];
+            data.cell.styles.fontStyle = "bold";
+          }
+        },
+        didDrawPage: () => {
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(7);
+          doc.setTextColor(148, 163, 184);
+          doc.text(
+            `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
+            pageWidth - 12,
+            pageHeight - 6,
+            { align: "right" }
+          );
+          doc.text("Masomo School — Academics Office", 12, pageHeight - 6);
+        },
+      });
+
+      // --- Signature blocks ---
+      let finalY = doc.lastAutoTable.finalY + 16;
+      if (finalY > pageHeight - 30) {
+        doc.addPage();
+        finalY = 24;
+      }
+
+      doc.setDrawColor(148, 163, 184);
+      doc.setLineWidth(0.2);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Class Teacher's Signature:", 12, finalY);
+      doc.line(12, finalY + 10, 90, finalY + 10);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Sign & Official Stamp", 12, finalY + 14);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Principal's Signature:", pageWidth - 90, finalY);
+      doc.line(pageWidth - 90, finalY + 10, pageWidth - 12, finalY + 10);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Sign & Official Stamp", pageWidth - 90, finalY + 14);
+
+      const safeSubject = (allocation?.subject_name || "subject").replace(/\s+/g, "_");
+      const safeClass = (allocation?.classroom_label || "class").replace(/\s+/g, "_");
+      const safeExam = (examObj?.name || "exam").replace(/\s+/g, "_");
+      doc.save(`Class_Report_${safeSubject}_${safeClass}_${safeExam}.pdf`);
+    } catch (err) {
+      console.error("Failed to generate class PDF:", err);
+      setMessage("Could not generate the class PDF.");
+      setMessageType("danger");
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
   return (
     <div>
-      {/* Breadcrumb */}
       <Breadcrumb items={[
         { label: "Dashboard", href: "/teacher" },
         { label: "Marks", href: "/teacher/marks" },
         { label: "Enter Marks", href: "#" },
       ]} />
 
-      {/* Page Header */}
+      {/* Page Header with logo */}
       <div className="page-header">
-        <div>
-          <h1 className="page-title">Enter Marks</h1>
-          <p className="page-subtitle">
-            Pick one of your allocated classes, then choose from the exams already set up for that
-            grade this academic year — key in the whole class at once.
-          </p>
+        <div className="d-flex align-items-center gap-3">
+          <img
+            src={logoImage}
+            alt="Masomo School"
+            style={{ width: 48, height: 48, objectFit: "contain" }}
+          />
+          <div>
+            <h1 className="page-title">Enter Marks</h1>
+            <p className="page-subtitle mb-0">
+              Pick one of your allocated classes, then choose from the exams already set up for that
+              grade this academic year — key in the whole class at once.
+            </p>
+          </div>
         </div>
       </div>
 
-      {/* Messages */}
       {message && (
         <div className={`alert alert-${messageType} alert-dismissible fade show`} role="alert">
           {message}
@@ -364,9 +602,9 @@ export default function TeacherMarkEntry() {
               <i className="bi bi-door-open me-1" style={{ color: "var(--blue-700)" }}></i>
               Class & Subject
             </label>
-            <select 
-              className="form-select" 
-              value={selectedAllocation} 
+            <select
+              className="form-select"
+              value={selectedAllocation}
               onChange={(e) => setSelectedAllocation(e.target.value)}
             >
               <option value="">Select...</option>
@@ -388,9 +626,9 @@ export default function TeacherMarkEntry() {
               <i className="bi bi-clipboard me-1" style={{ color: "var(--blue-700)" }}></i>
               Exam
             </label>
-            <select 
-              className="form-select" 
-              value={selectedExam} 
+            <select
+              className="form-select"
+              value={selectedExam}
               onChange={(e) => setSelectedExam(e.target.value)}
               disabled={!allocation || examsLoading}
             >
@@ -415,10 +653,10 @@ export default function TeacherMarkEntry() {
               <i className="bi bi-123 me-1" style={{ color: "var(--blue-700)" }}></i>
               Max Marks
             </label>
-            <input 
-              type="number" 
-              className="form-control" 
-              value={maxMarks} 
+            <input
+              type="number"
+              className="form-control"
+              value={maxMarks}
               onChange={(e) => setMaxMarks(e.target.value)}
               min="1"
               disabled={paperColumns.length > 1 || paperColumns[0]?.id !== null}
@@ -482,7 +720,7 @@ export default function TeacherMarkEntry() {
                     Students
                     <span className="badge badge-neutral ms-2">{totalStudents}</span>
                   </span>
-                  <div className="d-flex align-items-center gap-3">
+                  <div className="d-flex align-items-center gap-3 flex-wrap">
                     <span style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>
                       {marksLoading ? (
                         <>
@@ -509,6 +747,25 @@ export default function TeacherMarkEntry() {
                         <i className="bi bi-plus-lg me-1"></i>
                       )}
                       Add Paper
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-success"
+                      onClick={handleDownloadClassPdf}
+                      disabled={downloadingPdf || sortedStudents.length === 0}
+                      title="Download a ranked class performance PDF"
+                    >
+                      {downloadingPdf ? (
+                        <>
+                          <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                          Preparing...
+                        </>
+                      ) : (
+                        <>
+                          <i className="bi bi-file-earmark-pdf me-1"></i>
+                          Download Report (PDF)
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>
@@ -582,9 +839,9 @@ export default function TeacherMarkEntry() {
               </div>
 
               <div className="mt-3 d-flex gap-2">
-                <button 
-                  className="btn btn-success" 
-                  type="submit" 
+                <button
+                  className="btn btn-success"
+                  type="submit"
                   disabled={!selectedExam || saving || loading}
                 >
                   {saving ? (
