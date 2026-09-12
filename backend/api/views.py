@@ -378,6 +378,102 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
             
             
         )
+        
+    @action(detail=True, methods=["get"], url_path="results")
+    def results(self, request, pk=None):
+        """
+        GET /classrooms/{id}/results/?term=<id>
+
+        Ranked results for every ACTIVE student in this classroom for one
+        term: overall average/position (from the ENDTERM
+        TermPositionRanking, if it's been computed via /rank/) plus a
+        per-subject average % and grade letter for that term. This is what
+        powers the View modal's ranking table and the individual/bulk
+        report-card PDFs on the frontend.
+
+        If ranking hasn't been run yet for this term, class_position/
+        average_marks/total_marks come back null for every student rather
+        than erroring - the subject-level marks (computed directly from
+        ExamResult) are still shown.
+        """
+        classroom = self.get_object()
+        term_id = request.query_params.get("term")
+        term = (
+            generics.get_object_or_404(models.Term, pk=term_id) if term_id
+            else models.Term.objects.filter(is_current=True).first()
+        )
+        if not term:
+            return Response(
+                {"detail": "No term specified and no current term is configured."}, status=400
+            )
+
+        enrollments = (
+            classroom.enrollments.filter(status=models.Enrollment.Status.ACTIVE)
+            .select_related("student__user")
+            .order_by("student__user__first_name")
+        )
+
+        subjects = (
+            models.Subject.objects.filter(grade_subjects__grade_level=classroom.grade_level)
+            .distinct()
+            .order_by("name")
+        )
+
+        rankings = {
+            r.enrollment_id: r
+            for r in models.TermPositionRanking.objects.filter(
+                term=term,
+                enrollment__in=enrollments,
+                checkpoint=models.TermPositionRanking.Checkpoint.ENDTERM,
+            )
+        }
+
+        results = []
+        for enrollment in enrollments:
+            subject_marks = []
+            for subject in subjects:
+                qs = models.ExamResult.objects.filter(
+                    enrollment=enrollment, subject=subject, exam__term=term,
+                    is_absent=False, marks_obtained__isnull=False, max_marks__gt=0,
+                )
+                if qs.exists():
+                    total_pct = sum(
+                        float(r.marks_obtained) / float(r.max_marks) * 100 for r in qs
+                    )
+                    avg_pct = round(total_pct / qs.count(), 1)
+                    grade = services.grade_for_percentage(
+                        classroom.grade_level.curriculum_type, Decimal(str(avg_pct)), subject
+                    )
+                    subject_marks.append({
+                        "subject": subject.name,
+                        "average": avg_pct,
+                        "grade": grade.grade_letter if grade else None,
+                    })
+                else:
+                    subject_marks.append({"subject": subject.name, "average": None, "grade": None})
+
+            ranking = rankings.get(enrollment.id)
+            results.append({
+                "enrollment_id": enrollment.id,
+                "admission_no": enrollment.student.admission_no,
+                "full_name": enrollment.student.user.get_full_name(),
+                "class_position": ranking.class_position if ranking else None,
+                "average_marks": float(ranking.average_marks) if ranking else None,
+                "total_marks": float(ranking.total_marks) if ranking else None,
+                "subjects": subject_marks,
+            })
+
+        # ranked students first (by position, ascending), then anyone without
+        # a computed ranking yet, alphabetically
+        results.sort(key=lambda r: (r["class_position"] is None, r["class_position"] or 0, r["full_name"]))
+
+        return Response({
+            "classroom": str(classroom),
+            "term": str(term),
+            "term_id": term.id,
+            "subjects": [s.name for s in subjects],
+            "results": results,
+        })
 
 # ---------------------------------------------------------------------------
 # STUDENTS / GUARDIANS / ENROLLMENT

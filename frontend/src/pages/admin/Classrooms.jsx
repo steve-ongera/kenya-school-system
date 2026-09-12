@@ -49,6 +49,18 @@ const getImageBase64 = (url) =>
     img.onerror = () => resolve(null);
   });
 
+// Simple remark ladder for report cards - purely descriptive, not tied to
+// any GradingScale row, since a report card needs one remark for the
+// OVERALL average while GradingScale is keyed per-subject.
+const overallRemark = (avg) => {
+  if (avg === null || avg === undefined) return "-";
+  if (avg >= 80) return "Excellent";
+  if (avg >= 65) return "Good";
+  if (avg >= 50) return "Average";
+  if (avg >= 30) return "Below Average";
+  return "Needs Improvement";
+};
+
 export default function AdminClassrooms() {
   // ---- Classroom list (server-paginated) ----
   const [classrooms, setClassrooms] = useState([]);
@@ -82,12 +94,19 @@ export default function AdminClassrooms() {
   const [bulkForm, setBulkForm] = useState({ academic_year: "", grade_level_ids: [], stream_ids: [] });
   const [bulkSaving, setBulkSaving] = useState(false);
 
-  // ---- View modal (now includes student roster) ----
+  // ---- View modal (student roster) ----
   const [showViewModal, setShowViewModal] = useState(false);
   const [viewClassroom, setViewClassroom] = useState(null);
   const [viewStudents, setViewStudents] = useState([]);
   const [viewStudentsLoading, setViewStudentsLoading] = useState(false);
   const [downloadingRosterPdf, setDownloadingRosterPdf] = useState(false);
+
+  // ---- View modal: term selector + ranking/results + report cards ----
+  const [viewTerms, setViewTerms] = useState([]);
+  const [viewSelectedTerm, setViewSelectedTerm] = useState("");
+  const [viewResults, setViewResults] = useState(null); // { term, subjects: [...], results: [...] }
+  const [viewResultsLoading, setViewResultsLoading] = useState(false);
+  const [printingReportCard, setPrintingReportCard] = useState(null); // enrollment_id or "ALL"
 
   // ---- Assign Teacher modal ----
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -249,15 +268,48 @@ export default function AdminClassrooms() {
     }
   };
 
-  // ---------------- VIEW (+ student roster) ----------------
+  // ---------------- VIEW (+ student roster + ranking/results) ----------------
+  const loadViewResults = async (classroomId, termId) => {
+    if (!classroomId || !termId) return;
+    setViewResultsLoading(true);
+    try {
+      const { data } = await api.get(`/classrooms/${classroomId}/results/`, { params: { term: termId } });
+      setViewResults(data);
+    } catch (err) {
+      console.error("Failed to load classroom results:", err);
+      setViewResults(null);
+    } finally {
+      setViewResultsLoading(false);
+    }
+  };
+
+  const handleViewTermChange = async (termId) => {
+    setViewSelectedTerm(termId);
+    if (viewClassroom && termId) await loadViewResults(viewClassroom.id, termId);
+  };
+
   const openView = async (classroom) => {
     setViewClassroom(classroom);
     setShowViewModal(true);
     setViewStudents([]);
     setViewStudentsLoading(true);
+    setViewResults(null);
+    setViewTerms([]);
+    setViewSelectedTerm("");
     try {
-      const { data } = await api.get(`/classrooms/${classroom.id}/students/`);
-      setViewStudents(data);
+      const [studentsRes, termsRes] = await Promise.all([
+        api.get(`/classrooms/${classroom.id}/students/`),
+        calendarApi.terms({ academic_year: classroom.academic_year }),
+      ]);
+      setViewStudents(studentsRes.data);
+
+      const termList = termsRes.data.results ?? termsRes.data;
+      setViewTerms(termList);
+      const defaultTerm = termList.find((t) => t.is_current) || termList[0];
+      if (defaultTerm) {
+        setViewSelectedTerm(defaultTerm.id);
+        await loadViewResults(classroom.id, defaultTerm.id);
+      }
     } catch (err) {
       console.error("Failed to load classroom roster:", err);
       setMessage("Could not load student list for this classroom.");
@@ -464,6 +516,188 @@ export default function AdminClassrooms() {
       setMessageType("danger");
     } finally {
       setDownloadingRosterPdf(false);
+    }
+  };
+
+  // ---- Report card PDF: draws ONE student's page onto an existing jsPDF doc ----
+  const drawReportCardPage = (doc, { classroom, term, resultRow, subjects, logoBase64, isFirstPage }) => {
+    if (!isFirstPage) doc.addPage();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+
+    if (logoBase64) {
+      doc.addImage(logoBase64, "PNG", 14, 12, 16, 16);
+    }
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(15);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Masomo School", logoBase64 ? 34 : 14, 20);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(71, 85, 105);
+    doc.text("Student Report Card", logoBase64 ? 34 : 14, 27);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    doc.text(
+      new Date().toLocaleDateString("en-KE", { year: "numeric", month: "long", day: "numeric" }),
+      pageWidth - 14,
+      16,
+      { align: "right" }
+    );
+
+    doc.setDrawColor(203, 213, 225);
+    doc.setLineWidth(0.3);
+    doc.line(14, 33, pageWidth - 14, 33);
+
+    // --- Student + class meta, two columns ---
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(51, 65, 85);
+    doc.text(`Name: ${resultRow.full_name}`, 14, 41);
+    doc.text(`Admission No: ${resultRow.admission_no}`, 14, 47);
+    doc.text(`Class: ${classroom.grade_level_name} ${classroom.stream_name} (${classroom.academic_year_year})`, pageWidth - 14, 41, { align: "right" });
+    doc.text(`Term: ${term}`, pageWidth - 14, 47, { align: "right" });
+
+    // --- Subject marks table ---
+    const tableRows = resultRow.subjects.map((s) => [
+      s.subject,
+      s.average != null ? `${s.average}%` : "-",
+      s.grade || "-",
+    ]);
+
+    autoTable(doc, {
+      startY: 54,
+      head: [["Subject", "Average %", "Grade"]],
+      body: tableRows,
+      theme: "grid",
+      headStyles: {
+        fillColor: [15, 23, 42],
+        textColor: [255, 255, 255],
+        fontStyle: "bold",
+        fontSize: 9,
+        cellPadding: 2,
+      },
+      bodyStyles: {
+        fontSize: 9,
+        textColor: [51, 65, 85],
+        cellPadding: 2,
+        lineWidth: 0.1,
+        lineColor: [226, 232, 240],
+      },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: {
+        0: { cellWidth: "auto", halign: "left" },
+        1: { cellWidth: 32, halign: "center" },
+        2: { cellWidth: 24, halign: "center" },
+      },
+      margin: { left: 14, right: 14 },
+    });
+
+    let y = doc.lastAutoTable.finalY + 10;
+
+    // --- Summary: overall average, position, remark ---
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(15, 23, 42);
+    doc.text(
+      `Overall Average: ${resultRow.average_marks != null ? resultRow.average_marks + "%" : "Not yet ranked"}`,
+      14,
+      y
+    );
+    doc.text(
+      `Class Position: ${resultRow.class_position ?? "-"} of ${resultRow.class_size ?? "-"}`,
+      pageWidth - 14,
+      y,
+      { align: "right" }
+    );
+
+    y += 7;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`Remark: ${overallRemark(resultRow.average_marks)}`, 14, y);
+
+    // --- Signature / stamp blocks ---
+    y += 20;
+    if (y > pageHeight - 30) y = pageHeight - 30;
+
+    doc.setDrawColor(148, 163, 184);
+    doc.setLineWidth(0.2);
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Class Teacher's Signature:", 14, y);
+    doc.line(14, y + 10, pageWidth / 2 - 8, y + 10);
+
+    doc.text("Principal's Signature:", pageWidth / 2 + 8, y);
+    doc.line(pageWidth / 2 + 8, y + 10, pageWidth - 14, y + 10);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(148, 163, 184);
+    doc.text("Masomo School — Academics Office", 14, pageHeight - 8);
+    doc.text(
+      `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
+      pageWidth - 14,
+      pageHeight - 8,
+      { align: "right" }
+    );
+  };
+
+  const handlePrintReportCard = async (resultRow) => {
+    if (!viewClassroom || !viewResults) return;
+    setPrintingReportCard(resultRow.enrollment_id);
+    try {
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const logoBase64 = await getImageBase64(logoImage);
+      drawReportCardPage(doc, {
+        classroom: viewClassroom,
+        term: viewResults.term,
+        resultRow: { ...resultRow, class_size: viewResults.results.length },
+        subjects: viewResults.subjects,
+        logoBase64,
+        isFirstPage: true,
+      });
+      doc.save(`${resultRow.admission_no}_report_card.pdf`.replace(/\s+/g, "_"));
+    } catch (err) {
+      console.error("Failed to generate report card:", err);
+      setMessage("Could not generate the report card.");
+      setMessageType("danger");
+    } finally {
+      setPrintingReportCard(null);
+    }
+  };
+
+  const handleBulkPrintReportCards = async () => {
+    if (!viewClassroom || !viewResults || !viewResults.results?.length) return;
+    setPrintingReportCard("ALL");
+    try {
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const logoBase64 = await getImageBase64(logoImage);
+      viewResults.results.forEach((row, idx) => {
+        drawReportCardPage(doc, {
+          classroom: viewClassroom,
+          term: viewResults.term,
+          resultRow: { ...row, class_size: viewResults.results.length },
+          subjects: viewResults.subjects,
+          logoBase64,
+          isFirstPage: idx === 0,
+        });
+      });
+      const filename = `${viewClassroom.grade_level_name}_${viewClassroom.stream_name}_report_cards.pdf`
+        .replace(/\s+/g, "_");
+      doc.save(filename);
+    } catch (err) {
+      console.error("Failed to generate bulk report cards:", err);
+      setMessage("Could not generate the bulk report cards.");
+      setMessageType("danger");
+    } finally {
+      setPrintingReportCard(null);
     }
   };
 
@@ -968,7 +1202,7 @@ export default function AdminClassrooms() {
         />
       )}
 
-      {/* ---------------- VIEW MODAL (details + student roster + CSV/PDF download) ---------------- */}
+      {/* ---------------- VIEW MODAL (details + roster + ranking/results + report cards) ---------------- */}
       <Modal show={showViewModal} onClose={() => setShowViewModal(false)} title="Classroom Details" size="lg">
         {viewClassroom && (
           <div>
@@ -1086,6 +1320,107 @@ export default function AdminClassrooms() {
                     })}
                   </tbody>
                 </table>
+              </div>
+            )}
+
+            <hr />
+
+            {/* ---------------- RANKING / RESULTS + REPORT CARDS ---------------- */}
+            <div className="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+              <h6 className="mb-0" style={{ fontWeight: 700 }}>
+                <i className="bi bi-bar-chart-line me-2"></i>
+                Class Ranking & Report Cards
+              </h6>
+              <div className="d-flex gap-2 align-items-center flex-wrap">
+                <select
+                  className="form-select form-select-sm"
+                  style={{ width: "auto" }}
+                  value={viewSelectedTerm}
+                  onChange={(e) => handleViewTermChange(e.target.value)}
+                >
+                  <option value="">Select term...</option>
+                  {viewTerms.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.get_term_number_display || `Term ${t.term_number}`}
+                      {t.is_current ? " (current)" : ""}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="btn btn-sm btn-outline-primary"
+                  onClick={handleBulkPrintReportCards}
+                  disabled={!viewResults || !viewResults.results?.length || printingReportCard === "ALL"}
+                >
+                  {printingReportCard === "ALL" ? (
+                    <>
+                      <span className="spinner-border spinner-border-sm me-1"></span>
+                      Preparing...
+                    </>
+                  ) : (
+                    <>
+                      <i className="bi bi-printer me-1"></i>
+                      Print All Report Cards
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {viewResultsLoading ? (
+              <div className="text-center py-4">
+                <span className="spinner-border spinner-border-sm me-2"></span>
+                Loading results...
+              </div>
+            ) : !viewSelectedTerm ? (
+              <p className="text-muted-soft">Select a term to view class ranking and results.</p>
+            ) : !viewResults || !viewResults.results?.length ? (
+              <p className="text-muted-soft">No exam results recorded for this term yet.</p>
+            ) : (
+              <div className="table-responsive" style={{ maxHeight: "400px", overflowY: "auto" }}>
+                <table className="table table-sm table-hover mb-0">
+                  <thead>
+                    <tr>
+                      <th style={{ width: "60px" }}>Pos</th>
+                      <th>Admission No</th>
+                      <th>Name</th>
+                      <th>Average %</th>
+                      <th>Total Marks</th>
+                      <th style={{ width: "90px" }}>Report</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {viewResults.results.map((r) => (
+                      <tr key={r.enrollment_id}>
+                        <td style={{ fontWeight: 700 }}>{r.class_position ?? "-"}</td>
+                        <td>{r.admission_no}</td>
+                        <td>{r.full_name}</td>
+                        <td>{r.average_marks != null ? `${r.average_marks}%` : "-"}</td>
+                        <td>{r.total_marks != null ? r.total_marks : "-"}</td>
+                        <td>
+                          <button
+                            className="btn btn-sm btn-outline-secondary btn-icon"
+                            title="Print report card"
+                            onClick={() => handlePrintReportCard(r)}
+                            disabled={printingReportCard === r.enrollment_id || printingReportCard === "ALL"}
+                          >
+                            {printingReportCard === r.enrollment_id ? (
+                              <span className="spinner-border spinner-border-sm"></span>
+                            ) : (
+                              <i className="bi bi-file-earmark-pdf"></i>
+                            )}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {viewResults.results.some((r) => r.class_position == null) && (
+                  <p className="text-muted-soft mt-2 mb-0" style={{ fontSize: "var(--fs-xs)" }}>
+                    Some students show no position because ranking hasn't been (re)computed for this
+                    term yet — run it from the Exams & Results page. Subject marks above are still
+                    live from entered exam results.
+                  </p>
+                )}
               </div>
             )}
           </div>
