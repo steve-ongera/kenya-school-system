@@ -456,6 +456,80 @@ class TeacherSubjectAllocation(models.Model):
         return f"{self.teacher} -> {self.subject.code} @ {self.classroom}"
 
 
+class PeriodSlot(models.Model):
+    """
+    ONE ROW PER (day, order) SLOT IN THE WEEKLY STRUCTURE. Shared across
+    every classroom - "Monday Period 3" is the same PeriodSlot whether
+    Grade 9 Blue or Form 2 Red is in it, which is what lets the scheduler
+    detect a teacher double-booked across two different classes at once.
+
+    slot_type LESSON is timetable-able; BREAK/LUNCH/ASSEMBLY/GAMES are
+    shown on the grid as fixed blocks with no subject/teacher.
+    """
+
+    class SlotType(models.TextChoices):
+        LESSON = "LESSON", "Lesson"
+        BREAK = "BREAK", "Break"
+        LUNCH = "LUNCH", "Lunch"
+        ASSEMBLY = "ASSEMBLY", "Assembly"
+        GAMES = "GAMES", "Games / Prep"
+
+    class Day(models.TextChoices):
+        MONDAY = "MON", "Monday"
+        TUESDAY = "TUE", "Tuesday"
+        WEDNESDAY = "WED", "Wednesday"
+        THURSDAY = "THU", "Thursday"
+        FRIDAY = "FRI", "Friday"
+        SATURDAY = "SAT", "Saturday"
+
+    day = models.CharField(max_length=3, choices=Day.choices)
+    order = models.PositiveSmallIntegerField(help_text="Sequence within the day: 1, 2, 3...")
+    slot_type = models.CharField(max_length=10, choices=SlotType.choices, default=SlotType.LESSON)
+    label = models.CharField(max_length=40, blank=True, help_text="'Period 1', 'Short Break', 'Lunch'")
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+
+    class Meta:
+        db_table = "period_slots"
+        unique_together = ("day", "order")
+        ordering = ["day", "order"]
+
+    def __str__(self):
+        return f"{self.get_day_display()} {self.label or f'Slot {self.order}'} ({self.start_time}-{self.end_time})"
+
+
+class TimetableEntry(models.Model):
+    """
+    ONE ROW PER (classroom, period_slot, term). Only meaningful for
+    slot_type=LESSON period slots - BREAK/LUNCH/etc are rendered straight
+    off PeriodSlot and never get a TimetableEntry.
+
+    allocation links back to WHO teaches WHAT here - reusing
+    TeacherSubjectAllocation means a timetable entry is only ever possible
+    for a teacher/subject/classroom combo that's already been allocated,
+    so the grid can never show an "orphaned" lesson with no teacher.
+    """
+
+    classroom = models.ForeignKey(ClassRoom, on_delete=models.CASCADE, related_name="timetable_entries")
+    period_slot = models.ForeignKey(PeriodSlot, on_delete=models.CASCADE, related_name="timetable_entries")
+    term = models.ForeignKey(Term, on_delete=models.CASCADE, related_name="timetable_entries")
+    allocation = models.ForeignKey(
+        TeacherSubjectAllocation, on_delete=models.CASCADE, related_name="timetable_entries"
+    )
+    is_double = models.BooleanField(
+        default=False, help_text="Part of a double lesson pair with the following period slot."
+    )
+    auto_generated = models.BooleanField(
+        default=False, help_text="True if placed by the auto-generator; false if manually placed/edited."
+    )
+
+    class Meta:
+        db_table = "timetable_entries"
+        unique_together = ("classroom", "period_slot", "term")
+
+    def __str__(self):
+        return f"{self.classroom} - {self.period_slot} - {self.allocation.subject.code}"
+
 # ---------------------------------------------------------------------------
 # 7. EXAMS, RESULTS, GRADING, RANKING
 # ---------------------------------------------------------------------------
