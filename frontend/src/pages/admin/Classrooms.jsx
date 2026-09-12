@@ -102,10 +102,12 @@ export default function AdminClassrooms() {
   const [viewStudentsLoading, setViewStudentsLoading] = useState(false);
   const [downloadingRosterPdf, setDownloadingRosterPdf] = useState(false);
 
-  // ---- View modal: term selector + ranking/results + report cards ----
+  // ---- View modal: term/exam selectors + ranking/results + report cards ----
   const [viewTerms, setViewTerms] = useState([]);
   const [viewSelectedTerm, setViewSelectedTerm] = useState("");
-  const [viewResults, setViewResults] = useState(null); // { term, subjects: [...], results: [...] }
+  const [viewExams, setViewExams] = useState([]); // exams available for the selected term/grade
+  const [viewSelectedExam, setViewSelectedExam] = useState(""); // "" = combined (all exams this term)
+  const [viewResults, setViewResults] = useState(null); // { term, subjects: [...], results: [...], available_exams: [...] }
   const [viewResultsLoading, setViewResultsLoading] = useState(false);
   const [printingReportCard, setPrintingReportCard] = useState(null); // enrollment_id or "ALL"
 
@@ -270,15 +272,19 @@ export default function AdminClassrooms() {
   };
 
   // ---------------- VIEW (+ student roster + ranking/results) ----------------
-  const loadViewResults = async (classroomId, termId) => {
+  const loadViewResults = async (classroomId, termId, examId = "") => {
     if (!classroomId || !termId) return;
     setViewResultsLoading(true);
     try {
-      const { data } = await api.get(`/classrooms/${classroomId}/results/`, { params: { term: termId } });
+      const params = { term: termId };
+      if (examId) params.exam = examId;
+      const { data } = await api.get(`/classrooms/${classroomId}/results/`, { params });
       setViewResults(data);
+      setViewExams(data.available_exams || []);
     } catch (err) {
       console.error("Failed to load classroom results:", err);
       setViewResults(null);
+      setViewExams([]);
     } finally {
       setViewResultsLoading(false);
     }
@@ -286,7 +292,13 @@ export default function AdminClassrooms() {
 
   const handleViewTermChange = async (termId) => {
     setViewSelectedTerm(termId);
-    if (viewClassroom && termId) await loadViewResults(viewClassroom.id, termId);
+    setViewSelectedExam("");
+    if (viewClassroom && termId) await loadViewResults(viewClassroom.id, termId, "");
+  };
+
+  const handleViewExamChange = async (examId) => {
+    setViewSelectedExam(examId);
+    if (viewClassroom && viewSelectedTerm) await loadViewResults(viewClassroom.id, viewSelectedTerm, examId);
   };
 
   const openView = async (classroom) => {
@@ -297,6 +309,8 @@ export default function AdminClassrooms() {
     setViewResults(null);
     setViewTerms([]);
     setViewSelectedTerm("");
+    setViewSelectedExam("");
+    setViewExams([]);
     try {
       const [studentsRes, termsRes] = await Promise.all([
         api.get(`/classrooms/${classroom.id}/students/`),
@@ -309,7 +323,7 @@ export default function AdminClassrooms() {
       const defaultTerm = termList.find((t) => t.is_current) || termList[0];
       if (defaultTerm) {
         setViewSelectedTerm(defaultTerm.id);
-        await loadViewResults(classroom.id, defaultTerm.id);
+        await loadViewResults(classroom.id, defaultTerm.id, "");
       }
     } catch (err) {
       console.error("Failed to load classroom roster:", err);
@@ -521,7 +535,7 @@ export default function AdminClassrooms() {
   };
 
   // ---- Report card PDF: draws ONE student's page onto an existing jsPDF doc ----
-  const drawReportCardPage = (doc, { classroom, term, resultRow, subjects, logoBase64, isFirstPage }) => {
+  const drawReportCardPage = (doc, { classroom, term, examLabel, resultRow, subjects, logoBase64, isFirstPage }) => {
     if (!isFirstPage) doc.addPage();
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
@@ -562,6 +576,7 @@ export default function AdminClassrooms() {
     doc.text(`Admission No: ${resultRow.admission_no}`, 14, 47);
     doc.text(`Class: ${classroom.grade_level_name} ${classroom.stream_name} (${classroom.academic_year_year})`, pageWidth - 14, 41, { align: "right" });
     doc.text(`Term: ${term}`, pageWidth - 14, 47, { align: "right" });
+    doc.text(`Exam: ${examLabel}`, pageWidth - 14, 53, { align: "right" });
 
     // --- Subject marks table ---
     const tableRows = resultRow.subjects.map((s) => [
@@ -571,7 +586,7 @@ export default function AdminClassrooms() {
     ]);
 
     autoTable(doc, {
-      startY: 54,
+      startY: 58,
       head: [["Subject", "Average %", "Grade"]],
       body: tableRows,
       theme: "grid",
@@ -653,6 +668,14 @@ export default function AdminClassrooms() {
     );
   };
 
+  // Human-readable label for whichever exam scope is currently selected,
+  // reused by both the on-screen caption and the report card PDFs.
+  const currentExamLabel = () => {
+    if (!viewSelectedExam) return "All Exams (Combined)";
+    const ex = viewExams.find((e) => String(e.id) === String(viewSelectedExam));
+    return ex ? `${ex.name} (${ex.exam_type_name})` : "Selected Exam";
+  };
+
   const handlePrintReportCard = async (resultRow) => {
     if (!viewClassroom || !viewResults) return;
     setPrintingReportCard(resultRow.enrollment_id);
@@ -662,6 +685,7 @@ export default function AdminClassrooms() {
       drawReportCardPage(doc, {
         classroom: viewClassroom,
         term: viewResults.term,
+        examLabel: currentExamLabel(),
         resultRow: { ...resultRow, class_size: viewResults.results.length },
         subjects: viewResults.subjects,
         logoBase64,
@@ -683,10 +707,12 @@ export default function AdminClassrooms() {
     try {
       const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
       const logoBase64 = await getImageBase64(logoImage);
+      const examLabel = currentExamLabel();
       viewResults.results.forEach((row, idx) => {
         drawReportCardPage(doc, {
           classroom: viewClassroom,
           term: viewResults.term,
+          examLabel,
           resultRow: { ...row, class_size: viewResults.results.length },
           subjects: viewResults.subjects,
           logoBase64,
@@ -1350,6 +1376,21 @@ export default function AdminClassrooms() {
                     </option>
                   ))}
                 </select>
+                <select
+                  className="form-select form-select-sm"
+                  style={{ width: "auto" }}
+                  value={viewSelectedExam}
+                  onChange={(e) => handleViewExamChange(e.target.value)}
+                  disabled={!viewSelectedTerm || viewResultsLoading}
+                  title="Filter ranking to a single exam, or combine every exam this term"
+                >
+                  <option value="">All Exams (combined)</option>
+                  {viewExams.map((ex) => (
+                    <option key={ex.id} value={ex.id}>
+                      {ex.name} ({ex.exam_type_name}){!ex.is_published ? " — unpublished" : ""}
+                    </option>
+                  ))}
+                </select>
                 <button
                   className="btn btn-sm btn-outline-primary"
                   onClick={handleBulkPrintReportCards}
@@ -1369,6 +1410,13 @@ export default function AdminClassrooms() {
                 </button>
               </div>
             </div>
+
+            {viewSelectedTerm && !viewResultsLoading && (
+              <p className="text-muted-soft mb-2" style={{ fontSize: "var(--fs-xs)" }}>
+                Ranking based on: <strong>{currentExamLabel()}</strong>
+                {viewExams.length === 0 && " — no exams configured yet for this grade/term."}
+              </p>
+            )}
 
             {viewResultsLoading ? (
               <div className="text-center py-4">
