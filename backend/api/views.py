@@ -584,6 +584,11 @@ class TeacherSubjectAllocationViewSet(viewsets.ModelViewSet):
         ])
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 class PeriodSlotViewSet(viewsets.ModelViewSet):
     queryset = models.PeriodSlot.objects.all()
     serializer_class = serializers.PeriodSlotSerializer
@@ -592,10 +597,16 @@ class PeriodSlotViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"], url_path="bulk_set")
     def bulk_set(self, request):
         serializer = serializers.PeriodSlotBulkSetSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            # This is the part Django's runserver log line hides - print the
+            # exact reason for the 400 so it shows up in your terminal.
+            logger.error("period-slots/bulk_set 400: %s", serializer.errors)
+            print("BULK_SET VALIDATION ERRORS:", serializer.errors)
+            print("BULK_SET PAYLOAD SAMPLE:", request.data.get("slots", [])[:3])
+            return Response(serializer.errors, status=400)
+
         slots = serializer.save()
         return Response(serializers.PeriodSlotSerializer(slots, many=True).data, status=201)
-
 
 class TimetableEntryViewSet(viewsets.ModelViewSet):
     queryset = models.TimetableEntry.objects.select_related(
