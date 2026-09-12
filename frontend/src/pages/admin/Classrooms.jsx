@@ -4,6 +4,9 @@ import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
 import Pagination from "../../components/Pagination";
 import Modal from "../../components/Modal";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import logoImage from "../../assets/masomo_logo.png";
 
 const emptyFilters = { grade_level: "", stream: "", academic_year: "" };
 
@@ -28,6 +31,23 @@ function downloadCsv(filename, rows) {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+// Load an image URL as a base64 data URL (for embedding the logo in PDFs)
+const getImageBase64 = (url) =>
+  new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.src = url;
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = () => resolve(null);
+  });
 
 export default function AdminClassrooms() {
   // ---- Classroom list (server-paginated) ----
@@ -67,6 +87,7 @@ export default function AdminClassrooms() {
   const [viewClassroom, setViewClassroom] = useState(null);
   const [viewStudents, setViewStudents] = useState([]);
   const [viewStudentsLoading, setViewStudentsLoading] = useState(false);
+  const [downloadingRosterPdf, setDownloadingRosterPdf] = useState(false);
 
   // ---- Assign Teacher modal ----
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -271,6 +292,179 @@ export default function AdminClassrooms() {
     const filename = `${viewClassroom.grade_level_name}_${viewClassroom.stream_name}_${viewClassroom.academic_year_year}_students.csv`
       .replace(/\s+/g, "_");
     downloadCsv(filename, rows);
+  };
+
+  // ---- Download the specific classroom's roster as a landscape PDF ----
+  const handleDownloadRosterPdf = async () => {
+    if (!viewClassroom || !viewStudents.length) return;
+    try {
+      setDownloadingRosterPdf(true);
+
+      const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+
+      const base64Logo = await getImageBase64(logoImage);
+
+      const generatedOn = new Date().toLocaleDateString("en-KE", {
+        year: "numeric", month: "long", day: "numeric",
+      });
+
+      // --- Header: logo + school name + report title + generated date ---
+      if (base64Logo) {
+        doc.addImage(base64Logo, "PNG", 12, 10, 12, 12);
+      }
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(14);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Masomo School", base64Logo ? 28 : 12, 16);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(71, 85, 105);
+      doc.text("Class Student Roster", base64Logo ? 28 : 12, 22);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Generated ${generatedOn}`, pageWidth - 12, 16, { align: "right" });
+
+      doc.setDrawColor(203, 213, 225);
+      doc.setLineWidth(0.3);
+      doc.line(12, 26, pageWidth - 12, 26);
+
+      // --- Class meta line ---
+      const metaLine = [
+        `Grade: ${viewClassroom.grade_level_name}`,
+        `Stream: ${viewClassroom.stream_name}`,
+        `Year: ${viewClassroom.academic_year_year}${viewClassroom.academic_year_is_current ? " (current)" : ""}`,
+        `Class Teacher: ${viewClassroom.class_teacher_name || "Unassigned"}`,
+        `Students: ${viewStudents.length}`,
+      ].join("   |   ");
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(51, 65, 85);
+      doc.text(metaLine, 12, 32);
+
+      // --- Roster table ---
+      const tableColumn = [
+        "Adm No", "Full Name", "Gender", "DOB", "Curriculum",
+        "Phone", "Parent/Guardian", "Relationship", "Guardian Phone",
+      ];
+
+      const tableRows = viewStudents.map((s) => {
+        const g = s.guardians?.[0];
+        return [
+          s.admission_no || "-",
+          s.full_name || "-",
+          s.gender === "M" ? "Male" : s.gender === "F" ? "Female" : "-",
+          s.date_of_birth || "-",
+          s.curriculum_type || "-",
+          s.phone_number || "-",
+          g?.name || "-",
+          g?.relationship || "-",
+          g?.phone_number || "-",
+        ];
+      });
+
+      autoTable(doc, {
+        startY: 37,
+        head: [tableColumn],
+        body: tableRows,
+        theme: "grid",
+        styles: {
+          cellWidth: "wrap",
+          overflow: "ellipsize",
+        },
+        headStyles: {
+          fillColor: [15, 23, 42],
+          textColor: [255, 255, 255],
+          fontStyle: "bold",
+          fontSize: 8.5,
+          cellPadding: 2,
+          halign: "left",
+          overflow: "ellipsize",
+        },
+        bodyStyles: {
+          fontSize: 8,
+          textColor: [51, 65, 85],
+          cellPadding: 1.8,
+          valign: "middle",
+          lineWidth: 0.1,
+          lineColor: [226, 232, 240],
+          overflow: "ellipsize",
+        },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles: {
+          0: { cellWidth: 24, halign: "left",   overflow: "ellipsize" }, // Adm No
+          1: { cellWidth: 46, halign: "left",   overflow: "ellipsize" }, // Full Name
+          2: { cellWidth: 16, halign: "center", overflow: "ellipsize" }, // Gender
+          3: { cellWidth: 22, halign: "center", overflow: "ellipsize" }, // DOB
+          4: { cellWidth: 26, halign: "center", overflow: "ellipsize" }, // Curriculum
+          5: { cellWidth: 28, halign: "left",   overflow: "ellipsize" }, // Phone
+          6: { cellWidth: 42, halign: "left",   overflow: "ellipsize" }, // Parent/Guardian
+          7: { cellWidth: 24, halign: "left",   overflow: "ellipsize" }, // Relationship
+          8: { cellWidth: 28, halign: "left",   overflow: "ellipsize" }, // Guardian Phone
+        },
+        margin: { left: 12, right: 12 },
+        didDrawPage: () => {
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(7);
+          doc.setTextColor(148, 163, 184);
+          doc.text(
+            `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
+            pageWidth - 12,
+            pageHeight - 6,
+            { align: "right" }
+          );
+          doc.text("Masomo School — Academics Office", 12, pageHeight - 6);
+        },
+      });
+
+      // --- Signature / stamp blocks: Class Teacher + Principal ---
+      let finalY = doc.lastAutoTable.finalY + 14;
+      if (finalY > pageHeight - 28) {
+        doc.addPage();
+        finalY = 24;
+      }
+
+      doc.setDrawColor(148, 163, 184);
+      doc.setLineWidth(0.2);
+
+      // Class Teacher (left)
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Class Teacher's Signature:", 12, finalY);
+      doc.line(12, finalY + 10, 90, finalY + 10);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Sign & Official Stamp", 12, finalY + 14);
+
+      // Principal (right)
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Principal's Signature:", pageWidth - 90, finalY);
+      doc.line(pageWidth - 90, finalY + 10, pageWidth - 12, finalY + 10);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Sign & Official Stamp", pageWidth - 90, finalY + 14);
+
+      const filename = `${viewClassroom.grade_level_name}_${viewClassroom.stream_name}_${viewClassroom.academic_year_year}_students.pdf`
+        .replace(/\s+/g, "_");
+      doc.save(filename);
+    } catch (err) {
+      console.error("Failed to generate roster PDF:", err);
+      setMessage("Could not generate the student roster PDF.");
+      setMessageType("danger");
+    } finally {
+      setDownloadingRosterPdf(false);
+    }
   };
 
   // ---------------- ASSIGN TEACHER ----------------
@@ -774,10 +968,33 @@ export default function AdminClassrooms() {
         />
       )}
 
-      {/* ---------------- VIEW MODAL (details + student roster + CSV download) ---------------- */}
+      {/* ---------------- VIEW MODAL (details + student roster + CSV/PDF download) ---------------- */}
       <Modal show={showViewModal} onClose={() => setShowViewModal(false)} title="Classroom Details" size="lg">
         {viewClassroom && (
           <div>
+            {/* Modal header strip with logo + class name */}
+            <div
+              className="d-flex align-items-center gap-3 mb-3 pb-3"
+              style={{ borderBottom: "1px solid var(--border-color)" }}
+            >
+              <img
+                src={logoImage}
+                alt="Masomo School"
+                style={{ width: 44, height: 44, objectFit: "contain" }}
+              />
+              <div>
+                <div style={{ fontWeight: 700, fontSize: "var(--fs-md)", color: "var(--ink-900)" }}>
+                  {viewClassroom.grade_level_name} {viewClassroom.stream_name}
+                </div>
+                <div style={{ fontSize: "var(--fs-xs)", color: "var(--ink-600)" }}>
+                  {viewClassroom.academic_year_year}
+                  {viewClassroom.academic_year_is_current ? " · current year" : ""}
+                  {" · "}
+                  {viewClassroom.student_count || 0} student{(viewClassroom.student_count || 0) !== 1 ? "s" : ""}
+                </div>
+              </div>
+            </div>
+
             <div className="row g-2 mb-3">
               <div className="col-6"><strong>Grade:</strong> {viewClassroom.grade_level_name}</div>
               <div className="col-6"><strong>Stream:</strong> {viewClassroom.stream_name}</div>
@@ -789,19 +1006,38 @@ export default function AdminClassrooms() {
 
             <hr />
 
-            <div className="d-flex justify-content-between align-items-center mb-2">
+            <div className="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
               <h6 className="mb-0" style={{ fontWeight: 700 }}>
                 <i className="bi bi-people me-2"></i>
                 Students in this Class
               </h6>
-              <button
-                className="btn btn-sm btn-outline-success"
-                onClick={handleDownloadRoster}
-                disabled={viewStudentsLoading || viewStudents.length === 0}
-              >
-                <i className="bi bi-download me-1"></i>
-                Download CSV
-              </button>
+              <div className="d-flex gap-2">
+                <button
+                  className="btn btn-sm btn-outline-success"
+                  onClick={handleDownloadRoster}
+                  disabled={viewStudentsLoading || viewStudents.length === 0}
+                >
+                  <i className="bi bi-download me-1"></i>
+                  Download CSV
+                </button>
+                <button
+                  className="btn btn-sm btn-outline-primary"
+                  onClick={handleDownloadRosterPdf}
+                  disabled={viewStudentsLoading || viewStudents.length === 0 || downloadingRosterPdf}
+                >
+                  {downloadingRosterPdf ? (
+                    <>
+                      <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                      Preparing...
+                    </>
+                  ) : (
+                    <>
+                      <i className="bi bi-file-earmark-pdf me-1"></i>
+                      Download PDF
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
 
             {viewStudentsLoading ? (
