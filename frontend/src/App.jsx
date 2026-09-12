@@ -14,6 +14,7 @@ import AdminStudents from "./pages/admin/Students";
 import AdminClassrooms from "./pages/admin/Classrooms";
 import AdminSubjects from "./pages/admin/Subjects";
 import AdminTeacherAllocation from "./pages/admin/TeacherAllocation";
+import AdminTimetableManagement from "./pages/admin/TimetableManagement"; // NEW
 import AdminExams from "./pages/admin/Exams";
 import AdminRankings from "./pages/admin/Rankings";
 import AdminPromotions from "./pages/admin/Promotions";
@@ -92,6 +93,7 @@ export default function App() {
           <Route path="/admin/classrooms" element={<RoleSection role="ADMIN"><AdminClassrooms /></RoleSection>} />
           <Route path="/admin/subjects" element={<RoleSection role="ADMIN"><AdminSubjects /></RoleSection>} />
           <Route path="/admin/teachers" element={<RoleSection role="ADMIN"><AdminTeacherAllocation /></RoleSection>} />
+          <Route path="/admin/timetable" element={<RoleSection role="ADMIN"><AdminTimetableManagement /></RoleSection>} /> 
           <Route path="/admin/exams" element={<RoleSection role="ADMIN"><AdminExams /></RoleSection>} />
           <Route path="/admin/rankings" element={<RoleSection role="ADMIN"><AdminRankings /></RoleSection>} />
           <Route path="/admin/promotions" element={<RoleSection role="ADMIN"><AdminPromotions /></RoleSection>} />
