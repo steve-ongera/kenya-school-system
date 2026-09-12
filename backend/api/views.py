@@ -385,16 +385,22 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
         GET /classrooms/{id}/results/?term=<id>
 
         Ranked results for every ACTIVE student in this classroom for one
-        term: overall average/position (from the ENDTERM
-        TermPositionRanking, if it's been computed via /rank/) plus a
-        per-subject average % and grade letter for that term. This is what
-        powers the View modal's ranking table and the individual/bulk
-        report-card PDFs on the frontend.
+        term: overall average/position and a per-subject average % and grade
+        letter for that term. This is what powers the View modal's ranking
+        table and the individual/bulk report-card PDFs on the frontend.
 
-        If ranking hasn't been run yet for this term, class_position/
-        average_marks/total_marks come back null for every student rather
-        than erroring - the subject-level marks (computed directly from
-        ExamResult) are still shown.
+        Ranking and averages are computed LIVE from whatever ExamResult rows
+        exist right now - there is no dependency on /rank/ having been run
+        separately. Students with at least one recorded mark are ranked by
+        average percentage (ties share a rank). Students with NO marks at
+        all for the term are still included, ranked after everyone with
+        marks, ordered by admission number, instead of being left unranked.
+
+        The subject list is the UNION of subjects officially offered at this
+        grade (GradeSubject) and any subject that actually has marks recorded
+        for this classroom/term - so a subject a teacher has entered marks
+        for is never silently dropped just because Grade Offerings hasn't
+        been updated yet.
         """
         classroom = self.get_object()
         term_id = request.query_params.get("term")
@@ -413,24 +419,39 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
             .order_by("student__user__first_name")
         )
 
-        subjects = (
+        offered_subject_ids = set(
             models.Subject.objects.filter(grade_subjects__grade_level=classroom.grade_level)
+            .values_list("id", flat=True)
+        )
+        scored_subject_ids = set(
+            models.ExamResult.objects.filter(
+                enrollment__in=enrollments, exam__term=term,
+                is_absent=False, marks_obtained__isnull=False, max_marks__gt=0,
+            ).values_list("subject_id", flat=True)
+        )
+        subjects = (
+            models.Subject.objects.filter(id__in=(offered_subject_ids | scored_subject_ids))
             .distinct()
             .order_by("name")
         )
 
-        rankings = {
-            r.enrollment_id: r
-            for r in models.TermPositionRanking.objects.filter(
-                term=term,
-                enrollment__in=enrollments,
-                checkpoint=models.TermPositionRanking.Checkpoint.ENDTERM,
-            )
-        }
+        def remark_for(avg):
+            if avg is None:
+                return "No marks recorded"
+            if avg >= 80:
+                return "Excellent"
+            if avg >= 65:
+                return "Good"
+            if avg >= 50:
+                return "Average"
+            if avg >= 30:
+                return "Below Average"
+            return "Needs Improvement"
 
-        results = []
+        scored = []
         for enrollment in enrollments:
             subject_marks = []
+            pct_values = []
             for subject in subjects:
                 qs = models.ExamResult.objects.filter(
                     enrollment=enrollment, subject=subject, exam__term=term,
@@ -449,30 +470,65 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
                         "average": avg_pct,
                         "grade": grade.grade_letter if grade else None,
                     })
+                    pct_values.append(avg_pct)
                 else:
                     subject_marks.append({"subject": subject.name, "average": None, "grade": None})
 
-            ranking = rankings.get(enrollment.id)
-            results.append({
-                "enrollment_id": enrollment.id,
-                "admission_no": enrollment.student.admission_no,
-                "full_name": enrollment.student.user.get_full_name(),
-                "class_position": ranking.class_position if ranking else None,
-                "average_marks": float(ranking.average_marks) if ranking else None,
-                "total_marks": float(ranking.total_marks) if ranking else None,
+            has_marks = len(pct_values) > 0
+            scored.append({
+                "enrollment": enrollment,
+                "has_marks": has_marks,
+                "average": round(sum(pct_values) / len(pct_values), 1) if has_marks else None,
+                "total": round(sum(pct_values), 1) if has_marks else None,
                 "subjects": subject_marks,
             })
 
-        # ranked students first (by position, ascending), then anyone without
-        # a computed ranking yet, alphabetically
-        results.sort(key=lambda r: (r["class_position"] is None, r["class_position"] or 0, r["full_name"]))
+        with_marks = sorted(
+            (s for s in scored if s["has_marks"]), key=lambda s: s["average"], reverse=True
+        )
+        without_marks = sorted(
+            (s for s in scored if not s["has_marks"]),
+            key=lambda s: s["enrollment"].student.admission_no,
+        )
+
+        results_payload = []
+        prev_avg, rank = None, 0
+        for idx, row in enumerate(with_marks, start=1):
+            if row["average"] != prev_avg:
+                rank = idx
+            prev_avg = row["average"]
+            results_payload.append({
+                "enrollment_id": row["enrollment"].id,
+                "admission_no": row["enrollment"].student.admission_no,
+                "full_name": row["enrollment"].student.user.get_full_name(),
+                "class_position": rank,
+                "average_marks": row["average"],
+                "total_marks": row["total"],
+                "remark": remark_for(row["average"]),
+                "subjects": row["subjects"],
+                "has_marks": True,
+            })
+
+        next_rank = len(with_marks) + 1
+        for offset, row in enumerate(without_marks):
+            results_payload.append({
+                "enrollment_id": row["enrollment"].id,
+                "admission_no": row["enrollment"].student.admission_no,
+                "full_name": row["enrollment"].student.user.get_full_name(),
+                "class_position": next_rank + offset,
+                "average_marks": None,
+                "total_marks": None,
+                "remark": remark_for(None),
+                "subjects": row["subjects"],
+                "has_marks": False,
+            })
 
         return Response({
             "classroom": str(classroom),
             "term": str(term),
             "term_id": term.id,
             "subjects": [s.name for s in subjects],
-            "results": results,
+            "results": results_payload,
         })
 
 # ---------------------------------------------------------------------------
