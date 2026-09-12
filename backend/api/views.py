@@ -561,8 +561,99 @@ class TeacherSubjectAllocationViewSet(viewsets.ModelViewSet):
     permission_classes = [utils.IsAdmin]
     filterset_fields = ["teacher", "classroom", "academic_year", "subject"]
     filter_backends = [DjangoFilterBackend]
+    
+    @action(detail=False, methods=["get"], url_path="unallocated")
+    def unallocated(self, request):
+        academic_year_id = request.query_params.get("academic_year")
+        academic_year = (
+            generics.get_object_or_404(models.AcademicYear, pk=academic_year_id)
+            if academic_year_id else
+            models.AcademicYear.objects.filter(is_current=True).first()
+        )
+        classroom_id = request.query_params.get("classroom")
+        classroom = generics.get_object_or_404(models.ClassRoom, pk=classroom_id) if classroom_id else None
+        gaps = services.get_unallocated_subjects(academic_year, classroom)
+        return Response([
+            {
+                "classroom_id": g["classroom"].id,
+                "classroom_label": str(g["classroom"]),
+                "grade_level_id": g["classroom"].grade_level_id,
+                "subjects": serializers.SubjectSerializer(g["subjects"], many=True).data,
+            }
+            for g in gaps
+        ])
 
 
+class PeriodSlotViewSet(viewsets.ModelViewSet):
+    queryset = models.PeriodSlot.objects.all()
+    serializer_class = serializers.PeriodSlotSerializer
+    permission_classes = [utils.IsAdmin]
+
+    @action(detail=False, methods=["post"], url_path="bulk_set")
+    def bulk_set(self, request):
+        serializer = serializers.PeriodSlotBulkSetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        slots = serializer.save()
+        return Response(serializers.PeriodSlotSerializer(slots, many=True).data, status=201)
+
+
+class TimetableEntryViewSet(viewsets.ModelViewSet):
+    queryset = models.TimetableEntry.objects.select_related(
+        "classroom__grade_level", "classroom__stream", "period_slot",
+        "allocation__teacher", "allocation__subject",
+    ).all()
+    serializer_class = serializers.TimetableEntrySerializer
+    permission_classes = [utils.IsAdmin]
+    filterset_fields = ["term", "classroom"]
+    filter_backends = [DjangoFilterBackend]
+
+    @action(detail=False, methods=["get"], url_path="grid")
+    def grid(self, request):
+        """
+        GET /timetable-entries/grid/?term=<id>&classroom=<id>
+        Returns the full weekly grid: every PeriodSlot (including breaks/
+        lunch), with whatever TimetableEntry fills it for this classroom
+        (null for an empty LESSON slot or a fixed BREAK/LUNCH block).
+        """
+        qs = serializers.TimetableGridQuerySerializer(data=request.query_params)
+        qs.is_valid(raise_exception=True)
+        term, classroom = qs.validated_data["term"], qs.validated_data["classroom"]
+
+        entries_by_slot = {
+            e.period_slot_id: e
+            for e in self.get_queryset().filter(term=term, classroom=classroom)
+        }
+        days = []
+        for day_value, day_label in models.PeriodSlot.Day.choices:
+            slots = models.PeriodSlot.objects.filter(day=day_value).order_by("order")
+            if not slots.exists():
+                continue
+            rows = []
+            for slot in slots:
+                entry = entries_by_slot.get(slot.id)
+                rows.append({
+                    "period_slot_id": slot.id,
+                    "order": slot.order,
+                    "slot_type": slot.slot_type,
+                    "label": slot.label,
+                    "start_time": slot.start_time,
+                    "end_time": slot.end_time,
+                    "entry": serializers.TimetableEntrySerializer(entry).data if entry else None,
+                })
+            days.append({"day": day_value, "day_label": day_label, "periods": rows})
+        return Response({"days": days})
+
+    @action(detail=False, methods=["post"], url_path="auto_generate")
+    def auto_generate(self, request):
+        serializer = serializers.AutoGenerateTimetableSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            result = services.auto_generate_timetable(serializer.validated_data["term"])
+        except ValueError as exc:
+            return Response(exc.args[0] if exc.args else {"detail": str(exc)}, status=400)
+        return Response(result)
+    
+    
 class MyAllocationsView(APIView):
     """Teacher portal: 'what am I teaching this year?'"""
 
