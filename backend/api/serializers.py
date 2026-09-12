@@ -1119,6 +1119,20 @@ class PeriodSlotBulkItemSerializer(serializers.Serializer):
     start_time = serializers.TimeField()
     end_time = serializers.TimeField()
 
+    def validate_label(self, value):
+        # Frontend sometimes sends None instead of "" for a not-yet-typed
+        # label - CharField(allow_blank=True) accepts "" but chokes on None
+        # unless allow_null is also set, so normalize here instead.
+        return value or ""
+
+    def validate(self, attrs):
+        if attrs["end_time"] <= attrs["start_time"]:
+            raise serializers.ValidationError(
+                f"{attrs['day']} order {attrs['order']}: end_time must be after start_time "
+                f"(got {attrs['start_time']}–{attrs['end_time']})."
+            )
+        return attrs
+
 
 class PeriodSlotBulkSetSerializer(serializers.Serializer):
     """
@@ -1134,11 +1148,17 @@ class PeriodSlotBulkSetSerializer(serializers.Serializer):
         if not value:
             raise serializers.ValidationError("At least one slot is required.")
         seen = set()
+        duplicates = set()
         for row in value:
             key = (row["day"], row["order"])
             if key in seen:
-                raise serializers.ValidationError(f"Duplicate day/order: {key}")
+                duplicates.add(key)
             seen.add(key)
+        if duplicates:
+            raise serializers.ValidationError(
+                f"Duplicate day/order pairs in the payload: {sorted(duplicates)}. "
+                "Each (day, order) can only appear once."
+            )
         return value
 
     def save(self):
@@ -1146,7 +1166,7 @@ class PeriodSlotBulkSetSerializer(serializers.Serializer):
             models.PeriodSlot.objects.all().delete()  # cascades TimetableEntry too
             objs = [models.PeriodSlot(**row) for row in self.validated_data["slots"]]
             return models.PeriodSlot.objects.bulk_create(objs)
-
+        
 
 class TimetableEntrySerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="allocation.subject.name", read_only=True)

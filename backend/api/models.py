@@ -463,7 +463,7 @@ class PeriodSlot(models.Model):
     Grade 9 Blue or Form 2 Red is in it, which is what lets the scheduler
     detect a teacher double-booked across two different classes at once.
 
-    slot_type LESSON is timetable-able; BREAK/LUNCH/ASSEMBLY/GAMES are
+    slot_type LESSON is timetable-able; BREAK/LUNCH/ASSEMBLY/GAMES/PREP are
     shown on the grid as fixed blocks with no subject/teacher.
     """
 
@@ -472,7 +472,8 @@ class PeriodSlot(models.Model):
         BREAK = "BREAK", "Break"
         LUNCH = "LUNCH", "Lunch"
         ASSEMBLY = "ASSEMBLY", "Assembly"
-        GAMES = "GAMES", "Games / Prep"
+        GAMES = "GAMES", "Games / Sports"
+        PREP = "PREP", "Evening Prep / Study"
 
     class Day(models.TextChoices):
         MONDAY = "MON", "Monday"
@@ -496,7 +497,8 @@ class PeriodSlot(models.Model):
 
     def __str__(self):
         return f"{self.get_day_display()} {self.label or f'Slot {self.order}'} ({self.start_time}-{self.end_time})"
-
+    
+    
 
 class TimetableEntry(models.Model):
     """
