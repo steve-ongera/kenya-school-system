@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { teacherApi, examsApi, studentsApi, calendarApi, academicsApi } from "../../services/api";
+import api, { teacherApi, examsApi, studentsApi, calendarApi, academicsApi } from "../../services/api";
 import Breadcrumb from "../../components/Breadcrumb";
 
 export default function TeacherMarkEntry() {
@@ -105,12 +105,32 @@ export default function TeacherMarkEntry() {
       }))
     : [{ key: "single", id: null, label: "Marks", max_marks: Number(maxMarks) || 100 }];
 
+  // ---- walks every page of the enrollments endpoint for a classroom.
+  // The endpoint is paginated (25/page by default), which was silently
+  // truncating a class to its first page of students — e.g. a 28-student
+  // class only showed 25. This follows `next` until DRF says there's no
+  // more, so it's correct no matter how large a class gets or what the
+  // page size is configured to. ----
+  const fetchAllEnrollments = async (classroomId) => {
+    let results = [];
+    let nextUrl = null;
+    let params = { classroom: classroomId, status: "ACTIVE", page_size: 500 };
+
+    do {
+      const { data } = nextUrl ? await api.get(nextUrl) : await studentsApi.enrollments(params);
+      results = results.concat(data.results ?? data);
+      nextUrl = data.next || null;
+      params = null; // params are baked into `next` after the first call
+    } while (nextUrl);
+
+    return results;
+  };
+
   // ---- load the roster + seed blank marks whenever the allocation changes ----
   useEffect(() => {
     if (!allocation) { setEnrollments([]); setMarks({}); return; }
     setLoading(true);
-    studentsApi.enrollments({ classroom: allocation.classroom, status: "ACTIVE" }).then(({ data }) => {
-      const list = data.results ?? data;
+    fetchAllEnrollments(allocation.classroom).then((list) => {
       setEnrollments(list);
 
       const subj = subjectsByIdRef.current[allocation.subject];

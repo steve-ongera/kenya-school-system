@@ -147,12 +147,34 @@ export const calendarApi = {
 // ---------------------------------------------------------------------------
 export const academicsApi = {
   gradeLevels: (params) => api.get("/grade-levels/", { params }),
+
   streams: () => api.get("/streams/"),
   classrooms: (params) => api.get("/classrooms/", { params }),
+
   subjects: (params) => api.get("/subjects/", { params }),
+  createSubject: (payload) => api.post("/subjects/", payload),
+  updateSubject: (id, payload) => api.patch(`/subjects/${id}/`, payload),
+  deleteSubject: (id) => api.delete(`/subjects/${id}/`),
+
+  subjectPapers: (params) => api.get("/subject-papers/", { params }),
+  createSubjectPaper: (payload) => api.post("/subject-papers/", payload),
+  updateSubjectPaper: (id, payload) => api.patch(`/subject-papers/${id}/`, payload),
+  deleteSubjectPaper: (id) => api.delete(`/subject-papers/${id}/`),
+
   gradeSubjects: (params) => api.get("/grade-subjects/", { params }),
+  createGradeSubject: (payload) => api.post("/grade-subjects/", payload),
+  updateGradeSubject: (id, payload) => api.patch(`/grade-subjects/${id}/`, payload),
+  deleteGradeSubject: (id) => api.delete(`/grade-subjects/${id}/`),
+
   selectionRules: () => api.get("/selection-rules/"),
+  createSelectionRule: (payload) => api.post("/selection-rules/", payload),
+  updateSelectionRule: (id, payload) => api.patch(`/selection-rules/${id}/`, payload),
+  deleteSelectionRule: (id) => api.delete(`/selection-rules/${id}/`),
+
   gradingScales: (params) => api.get("/grading-scales/", { params }),
+  createGradingScale: (payload) => api.post("/grading-scales/", payload),
+  updateGradingScale: (id, payload) => api.patch(`/grading-scales/${id}/`, payload),
+  deleteGradingScale: (id) => api.delete(`/grading-scales/${id}/`),
 };
 
 // ---------------------------------------------------------------------------
