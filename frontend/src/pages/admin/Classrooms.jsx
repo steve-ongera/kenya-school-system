@@ -49,11 +49,12 @@ const getImageBase64 = (url) =>
     img.onerror = () => resolve(null);
   });
 
-// Simple remark ladder for report cards - purely descriptive, not tied to
-// any GradingScale row, since a report card needs one remark for the
-// OVERALL average while GradingScale is keyed per-subject.
+// Fallback remark ladder for report cards - only used if an older cached
+// response doesn't carry a `remark` field from the backend. The backend
+// (ClassRoomViewSet.results) now computes and returns this per student,
+// including "No marks recorded" for students with nothing entered yet.
 const overallRemark = (avg) => {
-  if (avg === null || avg === undefined) return "-";
+  if (avg === null || avg === undefined) return "No marks recorded";
   if (avg >= 80) return "Excellent";
   if (avg >= 65) return "Good";
   if (avg >= 50) return "Average";
@@ -619,7 +620,10 @@ export default function AdminClassrooms() {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
     doc.setTextColor(71, 85, 105);
-    doc.text(`Remark: ${overallRemark(resultRow.average_marks)}`, 14, y);
+    // Prefer the remark computed by the backend (which correctly reads
+    // "No marks recorded" for a student with nothing entered yet); fall
+    // back to the local ladder only if an older response lacks it.
+    doc.text(`Remark: ${resultRow.remark || overallRemark(resultRow.average_marks)}`, 14, y);
 
     // --- Signature / stamp blocks ---
     y += 20;
@@ -1374,7 +1378,7 @@ export default function AdminClassrooms() {
             ) : !viewSelectedTerm ? (
               <p className="text-muted-soft">Select a term to view class ranking and results.</p>
             ) : !viewResults || !viewResults.results?.length ? (
-              <p className="text-muted-soft">No exam results recorded for this term yet.</p>
+              <p className="text-muted-soft">No students found for this classroom/term.</p>
             ) : (
               <div className="table-responsive" style={{ maxHeight: "400px", overflowY: "auto" }}>
                 <table className="table table-sm table-hover mb-0">
@@ -1385,6 +1389,7 @@ export default function AdminClassrooms() {
                       <th>Name</th>
                       <th>Average %</th>
                       <th>Total Marks</th>
+                      <th>Remark</th>
                       <th style={{ width: "90px" }}>Report</th>
                     </tr>
                   </thead>
@@ -1396,6 +1401,13 @@ export default function AdminClassrooms() {
                         <td>{r.full_name}</td>
                         <td>{r.average_marks != null ? `${r.average_marks}%` : "-"}</td>
                         <td>{r.total_marks != null ? r.total_marks : "-"}</td>
+                        <td>
+                          {r.has_marks ? (
+                            <span className="badge badge-neutral">{r.remark}</span>
+                          ) : (
+                            <span className="text-muted-soft">{r.remark}</span>
+                          )}
+                        </td>
                         <td>
                           <button
                             className="btn btn-sm btn-outline-secondary btn-icon"
@@ -1414,13 +1426,6 @@ export default function AdminClassrooms() {
                     ))}
                   </tbody>
                 </table>
-                {viewResults.results.some((r) => r.class_position == null) && (
-                  <p className="text-muted-soft mt-2 mb-0" style={{ fontSize: "var(--fs-xs)" }}>
-                    Some students show no position because ranking hasn't been (re)computed for this
-                    term yet — run it from the Exams & Results page. Subject marks above are still
-                    live from entered exam results.
-                  </p>
-                )}
               </div>
             )}
           </div>
