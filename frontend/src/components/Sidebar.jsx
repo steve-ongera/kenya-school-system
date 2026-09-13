@@ -1,7 +1,8 @@
 // components/Sidebar.jsx
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
-import logo from "../assets/masomo_logo.png"; // Adjust path as needed
+import logo from "../assets/masomo_logo.png";
+import { NAV_BY_ROLE } from "../config/navigation";
 
 /**
  * Nav config per role is an array of GROUPS instead of a flat list:
@@ -17,208 +18,12 @@ import logo from "../assets/masomo_logo.png"; // Adjust path as needed
  * Every role includes a "Messages" link - 1:1 conversations are open
  * to all authenticated users (staff can start new threads, parents/
  * students can reply) - see /messages in App.jsx.
+ *
+ * NAV_BY_ROLE itself lives in config/navigation.js - the single source
+ * of truth shared with Navbar.jsx (role-scoped page search). Do not
+ * redeclare it here; import it instead so the two can never drift out
+ * of sync.
  */
-const NAV_BY_ROLE = {
-  ADMIN: [
-    {
-      items: [
-        { to: "/admin", icon: "bi-speedometer2", label: "Dashboard" },
-        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
-      ],
-    },
-    {
-      label: "Academics",
-      items: [
-        { to: "/admin/classrooms", icon: "bi-door-open", label: "Classes & Streams" },
-        { to: "/admin/subjects", icon: "bi-journal-bookmark", label: "Subjects" },
-        { to: "/admin/exams", icon: "bi-pencil-square", label: "Exams" },
-        { to: "/admin/rankings", icon: "bi-bar-chart-line", label: "Rankings" },
-        { to: "/admin/promotions", icon: "bi-arrow-up-circle", label: "Promotions" },
-        { to: "/admin/calendar", icon: "bi-calendar-week", label: "Academic Calendar" },
-        { to: "/admin/timetable", icon: "bi-grid-3x3", label: "Timetable Management" }, // NEW
-      ],
-    },
-    {
-      label: "People",
-      items: [
-        { to: "/admin/students", icon: "bi-people", label: "Students" },
-        { to: "/admin/teachers", icon: "bi-person-workspace", label: "Teacher Allocation" },
-        { to: "/admin/parents", icon: "bi-person-hearts", label: "Parents & Guardians" },
-      ],
-    },
-    {
-      label: "Finance",
-      items: [
-        { to: "/admin/fees", icon: "bi-cash-coin", label: "Fee Structures" },
-        { to: "/admin/finance-reports/collections", icon: "bi-graph-up-arrow", label: "Collections Report" },
-        { to: "/admin/finance-reports/class-analysis", icon: "bi-bar-chart-steps", label: "Class Analysis" },
-        { to: "/admin/finance-reports/detailed", icon: "bi-table", label: "Detailed Report" },
-      ],
-    },
-    {
-      label: "Communication",
-      items: [
-        { to: "/admin/communications", icon: "bi-megaphone", label: "Announcements" },
-      ],
-    },
-    {
-      label: "Administration",
-      items: [
-        { to: "/admin/users", icon: "bi-shield-lock", label: "User Accounts" },
-        { to: "/admin/security", icon: "bi-shield-exclamation", label: "Security Monitor" },
-        { to: "/admin/reports", icon: "bi-graph-up", label: "Reports & Analytics" },
-        { to: "/admin/settings", icon: "bi-gear", label: "School Settings" },
-      ],
-    },
-    {
-      label: "Account",
-      items: [
-        { to: "/profile", icon: "bi-person", label: "My Profile" },
-        { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
-      ],
-    },
-  ],
-
-  TEACHER: [
-    {
-      items: [
-        { to: "/teacher", icon: "bi-speedometer2", label: "Dashboard" },
-      ],
-    },
-    {
-      label: "Academics",
-      items: [
-        { to: "/teacher/classes", icon: "bi-door-open", label: "My Classes" },
-        { to: "/teacher/marks", icon: "bi-pencil-square", label: "Enter Marks" },
-        { to: "/teacher/rankings", icon: "bi-bar-chart-line", label: "Class Rankings" },
-      ],
-    },
-    {
-      label: "Communication",
-      items: [
-        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
-      ],
-    },
-    {
-      label: "Account",
-      items: [
-        { to: "/profile", icon: "bi-person", label: "My Profile" },
-        { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
-      ],
-    },
-  ],
-
-  STUDENT: [
-    {
-      items: [
-        { to: "/student", icon: "bi-speedometer2", label: "Dashboard" },
-      ],
-    },
-    {
-      label: "Academics",
-      items: [
-        { to: "/student/subjects", icon: "bi-journal-bookmark", label: "My Subjects" },
-        { to: "/student/results", icon: "bi-journal-text", label: "My Results" },
-      ],
-    },
-    {
-      label: "Finance",
-      items: [
-        { to: "/student/fees", icon: "bi-cash-coin", label: "Fee Statement" },
-      ],
-    },
-    {
-      label: "Communication",
-      items: [
-        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
-      ],
-    },
-    {
-      label: "Account",
-      items: [
-        { to: "/profile", icon: "bi-person", label: "My Profile" },
-        { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
-      ],
-    },
-  ],
-
-  PARENT: [
-    {
-      items: [
-        { to: "/parent", icon: "bi-speedometer2", label: "Dashboard" },
-      ],
-    },
-    {
-      label: "Family",
-      items: [
-        { to: "/parent/children", icon: "bi-people", label: "My Children" },
-      ],
-    },
-    {
-      label: "Academics",
-      items: [
-        { to: "/parent/results", icon: "bi-journal-text", label: "Results" },
-      ],
-    },
-    {
-      label: "Finance",
-      items: [
-        { to: "/parent/fees", icon: "bi-cash-coin", label: "Fee Statements" },
-      ],
-    },
-    {
-      label: "Communication",
-      items: [
-        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
-      ],
-    },
-    {
-      label: "Account",
-      items: [
-        { to: "/profile", icon: "bi-person", label: "My Profile" },
-        { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
-      ],
-    },
-  ],
-
-  FINANCE: [
-    {
-      items: [
-        { to: "/finance", icon: "bi-speedometer2", label: "Dashboard" },
-      ],
-    },
-    {
-      label: "Fee Management",
-      items: [
-        { to: "/finance/structures", icon: "bi-receipt", label: "Fee Structures" },
-        { to: "/finance/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
-        { to: "/finance/payments", icon: "bi-cash-coin", label: "Payments" },
-      ],
-    },
-    {
-      label: "Reports",
-      items: [
-        { to: "/finance/reports/collections", icon: "bi-graph-up-arrow", label: "Collections Report" },
-        { to: "/finance/reports/class-analysis", icon: "bi-bar-chart-steps", label: "Class Analysis" },
-        { to: "/finance/reports/detailed", icon: "bi-table", label: "Detailed Report" },
-      ],
-    },
-    {
-      label: "Communication",
-      items: [
-        { to: "/finance/communications", icon: "bi-megaphone", label: "Announcements" },
-        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
-      ],
-    },
-    {
-      label: "Account",
-      items: [
-        { to: "/profile", icon: "bi-person", label: "My Profile" },
-        { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
-      ],
-    },
-  ],
-};
 
 /**
  * Sidebar driven entirely by useSidebar():
@@ -259,9 +64,9 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
         <div className="app-sidebar__brand">
           {showLabels ? (
             // Expanded sidebar - show logo and text
-            <div style={{ 
-              display: "flex", 
-              alignItems: "center", 
+            <div style={{
+              display: "flex",
+              alignItems: "center",
               gap: "0.75rem",
               width: "100%"
             }}>
@@ -276,17 +81,17 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
                 flexShrink: 0,
                 padding: "4px"
               }}>
-                <img 
-                  src={logo} 
-                  alt="Moi Forces Logo" 
-                  style={{ 
+                <img
+                  src={logo}
+                  alt="Moi Forces Logo"
+                  style={{
                     width: "100%",
                     height: "100%",
                     objectFit: "contain",
-                  }} 
+                  }}
                 />
               </div>
-              <span style={{ 
+              <span style={{
                 fontSize: "1rem",
                 fontWeight: 700,
                 whiteSpace: "nowrap",
@@ -309,14 +114,14 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
               margin: "0 auto",
               padding: "4px"
             }}>
-              <img 
-                src={logo} 
-                alt="Moi Forces Logo" 
-                style={{ 
+              <img
+                src={logo}
+                alt="Moi Forces Logo"
+                style={{
                   width: "100%",
                   height: "100%",
                   objectFit: "contain",
-                }} 
+                }}
               />
             </div>
           )}
@@ -325,11 +130,11 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
         {/* Navigation with internal scroll, grouped with section labels */}
         <nav className="app-sidebar__nav">
           {totalItems === 0 ? (
-            <div style={{ 
-              padding: "1rem", 
-              color: "rgba(255,255,255,0.4)", 
-              fontSize: "var(--fs-xs)", 
-              textAlign: "center" 
+            <div style={{
+              padding: "1rem",
+              color: "rgba(255,255,255,0.4)",
+              fontSize: "var(--fs-xs)",
+              textAlign: "center"
             }}>
               No items available
             </div>
@@ -361,8 +166,8 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
 
         {/* Footer - School name and version only */}
         {showLabels && (
-          <div className="app-sidebar__footer" style={{ 
-            display: "flex", 
+          <div className="app-sidebar__footer" style={{
+            display: "flex",
             flexDirection: "column",
             alignItems: "center",
             gap: "0.15rem",
@@ -370,16 +175,16 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
             textAlign: "center",
             borderTop: "1px solid rgba(255,255,255,0.08)",
           }}>
-            <div style={{ 
-              fontSize: "0.65rem", 
+            <div style={{
+              fontSize: "0.65rem",
               color: "rgba(255,255,255,0.4)",
               letterSpacing: "0.04em",
               fontWeight: 500,
             }}>
               InnovationHub Softwares
             </div>
-            <div style={{ 
-              fontSize: "0.55rem", 
+            <div style={{
+              fontSize: "0.55rem",
               color: "rgba(255,255,255,0.25)",
               letterSpacing: "0.06em",
             }}>
