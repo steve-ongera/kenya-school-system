@@ -151,6 +151,9 @@ export const academicsApi = {
   streams: () => api.get("/streams/"),
   classrooms: (params) => api.get("/classrooms/", { params }),
 
+  classroomResults: (id, params) => api.get(`/classrooms/${id}/results/`, { params }),   // NEW
+  gradeLevelResults: (id, params) => api.get(`/grade-levels/${id}/results/`, { params }), // NEW
+
   subjects: (params) => api.get("/subjects/", { params }),
   createSubject: (payload) => api.post("/subjects/", payload),
   updateSubject: (id, payload) => api.patch(`/subjects/${id}/`, payload),
