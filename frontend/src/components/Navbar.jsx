@@ -1,8 +1,9 @@
 // components/Navbar.jsx
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { notificationApi, messagingApi } from "../services/api";
+import { NAV_BY_ROLE } from "../config/navigation";
 
 const ROLE_LABELS = {
   ADMIN: "Administrator",
@@ -33,6 +34,7 @@ function timeAgo(dateString) {
 }
 
 const POLL_INTERVAL_MS = 30000;
+const MAX_SUGGESTIONS = 8;
 
 export default function Navbar({ onToggleSidebar }) {
   const { user, logout } = useAuth();
@@ -40,7 +42,10 @@ export default function Navbar({ onToggleSidebar }) {
 
   const [openMenu, setOpenMenu] = useState(null); // 'notifications' | 'messages' | 'profile' | null
   const [query, setQuery] = useState("");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const containerRef = useRef(null);
+  const searchRef = useRef(null);
 
   const [notifications, setNotifications] = useState([]);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
@@ -58,14 +63,47 @@ export default function Navbar({ onToggleSidebar }) {
     return () => clearInterval(interval);
   }, [refreshCounts]);
 
+  // Flat, ROLE-SCOPED list of every page this user actually has a sidebar
+  // link to - this is what the search box is allowed to suggest. A student
+  // (or any other role) can only ever be pulled from NAV_BY_ROLE[user.role],
+  // so they can't search their way into a page outside their own section.
+  const searchablePages = useMemo(() => {
+    const groups = user ? NAV_BY_ROLE[user.role] || [] : [];
+    const pages = [];
+    groups.forEach((group) => {
+      group.items.forEach((item) => {
+        pages.push({ ...item, group: group.label || "" });
+      });
+    });
+    return pages;
+  }, [user]);
+
+  const suggestions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return searchablePages
+      .filter((p) => p.label.toLowerCase().includes(q) || p.group.toLowerCase().includes(q))
+      .slice(0, MAX_SUGGESTIONS);
+  }, [query, searchablePages]);
+
+  useEffect(() => {
+    setActiveIndex(suggestions.length > 0 ? 0 : -1);
+  }, [suggestions]);
+
   useEffect(() => {
     function handleClickOutside(e) {
       if (containerRef.current && !containerRef.current.contains(e.target)) {
         setOpenMenu(null);
       }
+      if (searchRef.current && !searchRef.current.contains(e.target)) {
+        setShowSuggestions(false);
+      }
     }
     function handleEscape(e) {
-      if (e.key === "Escape") setOpenMenu(null);
+      if (e.key === "Escape") {
+        setOpenMenu(null);
+        setShowSuggestions(false);
+      }
     }
     document.addEventListener("mousedown", handleClickOutside);
     document.addEventListener("keydown", handleEscape);
@@ -100,10 +138,38 @@ export default function Navbar({ onToggleSidebar }) {
     }
   };
 
+  const goToPage = (page) => {
+    if (!page) return;
+    navigate(page.to);
+    setQuery("");
+    setShowSuggestions(false);
+    setActiveIndex(-1);
+  };
+
+  const handleSearchChange = (e) => {
+    setQuery(e.target.value);
+    setShowSuggestions(true);
+  };
+
+  const handleSearchKeyDown = (e) => {
+    if (!showSuggestions || suggestions.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => (i + 1) % suggestions.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => (i - 1 + suggestions.length) % suggestions.length);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      goToPage(suggestions[activeIndex] ?? suggestions[0]);
+    }
+  };
+
   const handleSearchSubmit = (e) => {
     e.preventDefault();
-    if (!query.trim()) return;
-    navigate(`/search?q=${encodeURIComponent(query.trim())}`);
+    if (suggestions.length > 0) {
+      goToPage(suggestions[activeIndex] ?? suggestions[0]);
+    }
   };
 
   const handleLogout = () => {
@@ -117,16 +183,70 @@ export default function Navbar({ onToggleSidebar }) {
         <i className="bi bi-list"></i>
       </button>
 
-      <form className="app-navbar__search" onSubmit={handleSearchSubmit}>
-        <i className="bi bi-search"></i>
-        <input
-          type="text"
-          placeholder="Search students, classes, invoices…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <kbd>⌘K</kbd>
-      </form>
+      <div ref={searchRef} style={{ position: "relative", flex: 1, maxWidth: 420 }}>
+        <form className="app-navbar__search" onSubmit={handleSearchSubmit} autoComplete="off">
+          <i className="bi bi-search"></i>
+          <input
+            type="text"
+            placeholder="Search pages…"
+            value={query}
+            onChange={handleSearchChange}
+            onFocus={() => query.trim() && setShowSuggestions(true)}
+            onKeyDown={handleSearchKeyDown}
+          />
+          <kbd>⌘K</kbd>
+        </form>
+
+        {showSuggestions && query.trim() && (
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(100% + 6px)",
+              left: 0,
+              right: 0,
+              background: "#fff",
+              border: "1px solid rgba(0,0,0,0.08)",
+              borderRadius: 10,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+              zIndex: 50,
+              maxHeight: 360,
+              overflowY: "auto",
+            }}
+          >
+            {suggestions.length === 0 ? (
+              <div className="app-navbar__dropdown-empty">No matching pages.</div>
+            ) : (
+              suggestions.map((page, idx) => (
+                <div
+                  key={page.to}
+                  onMouseDown={(e) => e.preventDefault()} // keep focus so the click still registers
+                  onClick={() => goToPage(page)}
+                  onMouseEnter={() => setActiveIndex(idx)}
+                  role="button"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "0.6rem 0.9rem",
+                    cursor: "pointer",
+                    background: idx === activeIndex ? "rgba(13,110,253,0.08)" : "transparent",
+                  }}
+                >
+                  <i className={`bi ${page.icon}`} style={{ width: 18, textAlign: "center" }}></i>
+                  <div>
+                    <div style={{ fontWeight: 500, fontSize: "0.9rem" }}>{page.label}</div>
+                    {page.group && (
+                      <div style={{ fontSize: "0.75rem", color: "var(--bs-secondary-color, #6c757d)" }}>
+                        {page.group}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
 
       <div className="app-navbar__spacer" />
 
@@ -194,8 +314,8 @@ export default function Navbar({ onToggleSidebar }) {
             <div className="app-navbar__dropdown">
               <div className="app-navbar__dropdown-header">
                 <span>Messages</span>
-                <a
-                  href="#"
+                
+                 <a href="#"
                   onClick={(e) => {
                     e.preventDefault();
                     setOpenMenu(null);
