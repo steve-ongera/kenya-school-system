@@ -192,8 +192,11 @@ class StreamSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+
 class ClassRoomSerializer(serializers.ModelSerializer):
     grade_level_name = serializers.CharField(source="grade_level.name", read_only=True)
+    curriculum_type = serializers.CharField(source="grade_level.curriculum_type", read_only=True)
+    curriculum_display = serializers.CharField(source="grade_level.get_curriculum_type_display", read_only=True)
     stream_name = serializers.CharField(source="stream.name", read_only=True)
     class_teacher_name = serializers.CharField(source="class_teacher.get_full_name", read_only=True)
     student_count = serializers.SerializerMethodField()
@@ -206,7 +209,8 @@ class ClassRoomSerializer(serializers.ModelSerializer):
 
     def get_student_count(self, obj):
         return obj.enrollments.filter(status=models.Enrollment.Status.ACTIVE).count()
-
+    
+    
 # ---------------------------------------------------------------------------
 # STUDENTS / GUARDIANS / ENROLLMENT
 # ---------------------------------------------------------------------------
@@ -1224,3 +1228,5 @@ class ClassroomPromotionSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.ClassroomPromotion
         fields = "__all__"
+        
+        

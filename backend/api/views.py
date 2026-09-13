@@ -523,6 +523,21 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
             )
         return super().destroy(request, *args, **kwargs)
 
+    @action(detail=False, methods=["get"], url_path="all", permission_classes=[utils.ReadOnlyOrAdmin])
+    def all(self, request):
+        """
+        GET /classrooms/all/
+        Unpaginated classroom list, for dropdowns/pickers (promotions,
+        timetable setup, bulk actions, etc). The default /classrooms/
+        list stays paginated (page_size=12) for the admin Classes page -
+        this exists specifically so a picker never silently truncates to
+        a partial page (e.g. only the first curriculum/grade alphabetically
+        or by level_order, cutting off everything after it).
+        Still respects the same filters/search as the main list.
+        """
+        qs = self.filter_queryset(self.get_queryset())
+        return Response(serializers.ClassRoomSerializer(qs, many=True).data)
+
     @action(detail=True, methods=["get"], url_path="students")
     def students(self, request, pk=None):
         """Full roster (with parent/guardian contacts) for this classroom's active students."""
@@ -734,7 +749,7 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
                 for ex in available_exams
             ],
         })
-        
+
     @action(detail=True, methods=["get"], url_path="promotion_preview", permission_classes=[utils.IsAdmin])
     def promotion_preview(self, request, pk=None):
         """
@@ -742,7 +757,8 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
         Resolves what this classroom would promote INTO and returns every
         active student in it (admission_no, name, gender, curriculum) -
         unpaginated, whether that's 6 or 190 rows. Returns already_promoted
-        instead if a ClassroomPromotion record already exists.
+        instead if a ClassroomPromotion record already exists. Works the
+        same for CBC and legacy 8-4-4 - see services.resolve_next_classroom_target.
         """
         classroom = self.get_object()
 
@@ -772,7 +788,7 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
             .select_related("student__user")
             .order_by("student__user__first_name")
         )
-        students = [
+        students_data = [
             {
                 "enrollment_id": e.id,
                 "admission_no": e.student.admission_no,
@@ -788,8 +804,8 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
                 "already_promoted": False,
                 "graduating": True,
                 "source_classroom": str(classroom),
-                "student_count": len(students),
-                "students": students,
+                "student_count": len(students_data),
+                "students": students_data,
                 "detail": "This is the final grade - promoting will GRADUATE these students instead of moving them to a new class.",
             })
 
@@ -801,8 +817,8 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
             "target_stream": info["stream"].name,
             "target_academic_year": info["academic_year"].year,
             "target_classroom_exists": info["existing_classroom"] is not None,
-            "student_count": len(students),
-            "students": students,
+            "student_count": len(students_data),
+            "students": students_data,
         })
 
     @action(detail=True, methods=["post"], url_path="bulk_promote", permission_classes=[utils.IsAdmin])
