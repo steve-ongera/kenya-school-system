@@ -309,6 +309,179 @@ class GradeLevelViewSet(viewsets.ModelViewSet):
     filterset_fields = ["curriculum_type", "education_level"]
     filter_backends = [DjangoFilterBackend]
 
+    @action(detail=True, methods=["get"], url_path="results")
+    def results(self, request, pk=None):
+        """
+        GET /grade-levels/{id}/results/?academic_year=<id>&term=<id>&exam=<id>
+
+        Same computation as ClassRoomViewSet.results, but pools every
+        classroom (every stream) for this grade/form in one academic
+        year together, so ranking/position is grade-wide instead of
+        per-stream - powers the "whole grade / form (all streams)"
+        scope on the Rankings page.
+
+        - Omit `exam` (or leave it blank) to combine EVERY exam in the
+          term (CAT + Midterm + Endterm etc. all averaged together) -
+          e.g. a full End of Term ranking.
+        - Pass `exam=<Exam id>` to scope everything (subjects, averages,
+          ranking) to just that one exam - e.g. rank on the Midterm
+          Exam alone, separately from the End-term Exam.
+
+        Students with at least one recorded mark in scope are ranked by
+        average percentage (ties share a rank, broken by admission
+        number). Students with no marks in scope are still included,
+        ranked after everyone with marks, ordered by admission number.
+
+        The subject list is the UNION of subjects officially offered at
+        this grade (GradeSubject) and any subject that actually has
+        marks recorded in scope - so a subject a teacher has entered
+        marks for is never silently dropped just because Grade
+        Offerings hasn't been updated yet.
+
+        The response also includes `available_exams` - every Exam
+        configured for this grade level in this term - so the frontend
+        can render the exam filter dropdown without a second API call.
+        """
+        grade_level = self.get_object()
+
+        academic_year_id = request.query_params.get("academic_year")
+        academic_year = (
+            generics.get_object_or_404(models.AcademicYear, pk=academic_year_id) if academic_year_id
+            else models.AcademicYear.objects.filter(is_current=True).first()
+        )
+        if not academic_year:
+            return Response(
+                {"detail": "No academic year specified and no current academic year is configured."},
+                status=400,
+            )
+
+        term_id = request.query_params.get("term")
+        term = (
+            generics.get_object_or_404(models.Term, pk=term_id) if term_id
+            else models.Term.objects.filter(academic_year=academic_year, is_current=True).first()
+        )
+        if not term:
+            return Response({"detail": "No term specified for this academic year."}, status=400)
+
+        available_exams = models.Exam.objects.filter(
+            term=term, grade_level=grade_level
+        ).select_related("exam_type").order_by("exam_type__order")
+
+        exam_id = request.query_params.get("exam")
+        selected_exam = None
+        if exam_id:
+            selected_exam = generics.get_object_or_404(
+                models.Exam, pk=exam_id, term=term, grade_level=grade_level
+            )
+
+        classrooms = models.ClassRoom.objects.filter(grade_level=grade_level, academic_year=academic_year)
+
+        def result_filter(**extra):
+            base = {"exam__term": term, **extra}
+            if selected_exam:
+                base = {"exam": selected_exam, **extra}
+            return models.ExamResult.objects.filter(
+                is_absent=False, marks_obtained__isnull=False, max_marks__gt=0, **base
+            )
+
+        enrollments = (
+            models.Enrollment.objects.filter(classroom__in=classrooms, status=models.Enrollment.Status.ACTIVE)
+            .select_related("student__user", "classroom__stream")
+            .order_by("student__user__first_name")
+        )
+
+        offered_subject_ids = set(
+            models.Subject.objects.filter(grade_subjects__grade_level=grade_level).values_list("id", flat=True)
+        )
+        scored_subject_ids = set(
+            result_filter(enrollment__in=enrollments).values_list("subject_id", flat=True)
+        )
+        subjects = (
+            models.Subject.objects.filter(id__in=(offered_subject_ids | scored_subject_ids))
+            .distinct()
+            .order_by("name")
+        )
+
+        scored = []
+        for enrollment in enrollments:
+            subject_marks = []
+            pct_values = []
+            for subject in subjects:
+                qs = result_filter(enrollment=enrollment, subject=subject)
+                if qs.exists():
+                    total_pct = sum(float(r.marks_obtained) / float(r.max_marks) * 100 for r in qs)
+                    avg_pct = round(total_pct / qs.count(), 1)
+                    subject_marks.append({"subject": subject.name, "average": avg_pct})
+                    pct_values.append(avg_pct)
+                else:
+                    subject_marks.append({"subject": subject.name, "average": None})
+
+            has_marks = len(pct_values) > 0
+            scored.append({
+                "enrollment": enrollment,
+                "has_marks": has_marks,
+                "average": round(sum(pct_values) / len(pct_values), 1) if has_marks else None,
+                "subjects": subject_marks,
+            })
+
+        with_marks = sorted(
+            (s for s in scored if s["has_marks"]),
+            key=lambda s: (-s["average"], s["enrollment"].student.admission_no),
+        )
+        without_marks = sorted(
+            (s for s in scored if not s["has_marks"]),
+            key=lambda s: s["enrollment"].student.admission_no,
+        )
+
+        results_payload = []
+        prev_avg, rank = None, 0
+        for idx, row in enumerate(with_marks, start=1):
+            if row["average"] != prev_avg:
+                rank = idx
+            prev_avg = row["average"]
+            results_payload.append({
+                "enrollment_id": row["enrollment"].id,
+                "admission_no": row["enrollment"].student.admission_no,
+                "full_name": row["enrollment"].student.user.get_full_name(),
+                "classroom_label": str(row["enrollment"].classroom),
+                "class_position": rank,
+                "average_marks": row["average"],
+                "subjects": row["subjects"],
+                "has_marks": True,
+            })
+
+        next_rank = len(with_marks) + 1
+        for offset, row in enumerate(without_marks):
+            results_payload.append({
+                "enrollment_id": row["enrollment"].id,
+                "admission_no": row["enrollment"].student.admission_no,
+                "full_name": row["enrollment"].student.user.get_full_name(),
+                "classroom_label": str(row["enrollment"].classroom),
+                "class_position": next_rank + offset,
+                "average_marks": None,
+                "subjects": row["subjects"],
+                "has_marks": False,
+            })
+
+        return Response({
+            "grade_level": grade_level.name,
+            "academic_year": academic_year.year,
+            "term": str(term),
+            "term_id": term.id,
+            "selected_exam_id": selected_exam.id if selected_exam else None,
+            "subjects": [s.name for s in subjects],
+            "results": results_payload,
+            "available_exams": [
+                {
+                    "id": ex.id,
+                    "name": ex.name,
+                    "exam_type_name": ex.exam_type.name,
+                    "is_published": ex.is_published,
+                }
+                for ex in available_exams
+            ],
+        })
+
 
 class StreamViewSet(viewsets.ModelViewSet):
     queryset = models.Stream.objects.all()
@@ -349,8 +522,7 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return super().destroy(request, *args, **kwargs)
-    
-    
+
     @action(detail=True, methods=["get"], url_path="students")
     def students(self, request, pk=None):
         """Full roster (with parent/guardian contacts) for this classroom's active students."""
@@ -375,10 +547,8 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
                 "created": serializers.ClassRoomSerializer(result["created"], many=True).data,
             },
             status=status.HTTP_201_CREATED,
-            
-            
         )
-        
+
     @action(detail=True, methods=["get"], url_path="results")
     def results(self, request, pk=None):
         """
@@ -397,9 +567,10 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
         the Midterm Exam alone, separately from the End-term Exam.
 
         Students with at least one recorded mark in scope are ranked by
-        average percentage (ties share a rank). Students with NO marks in
-        scope are still included, ranked after everyone with marks, ordered
-        by admission number, instead of being left unranked.
+        average percentage (ties share a rank, broken by admission number).
+        Students with NO marks in scope are still included, ranked after
+        everyone with marks, ordered by admission number, instead of being
+        left unranked.
 
         The subject list is the UNION of subjects officially offered at this
         grade (GradeSubject) and any subject that actually has marks recorded
@@ -505,7 +676,8 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
             })
 
         with_marks = sorted(
-            (s for s in scored if s["has_marks"]), key=lambda s: s["average"], reverse=True
+            (s for s in scored if s["has_marks"]),
+            key=lambda s: (-s["average"], s["enrollment"].student.admission_no),
         )
         without_marks = sorted(
             (s for s in scored if not s["has_marks"]),
@@ -546,6 +718,7 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
 
         return Response({
             "classroom": str(classroom),
+            "academic_year": classroom.academic_year.year,
             "term": str(term),
             "term_id": term.id,
             "selected_exam_id": selected_exam.id if selected_exam else None,
