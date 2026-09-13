@@ -98,7 +98,7 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
                 overflow: "hidden",
                 textOverflow: "ellipsis"
               }}>
-                MOI HIGH SCHOOL
+                MASOMO INFO SYSTEM
               </span>
             </div>
           ) : (
