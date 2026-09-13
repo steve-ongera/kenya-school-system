@@ -734,6 +734,87 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
                 for ex in available_exams
             ],
         })
+        
+    @action(detail=True, methods=["get"], url_path="promotion_preview", permission_classes=[utils.IsAdmin])
+    def promotion_preview(self, request, pk=None):
+        """
+        GET /classrooms/{id}/promotion_preview/
+        Resolves what this classroom would promote INTO and returns every
+        active student in it (admission_no, name, gender, curriculum) -
+        unpaginated, whether that's 6 or 190 rows. Returns already_promoted
+        instead if a ClassroomPromotion record already exists.
+        """
+        classroom = self.get_object()
+
+        existing = models.ClassroomPromotion.objects.select_related("target_classroom", "promoted_by").filter(
+            source_classroom=classroom
+        ).first()
+        if existing:
+            target_label = str(existing.target_classroom) if existing.target_classroom else "graduation"
+            return Response({
+                "already_promoted": True,
+                "detail": (
+                    f"{classroom} has already been promoted to {target_label} on "
+                    f"{existing.promoted_at:%d %b %Y, %H:%M}."
+                ),
+                "target_classroom": target_label,
+                "promoted_at": existing.promoted_at,
+                "student_count": existing.student_count,
+            }, status=400)
+
+        try:
+            info = services.resolve_next_classroom_target(classroom)
+        except ValueError as exc:
+            return Response({"already_promoted": False, "detail": str(exc)}, status=400)
+
+        enrollments = (
+            classroom.enrollments.filter(status=models.Enrollment.Status.ACTIVE)
+            .select_related("student__user")
+            .order_by("student__user__first_name")
+        )
+        students = [
+            {
+                "enrollment_id": e.id,
+                "admission_no": e.student.admission_no,
+                "full_name": e.student.user.get_full_name(),
+                "gender": e.student.get_gender_display(),
+                "curriculum_type": e.student.curriculum_type,
+            }
+            for e in enrollments
+        ]
+
+        if info["graduating"]:
+            return Response({
+                "already_promoted": False,
+                "graduating": True,
+                "source_classroom": str(classroom),
+                "student_count": len(students),
+                "students": students,
+                "detail": "This is the final grade - promoting will GRADUATE these students instead of moving them to a new class.",
+            })
+
+        return Response({
+            "already_promoted": False,
+            "graduating": False,
+            "source_classroom": str(classroom),
+            "target_grade": info["grade_level"].name,
+            "target_stream": info["stream"].name,
+            "target_academic_year": info["academic_year"].year,
+            "target_classroom_exists": info["existing_classroom"] is not None,
+            "student_count": len(students),
+            "students": students,
+        })
+
+    @action(detail=True, methods=["post"], url_path="bulk_promote", permission_classes=[utils.IsAdmin])
+    def bulk_promote(self, request, pk=None):
+        """POST /classrooms/{id}/bulk_promote/  body: { force?: bool }"""
+        classroom = self.get_object()
+        force = bool(request.data.get("force", False))
+        try:
+            result = services.bulk_promote_classroom_auto(classroom, force=force, promoted_by=request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(result)
 
 # ---------------------------------------------------------------------------
 # STUDENTS / GUARDIANS / ENROLLMENT
@@ -2590,3 +2671,18 @@ class FinanceStudentBalancesReportView(APIView):
             "total_balance": sum(r["balance"] for r in rows),
         }
         return response
+    
+    
+
+class ClassroomPromotionViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = models.ClassroomPromotion.objects.select_related(
+        "source_classroom", "target_classroom", "promoted_by"
+    ).order_by("-promoted_at")
+    serializer_class = serializers.ClassroomPromotionSerializer
+    permission_classes = [utils.IsAdmin]
+
+    @action(detail=True, methods=["delete"], url_path="undo")
+    def undo(self, request, pk=None):
+        record = self.get_object()
+        record.delete()
+        return Response({"detail": "Promotion record cleared - this class can be promoted again."})

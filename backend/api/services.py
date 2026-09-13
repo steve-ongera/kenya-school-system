@@ -1394,3 +1394,101 @@ def auto_generate_timetable(term):
                 })
 
     return {"created_count": len(created), "skipped": skipped}
+
+
+
+# ---------------------------------------------------------------------------
+# CLASSROOM-LEVEL AUTO PROMOTION (resolves target itself, blocks re-runs)
+# ---------------------------------------------------------------------------
+def resolve_next_classroom_target(source_classroom: models.ClassRoom) -> dict:
+    """
+    Dry-run resolution of where `source_classroom` promotes TO: same
+    stream, grade_level.next_grade, and the AcademicYear whose year is
+    source_classroom.academic_year.year + 1. Does NOT create anything -
+    used by the preview endpoint. Raises ValueError with a message
+    that's safe to show the admin directly.
+    """
+    next_grade = source_classroom.grade_level.next_grade
+    if next_grade is None:
+        return {"graduating": True}
+
+    target_year_value = source_classroom.academic_year.year + 1
+    target_academic_year = models.AcademicYear.objects.filter(year=target_year_value).first()
+    if not target_academic_year:
+        raise ValueError(
+            f"Academic year {target_year_value} hasn't been set up yet. "
+            "Create it under Academic Calendar before promoting this class."
+        )
+
+    existing_classroom = models.ClassRoom.objects.filter(
+        grade_level=next_grade, stream=source_classroom.stream, academic_year=target_academic_year,
+    ).first()
+
+    return {
+        "graduating": False,
+        "grade_level": next_grade,
+        "stream": source_classroom.stream,
+        "academic_year": target_academic_year,
+        "existing_classroom": existing_classroom,
+    }
+
+
+def get_or_create_next_classroom(source_classroom: models.ClassRoom) -> models.ClassRoom:
+    """Same resolution as above, but creates the target ClassRoom if it doesn't exist yet."""
+    info = resolve_next_classroom_target(source_classroom)
+    if info["graduating"]:
+        raise ValueError("This grade has no next grade configured - it's a graduating class, not a promotion.")
+
+    target_classroom, _ = models.ClassRoom.objects.get_or_create(
+        grade_level=info["grade_level"], stream=info["stream"], academic_year=info["academic_year"],
+    )
+    return target_classroom
+
+
+@transaction.atomic
+def bulk_promote_classroom_auto(source_classroom: models.ClassRoom, force: bool = False, promoted_by=None) -> dict:
+    """
+    The guarded, auto-targeting entry point the UI calls. Refuses outright
+    if this source_classroom already has a ClassroomPromotion record -
+    that's the single source of truth for "already promoted", independent
+    of how many ACTIVE enrollments happen to remain in it.
+    """
+    existing = models.ClassroomPromotion.objects.select_related("target_classroom").filter(
+        source_classroom=source_classroom
+    ).first()
+    if existing:
+        target_label = str(existing.target_classroom) if existing.target_classroom else "graduation"
+        raise ValueError(
+            f"This class has already been promoted (to {target_label}) on "
+            f"{existing.promoted_at:%d %b %Y, %H:%M} by "
+            f"{existing.promoted_by.get_full_name() if existing.promoted_by else 'an admin'}. "
+            "Ask an administrator to clear that record first if this needs to be redone."
+        )
+
+    next_grade = source_classroom.grade_level.next_grade
+
+    if next_grade is None:
+        # Top of the ladder (Grade 12 / Form 4) - nowhere to promote TO,
+        # so this bulk action graduates the class instead.
+        active = source_classroom.enrollments.filter(status=models.Enrollment.Status.ACTIVE)
+        count = active.count()
+        active.update(status=models.Enrollment.Status.GRADUATED)
+        models.ClassroomPromotion.objects.create(
+            source_classroom=source_classroom, target_classroom=None,
+            promoted_by=promoted_by, student_count=count,
+        )
+        return {"promoted": [], "failed": [], "graduated_count": count, "target_classroom": None}
+
+    target_classroom = get_or_create_next_classroom(source_classroom)
+    results = bulk_promote_classroom(source_classroom, target_classroom, force=force)  # existing function, unchanged
+
+    models.ClassroomPromotion.objects.create(
+        source_classroom=source_classroom,
+        target_classroom=target_classroom,
+        promoted_by=promoted_by,
+        student_count=len(results["promoted"]),
+    )
+    results["target_classroom"] = str(target_classroom)
+    results["target_classroom_id"] = target_classroom.id
+    results["graduated_count"] = 0
+    return results

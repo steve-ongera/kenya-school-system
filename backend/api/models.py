@@ -971,3 +971,37 @@ class DirectMessage(models.Model):
 
     def __str__(self):
         return f"{self.sender} in Conversation #{self.conversation_id}"
+    
+    
+# ---------------------------------------------------------------------------
+# CLASSROOM PROMOTION TRACKING (prevents double-promoting the same class)
+# ---------------------------------------------------------------------------
+class ClassroomPromotion(models.Model):
+    """
+    One row per SOURCE classroom that has been bulk-promoted. Its mere
+    existence is the "already promoted" guard - once this row exists for
+    a classroom, bulk_promote_classroom_auto() refuses to run again for
+    it. target_classroom is null when the source was a graduating class
+    (grade_level.next_grade is None) - students were marked GRADUATED
+    instead of moved to a new classroom.
+    """
+
+    source_classroom = models.OneToOneField(
+        ClassRoom, on_delete=models.CASCADE, related_name="promotion_record"
+    )
+    target_classroom = models.ForeignKey(
+        ClassRoom, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="promoted_from_records",
+    )
+    promoted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, related_name="classroom_promotions_done"
+    )
+    student_count = models.PositiveIntegerField(default=0)
+    promoted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "classroom_promotions"
+
+    def __str__(self):
+        target = self.target_classroom or "GRADUATED"
+        return f"{self.source_classroom} -> {target} ({self.student_count} students)"
