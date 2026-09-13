@@ -1,26 +1,73 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { academicsApi } from "../../services/api";
 
 export default function AdminPromotions() {
   const [classrooms, setClassrooms] = useState([]);
+  const [loadingClassrooms, setLoadingClassrooms] = useState(true);
+
+  const [year, setYear] = useState("");
+  const [curriculum, setCurriculum] = useState("");
   const [sourceClassroom, setSourceClassroom] = useState("");
+
   const [force, setForce] = useState(false);
   const [preview, setPreview] = useState(null);
-  const [alreadyPromoted, setAlreadyPromoted] = useState(null); // holds the {detail, ...} payload on a 400 "already promoted" response
+  const [alreadyPromoted, setAlreadyPromoted] = useState(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [promoting, setPromoting] = useState(false);
   const [result, setResult] = useState(null);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
-    academicsApi.classrooms().then(({ data }) => setClassrooms(data.results ?? data));
+    academicsApi
+      .allClassrooms()
+      .then(({ data }) => setClassrooms(data))
+      .finally(() => setLoadingClassrooms(false));
   }, []);
+
+  // ---- cascading filter options, derived from the one classrooms fetch ----
+  const years = useMemo(
+    () => [...new Set(classrooms.map((c) => c.academic_year_year))].sort((a, b) => b - a),
+    [classrooms]
+  );
+
+  const curriculums = useMemo(() => {
+    const map = new Map();
+    classrooms.forEach((c) => map.set(c.curriculum_type, c.curriculum_display || c.curriculum_type));
+    return [...map.entries()]; // [ [value, label], ... ]
+  }, [classrooms]);
+
+  const filteredClassrooms = useMemo(
+    () =>
+      classrooms.filter(
+        (c) =>
+          (!year || String(c.academic_year_year) === String(year)) &&
+          (!curriculum || c.curriculum_type === curriculum)
+      ),
+    [classrooms, year, curriculum]
+  );
 
   const resetOutputs = () => {
     setPreview(null);
     setAlreadyPromoted(null);
     setResult(null);
     setMessage("");
+  };
+
+  const handleYearChange = (e) => {
+    setYear(e.target.value);
+    setSourceClassroom("");
+    resetOutputs();
+  };
+
+  const handleCurriculumChange = (e) => {
+    setCurriculum(e.target.value);
+    setSourceClassroom("");
+    resetOutputs();
+  };
+
+  const handleClassroomChange = (e) => {
+    setSourceClassroom(e.target.value);
+    resetOutputs();
   };
 
   const loadPreview = async () => {
@@ -65,33 +112,70 @@ export default function AdminPromotions() {
     <div>
       <h2 className="page-title">Promotions</h2>
       <p className="text-muted">
-        Pick a class, preview where it promotes to and who's in it, then confirm. Each class can only
-        be bulk-promoted once — the system remembers.
+        Works for both curricula — CBC (Grade 9 → 10 → 11 → 12) and legacy 8-4-4 (Form 1 → 2 → 3 → 4).
+        Narrow down by year and curriculum, pick the class, preview who's affected, then confirm. Each
+        class can only be bulk-promoted once — the system remembers.
       </p>
 
       {message && <div className="alert alert-danger">{message}</div>}
 
       <div className="card p-3 mb-4">
         <div className="row g-3 align-items-end">
-          <div className="col-md-6">
-            <label className="form-label">Class to promote (grade + stream + year)</label>
-            <select
-              className="form-select"
-              value={sourceClassroom}
-              onChange={(e) => {
-                setSourceClassroom(e.target.value);
-                resetOutputs();
-              }}
-            >
-              <option value="">Select...</option>
-              {classrooms.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.grade_level_name} {c.stream_name} ({c.academic_year_year}) — {c.student_count} active
+          <div className="col-md-3">
+            <label className="form-label">1. Academic Year</label>
+            <select className="form-select" value={year} onChange={handleYearChange} disabled={loadingClassrooms}>
+              <option value="">All years</option>
+              {years.map((y) => (
+                <option key={y} value={y}>
+                  {y}
                 </option>
               ))}
             </select>
           </div>
-          <div className="col-md-2">
+
+          <div className="col-md-3">
+            <label className="form-label">2. Curriculum</label>
+            <select
+              className="form-select"
+              value={curriculum}
+              onChange={handleCurriculumChange}
+              disabled={loadingClassrooms}
+            >
+              <option value="">All curricula</option>
+              {curriculums.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="col-md-6">
+            <label className="form-label">3. Grade / Class</label>
+            <select
+              className="form-select"
+              value={sourceClassroom}
+              onChange={handleClassroomChange}
+              disabled={loadingClassrooms}
+            >
+              <option value="">
+                {loadingClassrooms
+                  ? "Loading classes..."
+                  : filteredClassrooms.length
+                  ? "Select..."
+                  : "No classes match this year/curriculum"}
+              </option>
+              {filteredClassrooms.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.grade_level_name} {c.stream_name} — {c.student_count} active
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="row g-3 align-items-center mt-1">
+          <div className="col-md-6">
             <div className="form-check">
               <input
                 type="checkbox"
@@ -105,7 +189,7 @@ export default function AdminPromotions() {
               </label>
             </div>
           </div>
-          <div className="col-md-2">
+          <div className="col-md-3 offset-md-3">
             <button
               className="btn btn-outline-primary w-100"
               disabled={!sourceClassroom || loadingPreview}

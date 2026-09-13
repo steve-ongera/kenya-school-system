@@ -145,14 +145,24 @@ export const calendarApi = {
 // ---------------------------------------------------------------------------
 // CURRICULUM / CLASSES
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// CURRICULUM / CLASSES
+// ---------------------------------------------------------------------------
 export const academicsApi = {
   gradeLevels: (params) => api.get("/grade-levels/", { params }),
 
   streams: () => api.get("/streams/"),
   classrooms: (params) => api.get("/classrooms/", { params }),
+  // Unpaginated classroom list for pickers/dropdowns (promotions, timetable
+  // setup, bulk actions). Use this instead of `classrooms()` anywhere the
+  // UI needs EVERY classroom, not just the first page.
+  allClassrooms: (params) => api.get("/classrooms/all/", { params }),
 
-  classroomResults: (id, params) => api.get(`/classrooms/${id}/results/`, { params }),   // NEW
-  gradeLevelResults: (id, params) => api.get(`/grade-levels/${id}/results/`, { params }), // NEW
+  classroomResults: (id, params) => api.get(`/classrooms/${id}/results/`, { params }),
+  gradeLevelResults: (id, params) => api.get(`/grade-levels/${id}/results/`, { params }),
+
+  promotionPreview: (classroomId) => api.get(`/classrooms/${classroomId}/promotion_preview/`),
+  bulkPromoteClassroom: (classroomId, payload) => api.post(`/classrooms/${classroomId}/bulk_promote/`, payload),
 
   subjects: (params) => api.get("/subjects/", { params }),
   createSubject: (payload) => api.post("/subjects/", payload),
@@ -178,9 +188,6 @@ export const academicsApi = {
   createGradingScale: (payload) => api.post("/grading-scales/", payload),
   updateGradingScale: (id, payload) => api.patch(`/grading-scales/${id}/`, payload),
   deleteGradingScale: (id) => api.delete(`/grading-scales/${id}/`),
-
-  promotionPreview: (classroomId) => api.get(`/classrooms/${classroomId}/promotion_preview/`),
-  bulkPromoteClassroom: (classroomId, payload) => api.post(`/classrooms/${classroomId}/bulk_promote/`, payload),
 };
 
 // ---------------------------------------------------------------------------

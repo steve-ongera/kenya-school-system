@@ -1400,17 +1400,28 @@ def auto_generate_timetable(term):
 # ---------------------------------------------------------------------------
 # CLASSROOM-LEVEL AUTO PROMOTION (resolves target itself, blocks re-runs)
 # ---------------------------------------------------------------------------
+
 def resolve_next_classroom_target(source_classroom: models.ClassRoom) -> dict:
     """
     Dry-run resolution of where `source_classroom` promotes TO: same
     stream, grade_level.next_grade, and the AcademicYear whose year is
-    source_classroom.academic_year.year + 1. Does NOT create anything -
-    used by the preview endpoint. Raises ValueError with a message
-    that's safe to show the admin directly.
+    source_classroom.academic_year.year + 1. Curriculum-agnostic - this
+    walks the SAME next_grade chain whether the grade is CBC (Grade 9 ->
+    Grade 10 -> ...) or legacy 8-4-4 (Form 1 -> Form 2 -> Form 3 -> Form 4).
+    Does NOT create anything - used by the preview endpoint.
     """
-    next_grade = source_classroom.grade_level.next_grade
+    grade_level = source_classroom.grade_level
+    next_grade = grade_level.next_grade
     if next_grade is None:
         return {"graduating": True}
+
+    if next_grade.curriculum_type != grade_level.curriculum_type:
+        raise ValueError(
+            f"{grade_level}'s next grade is set to {next_grade}, which is a different "
+            f"curriculum ({next_grade.get_curriculum_type_display()} vs "
+            f"{grade_level.get_curriculum_type_display()}). Fix the 'next grade' link on "
+            "Grade Levels before promoting this class."
+        )
 
     target_year_value = source_classroom.academic_year.year + 1
     target_academic_year = models.AcademicYear.objects.filter(year=target_year_value).first()
@@ -1431,7 +1442,8 @@ def resolve_next_classroom_target(source_classroom: models.ClassRoom) -> dict:
         "academic_year": target_academic_year,
         "existing_classroom": existing_classroom,
     }
-
+    
+    
 
 def get_or_create_next_classroom(source_classroom: models.ClassRoom) -> models.ClassRoom:
     """Same resolution as above, but creates the target ClassRoom if it doesn't exist yet."""
@@ -1492,3 +1504,5 @@ def bulk_promote_classroom_auto(source_classroom: models.ClassRoom, force: bool 
     results["target_classroom_id"] = target_classroom.id
     results["graduated_count"] = 0
     return results
+
+
