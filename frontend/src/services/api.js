@@ -178,6 +178,9 @@ export const academicsApi = {
   createGradingScale: (payload) => api.post("/grading-scales/", payload),
   updateGradingScale: (id, payload) => api.patch(`/grading-scales/${id}/`, payload),
   deleteGradingScale: (id) => api.delete(`/grading-scales/${id}/`),
+
+  promotionPreview: (classroomId) => api.get(`/classrooms/${classroomId}/promotion_preview/`),
+  bulkPromoteClassroom: (classroomId, payload) => api.post(`/classrooms/${classroomId}/bulk_promote/`, payload),
 };
 
 // ---------------------------------------------------------------------------

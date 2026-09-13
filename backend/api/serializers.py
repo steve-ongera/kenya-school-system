@@ -1213,3 +1213,14 @@ class TimetableGridQuerySerializer(serializers.Serializer):
 
 class AutoGenerateTimetableSerializer(serializers.Serializer):
     term = serializers.PrimaryKeyRelatedField(queryset=models.Term.objects.all())
+    
+    
+
+class ClassroomPromotionSerializer(serializers.ModelSerializer):
+    source_classroom_label = serializers.CharField(source="source_classroom.__str__", read_only=True)
+    target_classroom_label = serializers.CharField(source="target_classroom.__str__", read_only=True)
+    promoted_by_name = serializers.CharField(source="promoted_by.get_full_name", read_only=True)
+
+    class Meta:
+        model = models.ClassroomPromotion
+        fields = "__all__"
