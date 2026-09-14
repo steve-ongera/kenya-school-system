@@ -11,6 +11,7 @@ import Notifications from "./pages/Notifications";
 
 // admin
 import AdminDashboard from "./pages/admin/Dashboard";
+import AdminLicense from "./pages/admin/License";
 import AdminStudents from "./pages/admin/Students";
 import AdminMarkEntry from "./pages/admin/MarkEntry";
 import AdminClassrooms from "./pages/admin/Classrooms";
@@ -92,6 +93,7 @@ export default function App() {
 
           {/* ADMIN */}
           <Route path="/admin" element={<RoleSection role="ADMIN"><AdminDashboard /></RoleSection>} />
+          <Route path="/admin/license" element={<RoleSection role="ADMIN"><AdminLicense /></RoleSection>} />
           <Route path="/admin/students" element={<RoleSection role="ADMIN"><AdminStudents /></RoleSection>} />
           <Route path="/admin/classrooms" element={<RoleSection role="ADMIN"><AdminClassrooms /></RoleSection>} />
           <Route path="/admin/mark-entry" element={<RoleSection role="ADMIN"><AdminMarkEntry /></RoleSection>} />

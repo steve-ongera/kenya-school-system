@@ -1242,3 +1242,15 @@ class LicenseUsageSerializer(serializers.Serializer):
 
 class RedeemTokenSerializer(serializers.Serializer):
     token = serializers.CharField(max_length=64)
+    
+    
+class SubscriptionPackageSerializer(serializers.ModelSerializer):
+    tier_display = serializers.CharField(source="get_tier_display", read_only=True)
+
+    class Meta:
+        model = models.SubscriptionPackage
+        fields = [
+            "id", "tier", "tier_display", "monthly_price",
+            "max_students", "max_classrooms_per_year", "max_teachers",
+            "features", "display_order",
+        ]

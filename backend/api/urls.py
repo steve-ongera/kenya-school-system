@@ -36,6 +36,7 @@ router.register(r"conversations", views.ConversationViewSet, basename="conversat
 router.register(r"login-attempts", views.LoginAttemptLogViewSet, basename="login-attempt")
 router.register(r"period-slots", views.PeriodSlotViewSet, basename="period-slots")
 router.register(r"timetable-entries", views.TimetableEntryViewSet, basename="timetable-entries")
+router.register(r"subscription-packages", views.SubscriptionPackageViewSet, basename="subscription-package")
 
 urlpatterns = [
     path("auth/login/", views.LoginView.as_view(), name="login"),  # replaces old login route
@@ -44,6 +45,7 @@ urlpatterns = [
     path("auth/reset-password/", views.ResetPasswordConfirmView.as_view(), name="reset-password"),
     path("license/me/", views.LicenseMeView.as_view(), name="license-me"),
     path("license/redeem/", views.LicenseRedeemView.as_view(), name="license-redeem"),
+    path("license/status/", views.LicenseStatusView.as_view()),
         
     path("auth/me/", views.MeView.as_view(), name="me"),
     path("auth/change-password/", views.ChangePasswordView.as_view(), name="change-password"),

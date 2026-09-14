@@ -62,6 +62,7 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
+       { to: "/admin/license", icon: "bi-key-fill", label: "License" },
       ],
     },
   ],

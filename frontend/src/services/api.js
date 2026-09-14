@@ -296,6 +296,16 @@ export const financeReportsApi = {
   studentBalances: (params) => api.get("/finance-reports/student-balances/", { params }), // <-- ADD
 };
 
+export const licenseApi = {
+  me: () => api.get("/license/me/"),
+  redeem: (token) => api.post("/license/redeem/", { token }),
+  status: () => api.get("/license/status/"),
+};
+
+export const packagesApi = {
+  list: () => api.get("/subscription-packages/"),
+};
+
 // ---------------------------------------------------------------------------
 // STUDENT/PARENT SELF-SERVICE FEE PAYMENT (STK push, DEBUG-bypassed locally)
 // ---------------------------------------------------------------------------

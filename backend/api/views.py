@@ -2822,3 +2822,45 @@ class LicenseRedeemView(APIView):
         return Response(services.get_license_usage(school))
     
     
+
+
+class SubscriptionPackageViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    GET /api/v1/subscription-packages/
+    Powers the License page's 'Available Packages' tab. Admin-only, same
+    scope as the rest of the License settings area. Pagination is
+    disabled - there are only ever a handful of packages (one per tier),
+    and the frontend expects a plain array.
+    """
+    serializer_class = serializers.SubscriptionPackageSerializer
+    permission_classes = [utils.IsAdminOnly]
+    pagination_class = None
+
+    def get_queryset(self):
+        return services.list_active_packages()
+    
+    
+
+class LicenseStatusView(APIView):
+    """
+    GET /api/v1/license/status/
+    Lightweight license check ANY authenticated role can call - powers
+    the frontend's global lock overlay. Deliberately exposes only
+    is_suspended/is_expired/tier, never usage numbers or pricing (that
+    stays admin-only on LicenseMeView).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        school = models.School.objects.first()
+        if not school:
+            return Response({"is_suspended": False, "is_expired": False, "tier": None})
+
+        lic = services.get_school_license(school)
+        return Response({
+            "is_suspended": lic.is_suspended,
+            "is_expired": lic.is_expired,
+            "tier": lic.tier,
+            "tier_display": lic.get_tier_display(),
+            "valid_until": lic.valid_until,
+        })

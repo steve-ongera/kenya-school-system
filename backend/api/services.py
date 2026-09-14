@@ -1694,6 +1694,21 @@ def redeem_license_token(token_str, school, user):
     return lic
 
 
+def _package_dict(package):
+    if not package:
+        return None
+    return {
+        "id": package.id,
+        "tier": package.tier,
+        "tier_display": package.get_tier_display(),
+        "monthly_price": package.monthly_price,
+        "max_students": package.max_students,
+        "max_classrooms_per_year": package.max_classrooms_per_year,
+        "max_teachers": package.max_teachers,
+        "features": package.features,
+    }
+
+
 def get_license_usage(school):
     lic = get_school_license(school)
     current_year = models.AcademicYear.objects.filter(is_current=True).first()
@@ -1707,6 +1722,8 @@ def get_license_usage(school):
     def usage_block(used, limit):
         return {"used": used, "limit": limit, "unlimited": limit is None}
 
+    current_package = models.SubscriptionPackage.objects.filter(tier=lic.tier).first()
+
     return {
         "tier": lic.tier,
         "tier_display": lic.get_tier_display(),
@@ -1719,4 +1736,9 @@ def get_license_usage(school):
             "classrooms_this_year": usage_block(classroom_count, lic.max_classrooms_per_year),
             "teachers": usage_block(teacher_count, lic.max_teachers),
         },
+        "current_package": _package_dict(current_package),
     }
+
+
+def list_active_packages():
+    return models.SubscriptionPackage.objects.filter(is_active=True).order_by("display_order", "monthly_price")
