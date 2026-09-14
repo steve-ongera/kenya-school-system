@@ -1892,7 +1892,7 @@ from django.db.models import Avg, F, FloatField, ExpressionWrapper
 
 class StudentPerformanceDashboardView(APIView):
     """
-    GET /api/v1/students/me/performance/
+    GET /api/v1/students/me/performance/?academic_year=<AcademicYear id>
 
     One aggregated payload for the student dashboard's charts, so the
     frontend doesn't have to make 4-5 separate calls and stitch them
@@ -1900,13 +1900,20 @@ class StudentPerformanceDashboardView(APIView):
 
       - term_trend            -> line chart: average % per exam WITHIN
                                   the current term (CAT, Midterm, Endterm...)
+                                  Always scoped to the student's CURRENT
+                                  enrollment, regardless of the year picker.
       - academic_year_trend   -> bar chart: average % per TERM (1, 2, 3)
-                                  across the current academic year
+                                  for the SELECTED academic year (via the
+                                  `academic_year` query param; defaults to
+                                  the student's current academic year).
       - subject_performance   -> pie chart: top 5 subjects by average %
                                   in the current term
       - subjects_summary      -> every subject the student is registered
                                   for this year, with their latest current
                                   -term mark if one exists, else null
+      - available_academic_years -> every academic year this student has
+                                  an enrollment record for, for the year
+                                  picker on the bar chart card.
     """
 
     permission_classes = [IsAuthenticated]
@@ -1917,11 +1924,34 @@ class StudentPerformanceDashboardView(APIView):
         if not student:
             return Response({"detail": "No student profile found for this account."}, status=404)
 
-        enrollment = student.current_enrollment
-        if not enrollment:
+        current_enrollment = student.current_enrollment
+        if not current_enrollment:
             return Response({"detail": "No active enrollment for the current academic year."}, status=404)
 
-        current_year = enrollment.academic_year
+        available_academic_years = (
+            models.AcademicYear.objects.filter(enrollments__student=student)
+            .distinct()
+            .order_by("-year")
+        )
+
+        academic_year_id = request.query_params.get("academic_year")
+        if academic_year_id:
+            selected_year = generics.get_object_or_404(
+                models.AcademicYear, pk=academic_year_id, enrollments__student=student
+            )
+        else:
+            selected_year = current_enrollment.academic_year
+
+        # The student's enrollment for the SELECTED year (may be a past
+        # year, different from current_enrollment) - the bar chart's data
+        # source. Falls back to the current enrollment if, unexpectedly,
+        # no enrollment row exists for the selected year.
+        selected_enrollment = (
+            models.Enrollment.objects.filter(student=student, academic_year=selected_year)
+            .select_related("classroom__grade_level")
+            .first()
+        ) or current_enrollment
+
         current_term = models.Term.objects.filter(is_current=True).first()
 
         def avg_pct_queryset(qs):
@@ -1934,31 +1964,34 @@ class StudentPerformanceDashboardView(APIView):
                 )
             )["avg_pct"]
 
-        base_results = models.ExamResult.objects.filter(
-            enrollment=enrollment, is_absent=False, marks_obtained__isnull=False
+        current_results = models.ExamResult.objects.filter(
+            enrollment=current_enrollment, is_absent=False, marks_obtained__isnull=False
         )
 
         # ---- line chart: per-exam average within the current term ----
         term_trend = []
         if current_term:
             exams = models.Exam.objects.filter(
-                term=current_term, grade_level=enrollment.classroom.grade_level
+                term=current_term, grade_level=current_enrollment.classroom.grade_level
             ).order_by("exam_type__order")
             for exam in exams:
-                avg_pct = avg_pct_queryset(base_results.filter(exam=exam))
+                avg_pct = avg_pct_queryset(current_results.filter(exam=exam))
                 if avg_pct is not None:
                     term_trend.append({"exam": exam.name, "average": round(avg_pct, 1)})
 
-        # ---- bar chart: per-term average across the whole academic year ----
+        # ---- bar chart: per-term average across the SELECTED academic year ----
         academic_year_trend = []
-        for term in models.Term.objects.filter(academic_year=current_year).order_by("term_number"):
+        selected_results = models.ExamResult.objects.filter(
+            enrollment=selected_enrollment, is_absent=False, marks_obtained__isnull=False
+        )
+        for term in models.Term.objects.filter(academic_year=selected_year).order_by("term_number"):
             ranking = models.TermPositionRanking.objects.filter(
-                enrollment=enrollment, term=term, checkpoint=models.TermPositionRanking.Checkpoint.ENDTERM
+                enrollment=selected_enrollment, term=term, checkpoint=models.TermPositionRanking.Checkpoint.ENDTERM
             ).first()
             if ranking:
                 average = float(ranking.average_marks)
             else:
-                average = avg_pct_queryset(base_results.filter(exam__term=term))
+                average = avg_pct_queryset(selected_results.filter(exam__term=term))
                 average = round(average, 1) if average is not None else None
             academic_year_trend.append({"term": term.get_term_number_display(), "average": average})
 
@@ -1966,7 +1999,7 @@ class StudentPerformanceDashboardView(APIView):
         subject_performance = []
         if current_term:
             rows = (
-                base_results.filter(exam__term=current_term)
+                current_results.filter(exam__term=current_term)
                 .values("subject__name")
                 .annotate(
                     avg_pct=Avg(
@@ -1984,7 +2017,7 @@ class StudentPerformanceDashboardView(APIView):
 
         # ---- subjects summary: every registered subject + latest current-term mark ----
         selections = models.StudentSubjectSelection.objects.filter(
-            enrollment=enrollment
+            enrollment=current_enrollment
         ).select_related("subject")
 
         subjects_summary = []
@@ -1992,7 +2025,7 @@ class StudentPerformanceDashboardView(APIView):
             latest_result = None
             if current_term:
                 latest_result = (
-                    base_results.filter(subject=selection.subject, exam__term=current_term)
+                    current_results.filter(subject=selection.subject, exam__term=current_term)
                     .order_by("-exam__exam_type__order")
                     .first()
                 )
@@ -2002,12 +2035,18 @@ class StudentPerformanceDashboardView(APIView):
             })
 
         return Response({
-            "current_class": str(enrollment.classroom),
+            "current_class": str(current_enrollment.classroom),
             "current_term": str(current_term) if current_term else None,
             "term_trend": term_trend,
             "academic_year_trend": academic_year_trend,
             "subject_performance": subject_performance,
             "subjects_summary": subjects_summary,
+            "selected_academic_year": selected_year.year,
+            "selected_academic_year_id": selected_year.id,
+            "available_academic_years": [
+                {"id": ay.id, "year": ay.year, "is_current": ay.is_current}
+                for ay in available_academic_years
+            ],
         })
         
         

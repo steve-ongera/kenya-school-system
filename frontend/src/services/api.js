@@ -254,8 +254,9 @@ export const financeApi = {
 };
 
 export const performanceApi = {
-  dashboard: () => api.get("/students/me/performance/"),
+  dashboard: (params) => api.get("/students/me/performance/", { params }),
 };
+
 
 export const communicationApi = {
   list: (params) => api.get("/communications/", { params }),

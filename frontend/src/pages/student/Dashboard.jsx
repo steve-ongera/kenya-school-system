@@ -20,6 +20,12 @@ export default function StudentDashboard() {
   const [performance, setPerformance] = useState(null);
   const [performanceLoading, setPerformanceLoading] = useState(true);
 
+  // Which academic year the "Performance Across the Academic Year" bar
+  // chart is showing. Empty string = not yet chosen -> defer to whatever
+  // the backend picks as default (the student's current academic year).
+  const [trendYear, setTrendYear] = useState("");
+  const [trendLoading, setTrendLoading] = useState(false);
+
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -45,10 +51,27 @@ export default function StudentDashboard() {
       .finally(() => setFeeLoading(false));
 
     performanceApi.dashboard()
-      .then(({ data }) => setPerformance(data))
+      .then(({ data }) => {
+        setPerformance(data);
+        setTrendYear(String(data.selected_academic_year_id ?? ""));
+      })
       .catch((error) => console.error("Failed to load performance dashboard:", error))
       .finally(() => setPerformanceLoading(false));
   }, []);
+
+  const handleTrendYearChange = async (e) => {
+    const yearId = e.target.value;
+    setTrendYear(yearId);
+    setTrendLoading(true);
+    try {
+      const { data } = await performanceApi.dashboard({ academic_year: yearId });
+      setPerformance(data);
+    } catch (error) {
+      console.error("Failed to load performance for that year:", error);
+    } finally {
+      setTrendLoading(false);
+    }
+  };
 
   // Get student initials
   const getInitials = () => {
@@ -223,18 +246,38 @@ export default function StudentDashboard() {
           </div>
         </div>
 
-        {/* Bar chart: performance across Term 1, 2, 3 of the academic year */}
+        {/* Bar chart: performance across Term 1, 2, 3 of a chosen academic year */}
         <div className="col-12 col-lg-6">
           <div className="card">
-            <div className="card-header" style={{
-              background: "transparent", borderBottom: "1px solid var(--border-color)",
-              padding: "1rem 1.25rem", fontWeight: 600, color: "var(--ink-700)"
-            }}>
-              <i className="bi bi-bar-chart-line me-2" style={{ color: "var(--gold-600)" }}></i>
-              Performance Across the Academic Year
+            <div
+              className="card-header d-flex align-items-center justify-content-between flex-wrap gap-2"
+              style={{
+                background: "transparent", borderBottom: "1px solid var(--border-color)",
+                padding: "1rem 1.25rem", fontWeight: 600, color: "var(--ink-700)"
+              }}
+            >
+              <span>
+                <i className="bi bi-bar-chart-line me-2" style={{ color: "var(--gold-600)" }}></i>
+                Performance Across the Academic Year
+              </span>
+              {performance?.available_academic_years?.length > 0 && (
+                <select
+                  className="form-select form-select-sm"
+                  style={{ width: "auto" }}
+                  value={trendYear}
+                  onChange={handleTrendYearChange}
+                  disabled={trendLoading}
+                >
+                  {performance.available_academic_years.map((ay) => (
+                    <option key={ay.id} value={ay.id}>
+                      {ay.year}{ay.is_current ? " (Current)" : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
             <div className="card-body">
-              {performanceLoading ? (
+              {performanceLoading || trendLoading ? (
                 <div className="skeleton skeleton-text" style={{ width: "100%", height: "220px" }}></div>
               ) : performance?.academic_year_trend?.some((t) => t.average !== null) ? (
                 <ResponsiveContainer width="100%" height={220}>
@@ -247,7 +290,9 @@ export default function StudentDashboard() {
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
-                <p className="text-muted-soft mb-0">No term averages recorded yet for this academic year.</p>
+                <p className="text-muted-soft mb-0">
+                  No term averages recorded yet for {performance?.selected_academic_year || "this academic year"}.
+                </p>
               )}
             </div>
           </div>
