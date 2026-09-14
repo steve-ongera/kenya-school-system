@@ -28,8 +28,8 @@ export default function AdminStudents() {
   const [totalItems, setTotalItems] = useState(0);
 
   // Full, unfiltered classroom list — used to build the Academic Year /
-  // Grade / Classroom filter dropdowns (needs to see every year, not just
-  // the current one).
+  // Grade / Classroom filter dropdowns (needs to see every year, every
+  // curriculum, not just a first page of results).
   const [allClassrooms, setAllClassrooms] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -117,7 +117,11 @@ export default function AdminStudents() {
   }, [loadStudents]);
 
   useEffect(() => {
-    academicsApi.classrooms().then(({ data }) => setAllClassrooms(data.results ?? data));
+    // Unpaginated on purpose — the default /classrooms/ list pages at 12,
+    // and since CBC grades sort before legacy 8-4-4 forms, a paginated
+    // fetch here would silently hide every Form 1-4 classroom for the
+    // current year once a school has more than a page's worth of classes.
+    academicsApi.allClassrooms().then(({ data }) => setAllClassrooms(data));
   }, []);
 
   // Classrooms allowed in the Admit / Edit forms — current academic year
@@ -128,8 +132,11 @@ export default function AdminStudents() {
   );
 
   // Distinct academic years, newest first, for the filter dropdown.
+  // Uses academic_year_year (the actual year integer from the serializer),
+  // not academic_year (the AcademicYear FK id) — the two are different
+  // fields and mixing them up silently breaks the year filter/options.
   const academicYearOptions = useMemo(() => {
-    const years = [...new Set(allClassrooms.map((c) => c.academic_year))];
+    const years = [...new Set(allClassrooms.map((c) => c.academic_year_year))];
     return years.sort((a, b) => b - a);
   }, [allClassrooms]);
 
@@ -138,7 +145,7 @@ export default function AdminStudents() {
   // exist in that year.
   const gradeLevelOptions = useMemo(() => {
     const pool = filters.academic_year
-      ? allClassrooms.filter((c) => String(c.academic_year) === String(filters.academic_year))
+      ? allClassrooms.filter((c) => String(c.academic_year_year) === String(filters.academic_year))
       : allClassrooms;
     const seen = new Map();
     pool.forEach((c) => seen.set(c.grade_level, c.grade_level_name));
@@ -148,7 +155,7 @@ export default function AdminStudents() {
   // Classrooms for the filter dropdown, scoped to selected year + grade.
   const classroomOptions = useMemo(() => {
     return allClassrooms.filter((c) => {
-      if (filters.academic_year && String(c.academic_year) !== String(filters.academic_year)) return false;
+      if (filters.academic_year && String(c.academic_year_year) !== String(filters.academic_year)) return false;
       if (filters.grade_level && String(c.grade_level) !== String(filters.grade_level)) return false;
       return true;
     });
@@ -473,7 +480,7 @@ export default function AdminStudents() {
               <option value="">All Classes</option>
               {classroomOptions.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.grade_level_name} {c.stream_name} ({c.academic_year})
+                  {c.grade_level_name} {c.stream_name} ({c.academic_year_year})
                 </option>
               ))}
             </select>
@@ -697,12 +704,12 @@ export default function AdminStudents() {
                 <option value="">Select...</option>
                 {admitClassrooms.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.grade_level_name} {c.stream_name} - {c.academic_year}
+                    {c.grade_level_name} {c.stream_name} - {c.academic_year_year}
                   </option>
                 ))}
               </select>
               <div className="form-text" style={{ fontSize: "var(--fs-xs)" }}>
-                Only classrooms in the current academic year are shown.
+                Only classrooms in the current academic year are shown — CBC and 8-4-4 alike.
               </div>
             </div>
           </div>
@@ -891,7 +898,7 @@ export default function AdminStudents() {
                   <option value="">Keep current classroom</option>
                   {admitClassrooms.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.grade_level_name} {c.stream_name} - {c.academic_year}
+                      {c.grade_level_name} {c.stream_name} - {c.academic_year_year}
                     </option>
                   ))}
                 </select>

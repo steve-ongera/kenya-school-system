@@ -60,7 +60,10 @@ export default function Communications() {
   useEffect(() => {
     calendarApi.academicYears().then(({ data }) => setAcademicYears(data.results ?? data));
     academicsApi.gradeLevels().then(({ data }) => setGradeLevels(data.results ?? data));
-    academicsApi.classrooms().then(({ data }) => setClassrooms(data.results ?? data));
+    // Unpaginated — the default /classrooms/ list pages at 12 and CBC sorts
+    // before legacy 8-4-4, so a paginated fetch here would silently drop
+    // classrooms (and specifically hide Form classes) once a school grows.
+    academicsApi.allClassrooms().then(({ data }) => setClassrooms(data));
     loadLog();
   }, []);
 
@@ -90,6 +93,14 @@ export default function Communications() {
     }, 350);
     return () => clearTimeout(t);
   }, [studentSearch]);
+
+  // Classrooms for the "By Classroom" audience picker — current academic
+  // year only, since announcing to a class from a past year rarely makes
+  // sense — with each option showing how many active students it holds.
+  const currentYearClassrooms = useMemo(
+    () => classrooms.filter((c) => c.academic_year_is_current),
+    [classrooms]
+  );
 
   const toggleRole = (role) => {
     setForm((f) => ({
@@ -337,12 +348,19 @@ export default function Communications() {
                 onChange={(e) => setForm({ ...form, classroom_id: e.target.value })}
               >
                 <option value="">Select...</option>
-                {classrooms.map((c) => (
+                {currentYearClassrooms.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.grade_level_name} {c.stream_name} ({c.academic_year_year})
+                    {c.grade_level_name} {c.stream_name} {c.academic_year_year} — {c.student_count} active student
+                    {c.student_count !== 1 ? "s" : ""}
                   </option>
                 ))}
               </select>
+              {currentYearClassrooms.length === 0 && (
+                <div className="form-text-hint">
+                  <i className="bi bi-info-circle me-1"></i>
+                  No classrooms found for the current academic year.
+                </div>
+              )}
             </div>
           )}
 
