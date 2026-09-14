@@ -1148,3 +1148,39 @@ class LicenseAuditLog(models.Model):
 
     def __str__(self):
         return f"{self.school.name} - {self.action} @ {self.created_at:%Y-%m-%d %H:%M}"
+    
+    
+# ---------------------------------------------------------------------------
+# 12. SUBSCRIPTION PACKAGES (pricing & privileges shown on the License page)
+# ---------------------------------------------------------------------------
+class SubscriptionPackage(models.Model):
+    """
+    One row per PlanTier - defines what that tier COSTS and what it
+    UNLOCKS, editable from Django Admin without a code change/deploy.
+    License.max_students/etc. stay the source of truth for ENFORCEMENT
+    (see services.check_license_limit) - this model is what the License
+    page reads to render "Available Packages" and to label whichever
+    tier the school is currently on.
+    """
+
+    tier = models.CharField(max_length=20, choices=PlanTier.choices, unique=True)
+    monthly_price = models.DecimalField(
+        max_digits=10, decimal_places=2,
+        help_text="KES per month, e.g. 2000.00 - 50000.00",
+    )
+    max_students = models.PositiveIntegerField(null=True, blank=True, help_text="Blank = unlimited")
+    max_classrooms_per_year = models.PositiveIntegerField(null=True, blank=True, help_text="Blank = unlimited")
+    max_teachers = models.PositiveIntegerField(null=True, blank=True, help_text="Blank = unlimited")
+    features = models.JSONField(
+        default=list, blank=True,
+        help_text='Extra bullets for the pricing card, e.g. ["SMS notifications", "Priority support"]',
+    )
+    is_active = models.BooleanField(default=True, help_text="Untick to hide from Available Packages.")
+    display_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        db_table = "subscription_packages"
+        ordering = ["display_order", "monthly_price"]
+
+    def __str__(self):
+        return f"{self.get_tier_display()} - KES {self.monthly_price:,.0f}/mo"
