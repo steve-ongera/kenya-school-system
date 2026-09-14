@@ -7,6 +7,7 @@ import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import Profile from "./pages/Profile";
 import ChangePassword from "./pages/ChangePassword";
+import Notifications from "./pages/Notifications";
 
 // admin
 import AdminDashboard from "./pages/admin/Dashboard";
@@ -86,6 +87,7 @@ export default function App() {
           <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
           <Route path="/change-password" element={<ProtectedRoute><ChangePassword /></ProtectedRoute>} />
           <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
+          <Route path="/notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
 
           {/* ADMIN */}
           <Route path="/admin" element={<RoleSection role="ADMIN"><AdminDashboard /></RoleSection>} />
