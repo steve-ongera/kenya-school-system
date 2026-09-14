@@ -264,38 +264,50 @@ export default function Navbar({ onToggleSidebar }) {
           </button>
 
           {openMenu === "notifications" && (
-            <div className="app-navbar__dropdown">
-              <div className="app-navbar__dropdown-header">
-                <span>Notifications</span>
+          <div className="app-navbar__dropdown">
+            <div className="app-navbar__dropdown-header">
+              <span>Notifications</span>
+              <div className="d-flex gap-2">
                 <a href="#" onClick={markAllRead}>
                   Mark all read
                 </a>
-              </div>
-              <div className="app-navbar__dropdown-list">
-                {notifications.length === 0 ? (
-                  <div className="app-navbar__dropdown-empty">You're all caught up.</div>
-                ) : (
-                  notifications.map((n) => (
-                    <div
-                      key={n.id}
-                      className={`app-navbar__dropdown-item ${!n.is_read ? "app-navbar__dropdown-item--unread" : ""}`}
-                      onClick={() => openNotification(n)}
-                      role="button"
-                    >
-                      <div className="app-navbar__dropdown-avatar">
-                        <i className={`bi ${CATEGORY_ICON[n.category] || "bi-bell"}`}></i>
-                      </div>
-                      <div className="app-navbar__dropdown-body">
-                        <div className="app-navbar__dropdown-title">{n.subject}</div>
-                        <div className="app-navbar__dropdown-text">{n.body}</div>
-                        <div className="app-navbar__dropdown-time">{timeAgo(n.created_at)}</div>
-                      </div>
-                    </div>
-                  ))
-                )}
+                
+                 <a href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setOpenMenu(null);
+                    navigate("/notifications");
+                  }}
+                >
+                  Open Notifications
+                </a>
               </div>
             </div>
-          )}
+            <div className="app-navbar__dropdown-list">
+              {notifications.length === 0 ? (
+                <div className="app-navbar__dropdown-empty">You're all caught up.</div>
+              ) : (
+                notifications.map((n) => (
+                  <div
+                    key={n.id}
+                    className={`app-navbar__dropdown-item ${!n.is_read ? "app-navbar__dropdown-item--unread" : ""}`}
+                    onClick={() => openNotification(n)}
+                    role="button"
+                  >
+                    <div className="app-navbar__dropdown-avatar">
+                      <i className={`bi ${CATEGORY_ICON[n.category] || "bi-bell"}`}></i>
+                    </div>
+                    <div className="app-navbar__dropdown-body">
+                      <div className="app-navbar__dropdown-title">{n.subject}</div>
+                      <div className="app-navbar__dropdown-text">{n.body}</div>
+                      <div className="app-navbar__dropdown-time">{timeAgo(n.created_at)}</div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
         </div>
 
         {/* Messages */}

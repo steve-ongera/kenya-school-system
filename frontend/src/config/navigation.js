@@ -9,6 +9,7 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/admin", icon: "bi-speedometer2", label: "Dashboard" },
         { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
+        { to: "/notifications", icon: "bi-bell", label: "Notifications" },
       ],
     },
     {
@@ -82,6 +83,7 @@ export const NAV_BY_ROLE = {
       label: "Communication",
       items: [
         { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
+        { to: "/notifications", icon: "bi-bell", label: "Notifications" },
       ],
     },
     {
@@ -116,6 +118,7 @@ export const NAV_BY_ROLE = {
       label: "Communication",
       items: [
         { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
+        { to: "/notifications", icon: "bi-bell", label: "Notifications" },
       ],
     },
     {
@@ -155,6 +158,7 @@ export const NAV_BY_ROLE = {
       label: "Communication",
       items: [
         { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
+        { to: "/notifications", icon: "bi-bell", label: "Notifications" },
       ],
     },
     {
@@ -193,6 +197,7 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/finance/communications", icon: "bi-megaphone", label: "Announcements" },
         { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
+        { to: "/notifications", icon: "bi-bell", label: "Notifications" },
       ],
     },
     {
