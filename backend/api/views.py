@@ -229,6 +229,16 @@ class UserViewSet(viewsets.ModelViewSet):
     def get_serializer_class(self):
         return serializers.UserCreateSerializer if self.action == "create" else serializers.UserSerializer
     
+    def create(self, request, *args, **kwargs):
+        if request.data.get("role") == models.User.Role.TEACHER:
+            school = models.School.objects.first()
+            current_count = models.User.objects.filter(role=models.User.Role.TEACHER, is_active_staff=True).count()
+            try:
+                services.check_license_limit(school, "teachers", current_count)
+            except services.LicenseLimitExceeded as exc:
+                return Response({"detail": str(exc)}, status=403)
+        return super().create(request, *args, **kwargs)
+    
     @action(detail=True, methods=["post"], permission_classes=[utils.IsAdminOnly])
     def unlock(self, request, pk=None):
         user = self.get_object()
@@ -507,6 +517,16 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
     filterset_fields = ["grade_level", "academic_year", "stream", "class_teacher"]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     search_fields = ["grade_level__name", "stream__name", "class_teacher__first_name", "class_teacher__last_name"]
+    
+    def create(self, request, *args, **kwargs):
+        school = models.School.objects.first()
+        academic_year_id = request.data.get("academic_year")
+        current_count = models.ClassRoom.objects.filter(academic_year_id=academic_year_id).count()
+        try:
+            services.check_license_limit(school, "classrooms_per_year", current_count)
+        except services.LicenseLimitExceeded as exc:
+            return Response({"detail": str(exc)}, status=403)
+        return super().create(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
         """
@@ -908,11 +928,19 @@ class StudentProfileViewSet(viewsets.ModelViewSet):
         return Response({"detail": "Password reset successfully.", "new_password": new_password})
 
 
+    
 class AdmitStudentView(generics.CreateAPIView):
-    """POST here to enroll a brand new student (creates login + admission_no + first Enrollment)."""
-
     serializer_class = serializers.StudentEnrollSerializer
     permission_classes = [utils.IsAdmin]
+
+    def create(self, request, *args, **kwargs):
+        school = models.School.objects.first()
+        current_count = models.StudentProfile.objects.filter(is_active=True).count()
+        try:
+            services.check_license_limit(school, "students", current_count)
+        except services.LicenseLimitExceeded as exc:
+            return Response({"detail": str(exc)}, status=403)
+        return super().create(request, *args, **kwargs)
 
 
 class ParentGuardianProfileViewSet(viewsets.ModelViewSet):
@@ -2761,3 +2789,36 @@ class ClassroomPromotionViewSet(viewsets.ReadOnlyModelViewSet):
         record = self.get_object()
         record.delete()
         return Response({"detail": "Promotion record cleared - this class can be promoted again."})
+    
+    
+    
+class LicenseMeView(APIView):
+    """GET /api/v1/license/me/ - school admin's License settings page reads this."""
+
+    permission_classes = [utils.IsAdminOnly]
+
+    def get(self, request):
+        school = models.School.objects.first()  # single-tenant: adjust if you add request.user.school later
+        if not school:
+            return Response({"detail": "No school configured."}, status=404)
+        return Response(services.get_license_usage(school))
+
+
+class LicenseRedeemView(APIView):
+    """POST /api/v1/license/redeem/  body: { token }"""
+
+    permission_classes = [utils.IsAdminOnly]
+
+    def post(self, request):
+        serializer = serializers.RedeemTokenSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        school = models.School.objects.first()
+        if not school:
+            return Response({"detail": "No school configured."}, status=404)
+        try:
+            services.redeem_license_token(serializer.validated_data["token"], school, request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(services.get_license_usage(school))
+    
+    

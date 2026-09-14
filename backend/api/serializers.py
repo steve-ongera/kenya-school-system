@@ -1230,3 +1230,15 @@ class ClassroomPromotionSerializer(serializers.ModelSerializer):
         fields = "__all__"
         
         
+class LicenseUsageSerializer(serializers.Serializer):
+    tier = serializers.CharField()
+    tier_display = serializers.CharField()
+    valid_until = serializers.DateTimeField(allow_null=True)
+    trial_ends_at = serializers.DateTimeField(allow_null=True)
+    is_suspended = serializers.BooleanField()
+    is_expired = serializers.BooleanField()
+    usage = serializers.DictField()
+
+
+class RedeemTokenSerializer(serializers.Serializer):
+    token = serializers.CharField(max_length=64)

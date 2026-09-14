@@ -99,11 +99,6 @@ class UserAdmin(DjangoUserAdmin):
 # ---------------------------------------------------------------------------
 # 2. SCHOOL / ACADEMIC CALENDAR
 # ---------------------------------------------------------------------------
-@admin.register(School)
-class SchoolAdmin(admin.ModelAdmin):
-    list_display = ("name", "school_type", "knec_code", "county")
-    list_filter = ("school_type", "county")
-    search_fields = ("name", "knec_code")
 
 
 class TermInline(admin.TabularInline):
@@ -550,3 +545,106 @@ class MpesaSTKPushRequestAdmin(admin.ModelAdmin):
     @admin.display(description="Status")
     def status_badge(self, obj):
         return _badge(obj.get_status_display(), STK_STATUS_COLORS.get(obj.status, "#616161"))
+    
+    
+
+from django.contrib import admin
+from django.utils import timezone
+from django.contrib import messages
+from . import models
+
+
+@admin.register(models.School)
+class SchoolAdmin(admin.ModelAdmin):
+    list_display = ("name", "county", "school_type", "license_tier", "license_status")
+    search_fields = ("name", "knec_code")
+
+    def license_tier(self, obj):
+        return getattr(obj, "license", None) and obj.license.get_tier_display()
+
+    def license_status(self, obj):
+        lic = getattr(obj, "license", None)
+        if not lic:
+            return "No license"
+        if lic.is_suspended:
+            return "SUSPENDED"
+        if lic.is_expired:
+            return "EXPIRED"
+        return "Active"
+
+
+@admin.register(models.License)
+class LicenseAdmin(admin.ModelAdmin):
+    list_display = ("school", "tier", "max_students", "max_classrooms_per_year",
+                     "max_teachers", "valid_until", "is_suspended")
+    list_filter = ("tier", "is_suspended")
+    search_fields = ("school__name",)
+    actions = ["suspend_selected", "reinstate_selected", "reset_to_tier_defaults"]
+
+    def suspend_selected(self, request, queryset):
+        for lic in queryset:
+            lic.is_suspended = True
+            lic.save()
+            models.LicenseAuditLog.objects.create(
+                school=lic.school, action=models.LicenseAuditLog.Action.SUSPENDED,
+                performed_by=request.user,
+            )
+        self.message_user(request, f"Suspended {queryset.count()} license(s).", messages.WARNING)
+
+    def reinstate_selected(self, request, queryset):
+        for lic in queryset:
+            lic.is_suspended = False
+            lic.save()
+            models.LicenseAuditLog.objects.create(
+                school=lic.school, action=models.LicenseAuditLog.Action.REINSTATED,
+                performed_by=request.user,
+            )
+        self.message_user(request, f"Reinstated {queryset.count()} license(s).")
+
+    def reset_to_tier_defaults(self, request, queryset):
+        for lic in queryset:
+            lic.apply_tier_defaults()
+            lic.save()
+        self.message_user(request, "Limits reset to tier defaults.")
+
+
+@admin.register(models.LicenseToken)
+class LicenseTokenAdmin(admin.ModelAdmin):
+    """
+    Your day-to-day workflow: school pays -> you come here -> "Add license token"
+    -> pick school + tier + duration -> Save -> copy the generated token string
+    from the list -> send it to the school admin.
+    """
+    list_display = ("token_short", "school", "tier", "valid_months", "is_redeemed", "is_active", "issued_at")
+    list_filter = ("tier", "is_active")
+    readonly_fields = ("token", "redeemed_at", "redeemed_by")
+    search_fields = ("school__name", "token")
+
+    def token_short(self, obj):
+        return f"{obj.token[:16]}..."
+
+    def is_redeemed(self, obj):
+        return obj.is_redeemed
+    is_redeemed.boolean = True
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.issued_by = obj.issued_by or request.user.get_full_name()
+        super().save_model(request, obj, form, change)
+        if not change and obj.school:
+            models.LicenseAuditLog.objects.create(
+                school=obj.school, action=models.LicenseAuditLog.Action.ISSUED,
+                detail=f"Token issued for {obj.get_tier_display()}, {obj.valid_months} months.",
+                performed_by=request.user,
+            )
+
+
+@admin.register(models.LicenseAuditLog)
+class LicenseAuditLogAdmin(admin.ModelAdmin):
+    list_display = ("school", "action", "detail", "performed_by", "created_at")
+    list_filter = ("action",)
+    readonly_fields = [f.name for f in models.LicenseAuditLog._meta.fields]
+    search_fields = ("school__name",)
+
+    def has_add_permission(self, request):
+        return False

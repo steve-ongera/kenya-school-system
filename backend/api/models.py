@@ -1005,3 +1005,146 @@ class ClassroomPromotion(models.Model):
     def __str__(self):
         target = self.target_classroom or "GRADUATED"
         return f"{self.source_classroom} -> {target} ({self.student_count} students)"
+    
+    
+    
+
+# ---------------------------------------------------------------------------
+# 11. LICENSING (SaaS plan tiers, usage limits, upgrade tokens)
+# ---------------------------------------------------------------------------
+import secrets
+from datetime import timedelta
+
+
+class PlanTier(models.TextChoices):
+    TRIAL = "TRIAL", "Free Trial"
+    GO = "GO", "Go"
+    STANDARD = "STANDARD", "Standard"
+    PREMIUM = "PREMIUM", "Premium"
+    PRO = "PRO", "Pro (Unlimited)"
+
+
+# Default limits applied when a tier is set and no custom override is given.
+# None = unlimited.
+PLAN_DEFAULTS = {
+    PlanTier.TRIAL:    {"max_students": 50,   "max_classrooms_per_year": 4,   "max_teachers": 5},
+    PlanTier.GO:       {"max_students": 300,  "max_classrooms_per_year": 15,  "max_teachers": 20},
+    PlanTier.STANDARD: {"max_students": 800,  "max_classrooms_per_year": 40,  "max_teachers": 60},
+    PlanTier.PREMIUM:  {"max_students": 2000, "max_classrooms_per_year": 100, "max_teachers": 150},
+    PlanTier.PRO:      {"max_students": None, "max_classrooms_per_year": None, "max_teachers": None},
+}
+
+
+class License(models.Model):
+    """
+    One row per school (per deployment, in the single-tenant model).
+    is_suspended is the provider's kill-switch - independent of tier/expiry,
+    for manual "stop this account right now" cases (e.g. non-payment dispute).
+    """
+
+    school = models.OneToOneField(School, on_delete=models.CASCADE, related_name="license")
+    tier = models.CharField(max_length=20, choices=PlanTier.choices, default=PlanTier.TRIAL)
+
+    max_students = models.PositiveIntegerField(null=True, blank=True)
+    max_classrooms_per_year = models.PositiveIntegerField(null=True, blank=True)
+    max_teachers = models.PositiveIntegerField(null=True, blank=True)
+
+    trial_ends_at = models.DateTimeField(null=True, blank=True)
+    valid_until = models.DateTimeField(null=True, blank=True)
+    is_suspended = models.BooleanField(default=False)
+    suspension_reason = models.CharField(max_length=255, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "licenses"
+
+    def __str__(self):
+        return f"{self.school.name} - {self.get_tier_display()}"
+
+    def apply_tier_defaults(self, tier=None):
+        """Reset limits to the standard table for a tier (used on issue/upgrade unless overridden)."""
+        defaults = PLAN_DEFAULTS[tier or self.tier]
+        self.max_students = defaults["max_students"]
+        self.max_classrooms_per_year = defaults["max_classrooms_per_year"]
+        self.max_teachers = defaults["max_teachers"]
+
+    @property
+    def is_expired(self):
+        return bool(self.valid_until and self.valid_until < timezone.now())
+
+    @property
+    def is_active(self):
+        return not self.is_suspended and not self.is_expired
+
+
+class LicenseToken(models.Model):
+    """
+    Issued by the software provider (via Django Admin) AFTER a school pays
+    outside the app. The school admin redeems it on their License page to
+    upgrade/renew. school=null means an unclaimed code that binds to
+    whichever school redeems it first.
+    """
+
+    token = models.CharField(max_length=64, unique=True, db_index=True, editable=False)
+    school = models.ForeignKey(
+        School, on_delete=models.CASCADE, null=True, blank=True, related_name="license_tokens"
+    )
+    tier = models.CharField(max_length=20, choices=PlanTier.choices)
+    limits_override = models.JSONField(
+        default=dict, blank=True,
+        help_text='Optional custom limits, e.g. {"max_students": 1200}. Overrides tier defaults.',
+    )
+    valid_months = models.PositiveIntegerField(default=12)
+    issued_by = models.CharField(max_length=150, help_text="Provider staff name/note")
+    issued_at = models.DateTimeField(auto_now_add=True)
+
+    redeemed_at = models.DateTimeField(null=True, blank=True)
+    redeemed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="license_tokens_redeemed"
+    )
+    is_active = models.BooleanField(default=True, help_text="Provider can deactivate an unused/leaked code.")
+
+    class Meta:
+        db_table = "license_tokens"
+        ordering = ["-issued_at"]
+
+    def save(self, *args, **kwargs):
+        if not self.token:
+            self.token = secrets.token_urlsafe(24)
+        super().save(*args, **kwargs)
+
+    @property
+    def is_redeemed(self):
+        return self.redeemed_at is not None
+
+    def __str__(self):
+        status = "REDEEMED" if self.is_redeemed else ("ACTIVE" if self.is_active else "DEACTIVATED")
+        target = self.school.name if self.school else "unclaimed"
+        return f"{self.token[:10]}... [{self.tier}] -> {target} ({status})"
+
+
+class LicenseAuditLog(models.Model):
+    """Every tier change, suspension, or redemption - so a support dispute has a paper trail."""
+
+    class Action(models.TextChoices):
+        ISSUED = "ISSUED", "License Issued"
+        REDEEMED = "REDEEMED", "Token Redeemed"
+        SUSPENDED = "SUSPENDED", "Suspended"
+        REINSTATED = "REINSTATED", "Reinstated"
+        EXPIRED = "EXPIRED", "Auto-Expired"
+        LIMIT_BLOCKED = "LIMIT_BLOCKED", "Action Blocked by Limit"
+
+    school = models.ForeignKey(School, on_delete=models.CASCADE, related_name="license_audit_logs")
+    action = models.CharField(max_length=20, choices=Action.choices)
+    detail = models.CharField(max_length=255, blank=True)
+    performed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "license_audit_logs"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.school.name} - {self.action} @ {self.created_at:%Y-%m-%d %H:%M}"

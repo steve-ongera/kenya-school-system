@@ -1607,3 +1607,116 @@ def save_admin_exam_spreadsheet(exam: models.Exam, entries: list, entered_by) ->
             errors.append({"enrollment_id": enrollment_id, "subject_id": subject_id, "error": str(exc)})
 
     return {"saved": saved, "errors": errors}
+
+
+class LicenseLimitExceeded(Exception):
+    pass
+
+
+def get_school_license(school):
+    lic, created = models.License.objects.get_or_create(
+        school=school,
+        defaults={"tier": models.PlanTier.TRIAL, "trial_ends_at": timezone.now() + timedelta(days=30)},
+    )
+    if created:
+        lic.apply_tier_defaults()
+        lic.valid_until = lic.trial_ends_at
+        lic.save()
+    return lic
+
+
+def check_license_limit(school, resource, current_count, increment=1):
+    """
+    resource: "students" | "classrooms_per_year" | "teachers"
+    current_count: caller supplies the live count (keeps this function
+    query-agnostic - classrooms need scoping by academic_year, students/
+    teachers don't).
+    """
+    lic = get_school_license(school)
+
+    if lic.is_suspended:
+        raise LicenseLimitExceeded("This account is suspended. Contact your software provider.")
+    if lic.is_expired:
+        models.LicenseAuditLog.objects.create(
+            school=school, action=models.LicenseAuditLog.Action.EXPIRED,
+            detail=f"Blocked action: license expired {lic.valid_until:%Y-%m-%d}.",
+        )
+        raise LicenseLimitExceeded("Your license has expired. Please renew to continue.")
+
+    limit_field = {
+        "students": lic.max_students,
+        "classrooms_per_year": lic.max_classrooms_per_year,
+        "teachers": lic.max_teachers,
+    }[resource]
+
+    if limit_field is None:
+        return  # unlimited (Pro)
+
+    if current_count + increment > limit_field:
+        models.LicenseAuditLog.objects.create(
+            school=school, action=models.LicenseAuditLog.Action.LIMIT_BLOCKED,
+            detail=f"{resource}: {current_count}/{limit_field}, tried +{increment}.",
+        )
+        raise LicenseLimitExceeded(
+            f"You've reached your plan's limit of {limit_field} {resource.replace('_', ' ')}. "
+            f"Upgrade your plan to add more."
+        )
+
+
+def redeem_license_token(token_str, school, user):
+    token = models.LicenseToken.objects.filter(token=token_str, is_active=True).first()
+    if not token:
+        raise ValueError("Invalid or deactivated code.")
+    if token.is_redeemed:
+        raise ValueError("This code has already been used.")
+    if token.school_id and token.school_id != school.id:
+        raise ValueError("This code isn't valid for your school.")
+
+    lic = get_school_license(school)
+    lic.tier = token.tier
+    lic.apply_tier_defaults()
+    for key, value in token.limits_override.items():
+        setattr(lic, key, value)
+    lic.valid_until = timezone.now() + timedelta(days=30 * token.valid_months)
+    lic.is_suspended = False
+    lic.save()
+
+    token.school = school
+    token.redeemed_at = timezone.now()
+    token.redeemed_by = user
+    token.save()
+
+    models.LicenseAuditLog.objects.create(
+        school=school, action=models.LicenseAuditLog.Action.REDEEMED,
+        detail=f"Upgraded to {lic.get_tier_display()}, valid until {lic.valid_until:%Y-%m-%d}.",
+        performed_by=user,
+    )
+    return lic
+
+
+def get_license_usage(school):
+    lic = get_school_license(school)
+    current_year = models.AcademicYear.objects.filter(is_current=True).first()
+
+    student_count = models.StudentProfile.objects.filter(is_active=True).count()
+    teacher_count = models.User.objects.filter(role=models.User.Role.TEACHER, is_active_staff=True).count()
+    classroom_count = (
+        models.ClassRoom.objects.filter(academic_year=current_year).count() if current_year else 0
+    )
+
+    def usage_block(used, limit):
+        return {"used": used, "limit": limit, "unlimited": limit is None}
+
+    return {
+        "tier": lic.tier,
+        "tier_display": lic.get_tier_display(),
+        "valid_until": lic.valid_until,
+        "trial_ends_at": lic.trial_ends_at,
+        "is_suspended": lic.is_suspended,
+        "is_expired": lic.is_expired,
+        "usage": {
+            "students": usage_block(student_count, lic.max_students),
+            "classrooms_this_year": usage_block(classroom_count, lic.max_classrooms_per_year),
+            "teachers": usage_block(teacher_count, lic.max_teachers),
+        },
+    }
