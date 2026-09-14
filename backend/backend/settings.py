@@ -124,7 +124,7 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_FILTER_BACKENDS": ("django_filters.rest_framework.DjangoFilterBackend",),
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
-    "PAGE_SIZE": 25,
+    "PAGE_SIZE": 200,
     "DEFAULT_THROTTLE_RATES": {
         "login": "10/min",          # per-IP attempts against /auth/login/
         "otp_verify": "8/min",      # per-IP attempts against /auth/verify-otp/
