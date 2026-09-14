@@ -16,10 +16,10 @@ export default function AdminMarkEntry() {
   const [examsLoading, setExamsLoading] = useState(false);
 
   const [sheet, setSheet] = useState(null);
-  const [cells, setCells] = useState({}); // "enrollment:subject:paperKey" -> { marks_obtained, is_absent }
+  const [cells, setCells] = useState({}); // "enrollment:subject:paperKey" -> { marks_obtained }
   const [loadingSheet, setLoadingSheet] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [addingPaper, setAddingPaper] = useState(null); // subject_id currently adding a column for
+  const [addingPaper, setAddingPaper] = useState(null);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("info");
 
@@ -49,7 +49,6 @@ export default function AdminMarkEntry() {
 
   const selectedClassroom = classrooms.find((c) => String(c.id) === String(classroomId));
 
-  // Load terms once a classroom (-> its academic year) is chosen
   useEffect(() => {
     setTermId("");
     setTerms([]);
@@ -59,7 +58,6 @@ export default function AdminMarkEntry() {
     });
   }, [classroomId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load exams once term + classroom's grade are known
   useEffect(() => {
     setExamId("");
     setExams([]);
@@ -89,7 +87,7 @@ export default function AdminMarkEntry() {
           subj.columns.forEach((col) => {
             const key = `${s.enrollment_id}:${subj.subject_id}:${col.paper_id ?? "single"}`;
             const existing = data.marks[key];
-            initial[key] = existing || { marks_obtained: "", is_absent: false };
+            initial[key] = { marks_obtained: existing && existing.marks_obtained != null ? existing.marks_obtained : "" };
           });
         });
       });
@@ -102,8 +100,8 @@ export default function AdminMarkEntry() {
     }
   };
 
-  const updateCell = (key, field, value) => {
-    setCells((prev) => ({ ...prev, [key]: { ...prev[key], [field]: value } }));
+  const updateCell = (key, value) => {
+    setCells((prev) => ({ ...prev, [key]: { marks_obtained: value } }));
   };
 
   const addPaperColumn = async (subjectId) => {
@@ -111,32 +109,34 @@ export default function AdminMarkEntry() {
     try {
       const subj = sheet.subjects.find((s) => s.subject_id === subjectId);
       const realPapers = subj.columns.filter((c) => c.paper_id !== null);
-      const nextNumber = realPapers.length ? Math.max(...realPapers.map((c, i) => i + 2)) : 2;
+      const nextNumber = realPapers.length + 1;
+
       const { data: newPaper } = await academicsApi.createSubjectPaper({
         subject: subjectId,
         paper_number: nextNumber,
         name: `Paper ${nextNumber}`,
         max_marks: 100,
       });
+
+      const newColumn = {
+        paper_id: newPaper.id,
+        label: `${subj.subject_code}${nextNumber}`,
+        max_marks: newPaper.max_marks,
+      };
+
       setSheet((prev) => ({
         ...prev,
         subjects: prev.subjects.map((s) =>
           s.subject_id === subjectId
-            ? {
-                ...s,
-                columns: [
-                  ...s.columns.filter((c) => c.paper_id !== null || s.columns.length === 0),
-                  { paper_id: newPaper.id, label: newPaper.name, max_marks: newPaper.max_marks },
-                ].filter((c) => c.paper_id !== null || s.columns.length === 1 && s.columns[0].paper_id === null ? false : true),
-              }
+            ? { ...s, columns: [...s.columns.filter((c) => c.paper_id !== null), newColumn] }
             : s
         ),
       }));
-      // seed blank cells for the new column across every student
+
       setCells((prev) => {
         const next = { ...prev };
         sheet.students.forEach((s) => {
-          next[`${s.enrollment_id}:${subjectId}:${newPaper.id}`] = { marks_obtained: "", is_absent: false };
+          next[`${s.enrollment_id}:${subjectId}:${newPaper.id}`] = { marks_obtained: "" };
         });
         return next;
       });
@@ -164,10 +164,9 @@ export default function AdminMarkEntry() {
               subject_id: subj.subject_id,
               paper_id: col.paper_id,
               max_marks: col.max_marks,
-              marks_obtained: cell.is_absent
-                ? null
-                : (cell.marks_obtained === "" || cell.marks_obtained == null ? null : Number(cell.marks_obtained)),
-              is_absent: !!cell.is_absent,
+              marks_obtained:
+                cell.marks_obtained === "" || cell.marks_obtained == null ? null : Number(cell.marks_obtained),
+              is_absent: false,
             });
           });
         });
@@ -198,6 +197,7 @@ export default function AdminMarkEntry() {
           <h1 className="page-title">Mark Entry — All Subjects</h1>
           <p className="page-subtitle">
             Pick a class and exam, then enter marks for every subject at once — one spreadsheet per class per exam.
+            Leave a cell empty for a student who didn't sit that paper.
           </p>
         </div>
       </div>
@@ -269,22 +269,23 @@ export default function AdminMarkEntry() {
           </div>
 
           <div className="table-responsive" style={{ maxHeight: "70vh" }}>
-            <table className="table table-bordered table-sm mb-0" style={{ fontSize: "var(--fs-xs)" }}>
+            <table className="table table-bordered mb-0 spreadsheet-table">
               <thead className="sticky-top bg-white">
                 <tr>
-                  <th rowSpan={2} style={{ minWidth: 110, position: "sticky", left: 0, background: "#fff", zIndex: 2 }}>Adm No</th>
-                  <th rowSpan={2} style={{ minWidth: 160, position: "sticky", left: 110, background: "#fff", zIndex: 2 }}>Student</th>
+                  <th rowSpan={2} className="spreadsheet-th-sticky-1">Adm No</th>
+                  <th rowSpan={2} className="spreadsheet-th-sticky-2">Student</th>
                   {sheet.subjects.map((subj) => (
-                    <th key={subj.subject_id} colSpan={subj.columns.length} className="text-center">
-                      {subj.subject_name}{" "}
+                    <th key={subj.subject_id} colSpan={subj.columns.length} className="text-center" title={subj.subject_name}>
+                      {subj.subject_code}{" "}
                       <button
                         type="button"
-                        className="btn btn-sm btn-outline-secondary py-0 px-1 ms-1"
+                        className="btn btn-sm btn-outline-secondary py-0 px-1"
+                        style={{ fontSize: "9px", lineHeight: 1 }}
                         title={`Add another paper column for ${subj.subject_name}`}
                         disabled={addingPaper === subj.subject_id}
                         onClick={() => addPaperColumn(subj.subject_id)}
                       >
-                        {addingPaper === subj.subject_id ? "..." : "+"}
+                        {addingPaper === subj.subject_id ? "…" : "+"}
                       </button>
                     </th>
                   ))}
@@ -292,9 +293,8 @@ export default function AdminMarkEntry() {
                 <tr>
                   {sheet.subjects.map((subj) =>
                     subj.columns.map((col) => (
-                      <th key={`${subj.subject_id}-${col.paper_id ?? "single"}`} className="text-center" style={{ minWidth: 90 }}>
+                      <th key={`${subj.subject_id}-${col.paper_id ?? "single"}`} className="text-center spreadsheet-subhead" title={subj.subject_name}>
                         {col.label}
-                        <div style={{ fontWeight: 400, color: "var(--ink-400)" }}>/{col.max_marks}</div>
                       </th>
                     ))
                   )}
@@ -303,32 +303,21 @@ export default function AdminMarkEntry() {
               <tbody>
                 {sheet.students.map((s) => (
                   <tr key={s.enrollment_id}>
-                    <td style={{ position: "sticky", left: 0, background: "#fff", fontWeight: 600, color: "var(--blue-700)" }}>
-                      {s.admission_no}
-                    </td>
-                    <td style={{ position: "sticky", left: 110, background: "#fff" }}>{s.full_name}</td>
+                    <td className="spreadsheet-td-sticky-1">{s.admission_no}</td>
+                    <td className="spreadsheet-td-sticky-2" title={s.full_name}>{s.full_name}</td>
                     {sheet.subjects.map((subj) =>
                       subj.columns.map((col) => {
                         const key = `${s.enrollment_id}:${subj.subject_id}:${col.paper_id ?? "single"}`;
-                        const cell = cells[key] || { marks_obtained: "", is_absent: false };
+                        const cell = cells[key] || { marks_obtained: "" };
                         return (
-                          <td key={key} className="p-1">
+                          <td key={key} className="spreadsheet-cell">
                             <input
                               type="number"
-                              className="form-control form-control-sm text-center"
-                              style={{ width: 56, display: "inline-block" }}
+                              className="spreadsheet-input"
                               min="0"
                               max={col.max_marks}
-                              disabled={cell.is_absent}
                               value={cell.marks_obtained}
-                              onChange={(e) => updateCell(key, "marks_obtained", e.target.value)}
-                            />
-                            <input
-                              type="checkbox"
-                              className="ms-1"
-                              title="Absent"
-                              checked={cell.is_absent}
-                              onChange={(e) => updateCell(key, "is_absent", e.target.checked)}
+                              onChange={(e) => updateCell(key, e.target.value)}
                             />
                           </td>
                         );
@@ -356,6 +345,87 @@ export default function AdminMarkEntry() {
           )}
         </div>
       )}
+
+      <style>{`
+        .spreadsheet-table {
+          font-size: 12px;
+        }
+        .spreadsheet-table th,
+        .spreadsheet-table td {
+          padding: 0 !important;
+          vertical-align: middle;
+        }
+        .spreadsheet-subhead {
+          font-weight: 500;
+          color: var(--ink-500, #64748b);
+          min-width: 52px;
+          padding: 4px 6px !important;
+        }
+        .spreadsheet-cell {
+          text-align: center;
+          padding: 0 !important;
+          background: #fff;
+        }
+        .spreadsheet-input {
+          width: 100%;
+          min-width: 52px;
+          height: 30px;
+          font-size: 12px;
+          text-align: center;
+          padding: 2px 4px;
+          border: none;
+          border-radius: 0;
+          background: transparent;
+          display: block;
+          box-sizing: border-box;
+        }
+        /* Remove number input spinners */
+        .spreadsheet-input::-webkit-outer-spin-button,
+        .spreadsheet-input::-webkit-inner-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
+        }
+        .spreadsheet-input[type="number"] {
+          -moz-appearance: textfield;
+          appearance: textfield;
+        }
+        .spreadsheet-input:focus {
+          outline: none;
+          background: #eff6ff;
+          box-shadow: inset 0 0 0 2px var(--blue-600, #2563eb);
+        }
+        .spreadsheet-th-sticky-1, .spreadsheet-td-sticky-1 {
+          position: sticky;
+          left: 0;
+          background: #fff;
+          z-index: 2;
+          min-width: 80px;
+          font-weight: 600;
+          color: var(--blue-700, #1d4ed8);
+          padding: 4px 6px !important;
+        }
+        .spreadsheet-th-sticky-2, .spreadsheet-td-sticky-2 {
+          position: sticky;
+          left: 80px;
+          background: #fff;
+          z-index: 2;
+          min-width: 120px;
+          max-width: 150px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          padding: 4px 6px !important;
+        }
+        /* Make the table responsive and scrollable */
+        .table-responsive {
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        .table-responsive .spreadsheet-table {
+          width: 100%;
+          min-width: max-content;
+        }
+      `}</style>
     </div>
   );
 }

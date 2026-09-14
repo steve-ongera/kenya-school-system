@@ -1510,13 +1510,6 @@ def bulk_promote_classroom_auto(source_classroom: models.ClassRoom, force: bool 
 # ADMIN CROSS-SUBJECT MARK SPREADSHEET
 # ---------------------------------------------------------------------------
 def get_admin_exam_spreadsheet(classroom: models.ClassRoom, exam: models.Exam) -> dict:
-    """
-    Builds the full grid for one classroom + exam: every subject offered at
-    that grade (GradeSubject), each subject's papers as sub-columns (or a
-    single column if it has none), every active student, and any marks
-    already entered - keyed "<enrollment_id>:<subject_id>:<paper_id|single>"
-    so the frontend can look a cell up in O(1).
-    """
     grade_level = classroom.grade_level
     subject_ids = list(
         models.GradeSubject.objects.filter(grade_level=grade_level).values_list("subject_id", flat=True)
@@ -1532,12 +1525,17 @@ def get_admin_exam_spreadsheet(classroom: models.ClassRoom, exam: models.Exam) -
         papers = list(s.papers.order_by("paper_number"))
         if papers:
             columns = [
-                {"paper_id": p.id, "label": p.name or f"Paper {p.paper_number}", "max_marks": float(p.max_marks)}
+                {"paper_id": p.id, "label": f"{s.code}{p.paper_number}", "max_marks": float(p.max_marks)}
                 for p in papers
             ]
         else:
-            columns = [{"paper_id": None, "label": s.name, "max_marks": 100.0}]
-        subject_payload.append({"subject_id": s.id, "subject_name": s.name, "columns": columns})
+            columns = [{"paper_id": None, "label": s.code, "max_marks": 100.0}]
+        subject_payload.append({
+            "subject_id": s.id,
+            "subject_name": s.name,
+            "subject_code": s.code,
+            "columns": columns,
+        })
 
     enrollments = (
         classroom.enrollments.filter(status=models.Enrollment.Status.ACTIVE)
