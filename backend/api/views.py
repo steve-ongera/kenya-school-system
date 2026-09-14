@@ -1652,9 +1652,8 @@ class DashboardStatsView(APIView):
             if current_year
             else models.Enrollment.objects.none()
         )
-
         # ---- 5 stat cards ---------------------------------------------
-        total_students = active_enrollments.count()
+        total_students = models.StudentProfile.objects.filter(is_active=True).count()
         total_classes = (
             models.ClassRoom.objects.filter(academic_year=current_year).count() if current_year else 0
         )

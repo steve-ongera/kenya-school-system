@@ -1742,3 +1742,6 @@ def get_license_usage(school):
 
 def list_active_packages():
     return models.SubscriptionPackage.objects.filter(is_active=True).order_by("display_order", "monthly_price")
+
+
+
