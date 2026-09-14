@@ -1506,3 +1506,106 @@ def bulk_promote_classroom_auto(source_classroom: models.ClassRoom, force: bool 
     return results
 
 
+# ---------------------------------------------------------------------------
+# ADMIN CROSS-SUBJECT MARK SPREADSHEET
+# ---------------------------------------------------------------------------
+def get_admin_exam_spreadsheet(classroom: models.ClassRoom, exam: models.Exam) -> dict:
+    """
+    Builds the full grid for one classroom + exam: every subject offered at
+    that grade (GradeSubject), each subject's papers as sub-columns (or a
+    single column if it has none), every active student, and any marks
+    already entered - keyed "<enrollment_id>:<subject_id>:<paper_id|single>"
+    so the frontend can look a cell up in O(1).
+    """
+    grade_level = classroom.grade_level
+    subject_ids = list(
+        models.GradeSubject.objects.filter(grade_level=grade_level).values_list("subject_id", flat=True)
+    )
+    subjects = (
+        models.Subject.objects.filter(id__in=subject_ids)
+        .prefetch_related("papers")
+        .order_by("name")
+    )
+
+    subject_payload = []
+    for s in subjects:
+        papers = list(s.papers.order_by("paper_number"))
+        if papers:
+            columns = [
+                {"paper_id": p.id, "label": p.name or f"Paper {p.paper_number}", "max_marks": float(p.max_marks)}
+                for p in papers
+            ]
+        else:
+            columns = [{"paper_id": None, "label": s.name, "max_marks": 100.0}]
+        subject_payload.append({"subject_id": s.id, "subject_name": s.name, "columns": columns})
+
+    enrollments = (
+        classroom.enrollments.filter(status=models.Enrollment.Status.ACTIVE)
+        .select_related("student__user")
+        .order_by("student__user__first_name")
+    )
+    students = [
+        {"enrollment_id": e.id, "admission_no": e.student.admission_no, "full_name": e.student.user.get_full_name()}
+        for e in enrollments
+    ]
+
+    results = models.ExamResult.objects.filter(
+        exam=exam, enrollment__classroom=classroom, subject_id__in=subject_ids
+    )
+    marks = {}
+    for r in results:
+        key = f"{r.enrollment_id}:{r.subject_id}:{r.paper_id or 'single'}"
+        marks[key] = {
+            "marks_obtained": None if r.is_absent or r.marks_obtained is None else float(r.marks_obtained),
+            "is_absent": r.is_absent,
+        }
+
+    return {
+        "classroom": str(classroom),
+        "exam": str(exam),
+        "subjects": subject_payload,
+        "students": students,
+        "marks": marks,
+    }
+
+
+@transaction.atomic
+def save_admin_exam_spreadsheet(exam: models.Exam, entries: list, entered_by) -> dict:
+    """
+    entries: [{enrollment_id, subject_id, paper_id|None, max_marks, marks_obtained|None, is_absent}, ...]
+    Blank, untouched cells (not absent, marks_obtained None) are skipped
+    silently rather than counted as errors - the admin may only be filling
+    in some subjects/students in this pass.
+    """
+    saved, errors = [], []
+    for row in entries:
+        enrollment_id = row.get("enrollment_id")
+        subject_id = row.get("subject_id")
+        paper_id = row.get("paper_id")
+        max_marks = row.get("max_marks") or 100
+        marks_obtained = row.get("marks_obtained")
+        is_absent = bool(row.get("is_absent", False))
+
+        if not is_absent and marks_obtained in (None, ""):
+            continue
+
+        enrollment = models.Enrollment.objects.filter(pk=enrollment_id).first()
+        if not enrollment:
+            errors.append({"enrollment_id": enrollment_id, "subject_id": subject_id, "error": "Enrollment not found"})
+            continue
+
+        try:
+            obj, _ = models.ExamResult.objects.update_or_create(
+                exam=exam, enrollment=enrollment, subject_id=subject_id, paper_id=paper_id,
+                defaults={
+                    "marks_obtained": None if is_absent else marks_obtained,
+                    "max_marks": max_marks,
+                    "is_absent": is_absent,
+                    "entered_by": entered_by,
+                },
+            )
+            saved.append(obj.id)
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"enrollment_id": enrollment_id, "subject_id": subject_id, "error": str(exc)})
+
+    return {"saved": saved, "errors": errors}

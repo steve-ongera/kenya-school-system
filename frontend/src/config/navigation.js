@@ -15,6 +15,7 @@ export const NAV_BY_ROLE = {
     {
       label: "Academics",
       items: [
+        { to: "/admin/mark-entry", icon: "bi-grid-3x3-gap", label: "Mark Entry (All Subjects)" },
         { to: "/admin/classrooms", icon: "bi-door-open", label: "Classes & Streams" },
         { to: "/admin/subjects", icon: "bi-journal-bookmark", label: "Subjects" },
         { to: "/admin/exams", icon: "bi-pencil-square", label: "Exams" },

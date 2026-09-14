@@ -831,6 +831,26 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
         return Response(result)
+    
+    
+    @action(detail=True, methods=["get"], url_path="exam_spreadsheet", permission_classes=[utils.IsAdmin])
+    def exam_spreadsheet(self, request, pk=None):
+        """GET /classrooms/{id}/exam_spreadsheet/?exam=<Exam id>"""
+        classroom = self.get_object()
+        exam_id = request.query_params.get("exam")
+        if not exam_id:
+            return Response({"detail": "exam is required."}, status=400)
+        exam = generics.get_object_or_404(models.Exam, pk=exam_id)
+        return Response(services.get_admin_exam_spreadsheet(classroom, exam))
+
+    @action(detail=True, methods=["post"], url_path="save_exam_spreadsheet", permission_classes=[utils.IsAdmin])
+    def save_exam_spreadsheet(self, request, pk=None):
+        """POST /classrooms/{id}/save_exam_spreadsheet/  body: { exam_id, entries: [...] }"""
+        self.get_object()  # 404s early if classroom doesn't exist
+        exam = generics.get_object_or_404(models.Exam, pk=request.data.get("exam_id"))
+        entries = request.data.get("entries", [])
+        result = services.save_admin_exam_spreadsheet(exam, entries, request.user)
+        return Response(result, status=200 if not result["errors"] else 207)
 
 # ---------------------------------------------------------------------------
 # STUDENTS / GUARDIANS / ENROLLMENT
