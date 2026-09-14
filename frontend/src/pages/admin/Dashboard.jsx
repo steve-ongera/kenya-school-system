@@ -125,7 +125,7 @@ export default function AdminDashboard() {
         <StatCard 
           icon="bi-people" 
           value={stat_cards.total_students} 
-          label="Students Enrolled" 
+          label="Total Students" 
           variant="primary"
         />
         <StatCard 
