@@ -188,6 +188,12 @@ export const academicsApi = {
   createGradingScale: (payload) => api.post("/grading-scales/", payload),
   updateGradingScale: (id, payload) => api.patch(`/grading-scales/${id}/`, payload),
   deleteGradingScale: (id) => api.delete(`/grading-scales/${id}/`),
+
+  addSubjectPaper: (payload) => api.post("/subject-papers/", payload), // alias, mirrors createSubjectPaper
+  examSpreadsheet: (classroomId, examId) =>
+    api.get(`/classrooms/${classroomId}/exam_spreadsheet/`, { params: { exam: examId } }),
+  saveExamSpreadsheet: (classroomId, payload) =>
+    api.post(`/classrooms/${classroomId}/save_exam_spreadsheet/`, payload),
 };
 
 // ---------------------------------------------------------------------------
