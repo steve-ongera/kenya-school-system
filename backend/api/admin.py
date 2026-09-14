@@ -11,6 +11,7 @@ Organized to mirror models.py:
   7. Exams, Results, Grading, Ranking
   8. Promotion Rules
   9. Fees (incl. M-Pesa STK push trail)
+  10. Licensing (tiers, tokens, subscription packages)
 
 Performance notes: several tables here (ExamResult, Enrollment, Invoice,
 Payment) can run into the tens of thousands of rows across 4 years of data,
@@ -32,8 +33,8 @@ from api.models import (
     Term, TeacherSubjectAllocation, TermPositionRanking, User,
 )
 
-admin.site.site_header = "Moi High  School Administration"
-admin.site.site_title = "Moi High Admin"
+admin.site.site_header = "Masomo  School Administration"
+admin.site.site_title = "Masomo Info Admin"
 admin.site.index_title = "School Management System"
 
 
@@ -505,8 +506,7 @@ class InvoiceAdmin(admin.ModelAdmin):
     def balance_display(self, obj):
         balance = obj.balance
         color = "#c62828" if balance > 0 else "#2e7d32"
-        return format_html('<b style="color:{}">KES {:,.0f}</b>', color, balance)
-
+        return format_html('<b style="color:{}">KES {}</b>', color, f"{balance:,.0f}")
 
 @admin.register(Payment)
 class PaymentAdmin(admin.ModelAdmin):
@@ -545,8 +545,8 @@ class MpesaSTKPushRequestAdmin(admin.ModelAdmin):
     @admin.display(description="Status")
     def status_badge(self, obj):
         return _badge(obj.get_status_display(), STK_STATUS_COLORS.get(obj.status, "#616161"))
-    
-    
+
+
 
 from django.contrib import admin
 from django.utils import timezone
@@ -648,3 +648,29 @@ class LicenseAuditLogAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
+
+
+@admin.register(models.SubscriptionPackage)
+class SubscriptionPackageAdmin(admin.ModelAdmin):
+    """
+    Where you actually set/adjust pricing - one row per tier. Edit
+    monthly_price or the limit fields here and the License page picks it
+    up immediately (no deploy). Untick is_active to pull a package off
+    the Available Packages tab without deleting its history.
+    """
+    list_display = (
+        "tier", "price_display", "max_students", "max_classrooms_per_year",
+        "max_teachers", "active_badge", "display_order",
+    )
+    list_filter = ("tier", "is_active")
+    search_fields = ("tier",)
+    ordering = ("display_order", "monthly_price")
+    list_editable = ("display_order",)
+
+    @admin.display(description="Monthly Price")
+    def price_display(self, obj):
+        return f"KES {obj.monthly_price:,.0f}"
+
+    @admin.display(description="Status")
+    def active_badge(self, obj):
+        return _badge("Active", "#2e7d32") if obj.is_active else _badge("Hidden", "#757575")
