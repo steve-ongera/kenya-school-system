@@ -517,7 +517,7 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
     filterset_fields = ["grade_level", "academic_year", "stream", "class_teacher"]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     search_fields = ["grade_level__name", "stream__name", "class_teacher__first_name", "class_teacher__last_name"]
-    
+
     def create(self, request, *args, **kwargs):
         school = models.School.objects.first()
         academic_year_id = request.data.get("academic_year")
@@ -572,8 +572,45 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"], url_path="bulk_create")
     def bulk_create(self, request):
+        """
+        POST /classrooms/bulk_create/
+        body: { academic_year, grade_level_ids: [...], stream_ids: [...] }
+
+        Enforces the license's classrooms_per_year limit BEFORE writing
+        anything. Only combos that don't already exist for this academic
+        year count against the limit - services.bulk_create_classrooms()
+        skips existing (grade_level, stream, academic_year) rows rather
+        than erroring, so re-running this with an overlapping selection
+        must not be double-charged against the limit for rows it will
+        just skip.
+        """
         serializer = serializers.BulkCreateClassroomsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        academic_year = serializer.validated_data["academic_year"]
+        grade_levels = serializer.validated_data["grade_level_ids"]
+        streams = serializer.validated_data["stream_ids"]
+
+        # How many of the requested grade x stream combos already exist -
+        # unique_together=(grade_level, stream, academic_year) means this
+        # count is exactly the number of requested combos already present.
+        existing_combo_count = models.ClassRoom.objects.filter(
+            academic_year=academic_year,
+            grade_level__in=grade_levels,
+            stream__in=streams,
+        ).count()
+        requested_combo_count = len(set(grade_levels)) * len(set(streams))
+        new_combo_count = max(requested_combo_count - existing_combo_count, 0)
+
+        school = models.School.objects.first()
+        current_count = models.ClassRoom.objects.filter(academic_year=academic_year).count()
+        try:
+            services.check_license_limit(
+                school, "classrooms_per_year", current_count, increment=new_combo_count
+            )
+        except services.LicenseLimitExceeded as exc:
+            return Response({"detail": str(exc)}, status=403)
+
         result = serializer.save()
         return Response(
             {
@@ -851,8 +888,7 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
         return Response(result)
-    
-    
+
     @action(detail=True, methods=["get"], url_path="exam_spreadsheet", permission_classes=[utils.IsAdmin])
     def exam_spreadsheet(self, request, pk=None):
         """GET /classrooms/{id}/exam_spreadsheet/?exam=<Exam id>"""
@@ -871,7 +907,8 @@ class ClassRoomViewSet(viewsets.ModelViewSet):
         entries = request.data.get("entries", [])
         result = services.save_admin_exam_spreadsheet(exam, entries, request.user)
         return Response(result, status=200 if not result["errors"] else 207)
-
+    
+    
 # ---------------------------------------------------------------------------
 # STUDENTS / GUARDIANS / ENROLLMENT
 # ---------------------------------------------------------------------------
