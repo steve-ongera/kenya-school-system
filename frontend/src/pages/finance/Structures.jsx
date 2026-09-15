@@ -1,11 +1,30 @@
 import { useEffect, useMemo, useState } from "react";
 import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import { financeApi, calendarApi, academicsApi, schoolApi } from "../../services/api";
 import Breadcrumb from "../../components/Breadcrumb";
+import logoImage from "../../assets/masomo_logo.png";
 
 const currency = (value) => Number(value || 0).toLocaleString();
 
 const emptyItem = () => ({ name: "", amount: "" });
+
+// Load an image URL as a base64 data URL (for embedding the logo in PDFs)
+const getImageBase64 = (url) =>
+  new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.src = url;
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = () => resolve(null);
+  });
 
 export default function FinanceStructures() {
   const [structures, setStructures] = useState([]);
@@ -124,42 +143,187 @@ export default function FinanceStructures() {
     }
   };
 
-  const downloadPdf = (structure) => {
-    const doc = new jsPDF();
-    let y = 20;
+  // ---- Professional fee-structure PDF with logo + signature/stamp blocks ----
+  const downloadPdf = async (structure) => {
+    const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
 
-    doc.setFontSize(16);
-    doc.text(school?.name || "Fee Structure", 14, y);
-    y += 8;
+    const base64Logo = await getImageBase64(logoImage);
 
-    doc.setFontSize(11);
-    doc.text(`Grade: ${structure.grade_level_name}`, 14, y);
-    y += 6;
-    doc.text(`Term: ${structure.term_label}`, 14, y);
-    y += 10;
-
-    doc.setFontSize(12);
-    doc.text("Item", 14, y);
-    doc.text("Amount (KES)", 150, y, { align: "right" });
-    y += 2;
-    doc.line(14, y, 196, y);
-    y += 6;
-
-    doc.setFontSize(11);
-    (structure.items || []).forEach((item) => {
-      doc.text(item.name, 14, y);
-      doc.text(currency(item.amount), 150, y, { align: "right" });
-      y += 7;
+    const schoolName = school?.name || "Masomo School";
+    const generatedOn = new Date().toLocaleDateString("en-KE", {
+      year: "numeric", month: "long", day: "numeric",
     });
 
-    y += 2;
-    doc.line(14, y, 196, y);
-    y += 8;
-    doc.setFontSize(12);
-    doc.text("Total Due", 14, y);
-    doc.text(`KES ${currency(structure.total_amount)}`, 150, y, { align: "right" });
+    // --- Header: logo + school name + report title + generated date ---
+    if (base64Logo) {
+      doc.addImage(base64Logo, "PNG", 12, 10, 14, 14);
+    }
 
-    doc.save(`FeeStructure_${structure.grade_level_name}_${structure.term_label}.pdf`.replace(/\s+/g, "_"));
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(15);
+    doc.setTextColor(15, 23, 42);
+    doc.text(schoolName, base64Logo ? 30 : 12, 17);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(71, 85, 105);
+    doc.text("Fee Structure", base64Logo ? 30 : 12, 23);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Generated ${generatedOn}`, pageWidth - 12, 16, { align: "right" });
+
+    doc.setDrawColor(203, 213, 225);
+    doc.setLineWidth(0.3);
+    doc.line(12, 28, pageWidth - 12, 28);
+
+    // --- Meta block (Grade · Term · Academic Year) ---
+    autoTable(doc, {
+      startY: 32,
+      theme: "grid",
+      body: [
+        ["Grade", structure.grade_level_name || "-", "Term", structure.term_label || "-"],
+        ["Academic Year", structure.academic_year_label || "-", "Curriculum", structure.curriculum_type || "-"],
+      ],
+      styles: {
+        fontSize: 9,
+        cellPadding: 2.5,
+        lineColor: [226, 232, 240],
+        lineWidth: 0.1,
+        textColor: [51, 65, 85],
+      },
+      columnStyles: {
+        0: { cellWidth: 34, fontStyle: "bold", fillColor: [241, 245, 249], textColor: [71, 85, 105] },
+        1: { cellWidth: 60 },
+        2: { cellWidth: 34, fontStyle: "bold", fillColor: [241, 245, 249], textColor: [71, 85, 105] },
+        3: { cellWidth: "auto" },
+      },
+      margin: { left: 12, right: 12 },
+    });
+
+    const cursorY = doc.lastAutoTable.finalY + 6;
+
+    // --- Fee items table ---
+    const items = structure.items || [];
+    const tableRows = items.map((it, i) => [
+      String(i + 1),
+      it.name || "-",
+      currency(it.amount),
+    ]);
+
+    // Total row appended as the last body row, styled via didParseCell below
+    const totalRow = ["", "TOTAL DUE", currency(structure.total_amount)];
+    const allRows = [...tableRows, totalRow];
+
+    autoTable(doc, {
+      startY: cursorY,
+      head: [["#", "Fee Item", "Amount (KES)"]],
+      body: allRows,
+      theme: "grid",
+      styles: {
+        fontSize: 9.5,
+        cellPadding: 2.5,
+        lineColor: [226, 232, 240],
+        lineWidth: 0.1,
+        textColor: [51, 65, 85],
+        overflow: "ellipsize",
+        valign: "middle",
+      },
+      headStyles: {
+        fillColor: [15, 23, 42],
+        textColor: [255, 255, 255],
+        fontStyle: "bold",
+        fontSize: 9,
+        cellPadding: 2.5,
+        halign: "left",
+      },
+      bodyStyles: {
+        fontSize: 9.5,
+        textColor: [51, 65, 85],
+        cellPadding: 2.5,
+      },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: {
+        0: { cellWidth: 12, halign: "center" },
+        1: { cellWidth: "auto", halign: "left" },
+        2: { cellWidth: 42, halign: "right" },
+      },
+      margin: { left: 12, right: 12 },
+      didParseCell: (data) => {
+        if (data.section !== "body") return;
+        // The last row is the Total row
+        if (data.row.index === allRows.length - 1) {
+          data.cell.styles.fontStyle = "bold";
+          data.cell.styles.fillColor = [241, 245, 249];
+          data.cell.styles.textColor = [15, 23, 42];
+          data.cell.styles.fontSize = 10.5;
+          if (data.column.index === 2) {
+            data.cell.styles.textColor = [15, 23, 42];
+          }
+        }
+      },
+      didDrawPage: () => {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7);
+        doc.setTextColor(148, 163, 184);
+        doc.text(
+          `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
+          pageWidth - 12,
+          pageHeight - 6,
+          { align: "right" }
+        );
+        doc.text(`${schoolName} — Finance Department`, 12, pageHeight - 6);
+      },
+    });
+
+    // --- Signature / stamp blocks: Finance Officer + Principal ---
+    let finalY = doc.lastAutoTable.finalY + 16;
+    if (finalY > pageHeight - 30) {
+      doc.addPage();
+      finalY = 26;
+    }
+
+    doc.setDrawColor(148, 163, 184);
+    doc.setLineWidth(0.2);
+
+    // Finance Officer (left)
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Finance Officer's Signature:", 12, finalY);
+    doc.line(12, finalY + 10, 90, finalY + 10);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Sign & Official Stamp", 12, finalY + 14);
+
+    // Principal (right)
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Principal's Signature:", pageWidth - 90, finalY);
+    doc.line(pageWidth - 90, finalY + 10, pageWidth - 12, finalY + 10);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Sign & Official Stamp", pageWidth - 90, finalY + 14);
+
+    // --- Small footer note ---
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(7);
+    doc.setTextColor(148, 163, 184);
+    doc.text(
+      "This fee structure is valid for the grade and term shown above. Please retain a copy for your records.",
+      12,
+      pageHeight - 12
+    );
+
+    doc.save(
+      `FeeStructure_${(structure.grade_level_name || "grade").replace(/\s+/g, "_")}_${(structure.term_label || "term").replace(/\s+/g, "_")}.pdf`
+    );
   };
 
   const clearFilters = () => {
@@ -376,7 +540,6 @@ export default function FinanceStructures() {
           </div>
         </div>
 
-        {/* Active filter chips */}
         {hasActiveFilters && (
           <div className="d-flex flex-wrap gap-1 mt-3">
             {filters.term__academic_year && (
@@ -416,8 +579,8 @@ export default function FinanceStructures() {
           <i className="bi bi-cash-stack"></i>
           <h6>No fee structures found</h6>
           <p className="text-muted-soft">
-            {hasActiveFilters 
-              ? "No fee structures match your filters. Try adjusting your search criteria." 
+            {hasActiveFilters
+              ? "No fee structures match your filters. Try adjusting your search criteria."
               : "Create your first fee structure using the form above."}
           </p>
         </div>
@@ -436,7 +599,7 @@ export default function FinanceStructures() {
                       {f.term_label}
                     </span>
                   </div>
-                  
+
                   <div style={{ marginBottom: "1rem" }}>
                     <span className="badge badge-neutral">
                       <i className="bi bi-calendar3 me-1"></i>
@@ -444,10 +607,9 @@ export default function FinanceStructures() {
                     </span>
                   </div>
 
-                  {/* Fee Items */}
-                  <div style={{ 
-                    background: "var(--bg-app)", 
-                    borderRadius: "var(--radius-md)", 
+                  <div style={{
+                    background: "var(--bg-app)",
+                    borderRadius: "var(--radius-md)",
                     padding: "0.75rem",
                     marginBottom: "1rem"
                   }}>
@@ -456,9 +618,9 @@ export default function FinanceStructures() {
                     </div>
                     {(f.items || []).length > 0 ? (
                       (f.items || []).map((item, idx) => (
-                        <div key={idx} style={{ 
-                          display: "flex", 
-                          justifyContent: "space-between", 
+                        <div key={idx} style={{
+                          display: "flex",
+                          justifyContent: "space-between",
                           fontSize: "var(--fs-sm)",
                           padding: "0.2rem 0",
                           borderBottom: idx < (f.items || []).length - 1 ? "1px dashed var(--border-color)" : "none"
@@ -474,17 +636,16 @@ export default function FinanceStructures() {
                     )}
                   </div>
 
-                  {/* Total */}
-                  <div style={{ 
-                    display: "flex", 
-                    justifyContent: "space-between", 
+                  <div style={{
+                    display: "flex",
+                    justifyContent: "space-between",
                     alignItems: "center",
                     paddingTop: "0.75rem",
                     borderTop: "2px solid var(--border-color)"
                   }}>
                     <span style={{ fontWeight: 600, color: "var(--ink-700)" }}>Total Due</span>
-                    <span style={{ 
-                      fontWeight: 700, 
+                    <span style={{
+                      fontWeight: 700,
                       fontSize: "1.1rem",
                       color: "var(--blue-700)"
                     }}>
@@ -492,7 +653,7 @@ export default function FinanceStructures() {
                     </span>
                   </div>
                 </div>
-                <div className="card-footer" style={{ 
+                <div className="card-footer" style={{
                   background: "transparent",
                   borderTop: "1px solid var(--border-color)",
                   padding: "0.75rem 1.25rem",
