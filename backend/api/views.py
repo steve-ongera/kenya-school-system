@@ -917,6 +917,7 @@ class StudentPagination(PageNumberPagination):
     page_size_query_param = "page_size"
     max_page_size = 500
 
+
 class StudentProfileViewSet(viewsets.ModelViewSet):
     queryset = models.StudentProfile.objects.select_related("user").order_by("-user__date_joined")
     permission_classes = [utils.IsAdminOrTeacher]
@@ -941,10 +942,20 @@ class StudentProfileViewSet(viewsets.ModelViewSet):
         return self.queryset
 
     def get_permissions(self):
+        # Students/parents read only their own scoped queryset (see
+        # get_queryset) - never write.
         if self.request.user and self.request.user.role in (models.User.Role.STUDENT, models.User.Role.PARENT):
             return [IsAuthenticated()]
         if self.action in ("destroy", "reset_password"):
             return [utils.IsAdmin()]
+        # Finance needs to search students for the Communications page's
+        # "Specific Students" audience picker - CommunicationViewSet is
+        # IsAdminOrFinance, so leaving `list` gated at the class-level
+        # IsAdminOrTeacher made that picker 403 for every Finance officer,
+        # while the grade/classroom dropdowns (ReadOnlyOrAdmin) still
+        # loaded fine. IsStaffMember covers ADMIN, TEACHER, and FINANCE.
+        if self.action == "list":
+            return [utils.IsStaffMember()]
         return super().get_permissions()
 
     def perform_destroy(self, instance):
@@ -963,7 +974,6 @@ class StudentProfileViewSet(viewsets.ModelViewSet):
             student, serializer.validated_data.get("new_password") or None
         )
         return Response({"detail": "Password reset successfully.", "new_password": new_password})
-
 
     
 class AdmitStudentView(generics.CreateAPIView):
