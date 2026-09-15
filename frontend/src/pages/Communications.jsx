@@ -47,6 +47,7 @@ export default function Communications() {
   const [studentSearch, setStudentSearch] = useState("");
   const [studentResults, setStudentResults] = useState([]);
   const [searchingStudents, setSearchingStudents] = useState(false);
+  const [searchError, setSearchError] = useState(null);
 
   const [academicYears, setAcademicYears] = useState([]);
   const [gradeLevels, setGradeLevels] = useState([]);
@@ -79,19 +80,51 @@ export default function Communications() {
     }
   };
 
-  // debounced student search
+  // Debounced student search.
+  //
+  // `cancelled` guards against an in-flight response from an older
+  // keystroke landing after a newer one and overwriting the results.
+  // Clearing the input must also reset searchingStudents — the results
+  // block is gated on !searchingStudents, so leaving it true after an
+  // early return hides every subsequent search.
   useEffect(() => {
     if (!studentSearch.trim()) {
       setStudentResults([]);
+      setSearchingStudents(false);
+      setSearchError(null);
       return;
     }
+
     setSearchingStudents(true);
+    setSearchError(null);
+    let cancelled = false;
+
     const t = setTimeout(() => {
-      studentsApi.list({ search: studentSearch })
-        .then(({ data }) => setStudentResults(data.results ?? data))
-        .finally(() => setSearchingStudents(false));
+      studentsApi
+        .list({ search: studentSearch, page_size: 20 })
+        .then(({ data }) => {
+          if (cancelled) return;
+          setStudentResults(data.results ?? data);
+          setSearchError(null);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setStudentResults([]);
+          setSearchError(
+            err.response?.status === 403
+              ? "Your account doesn't have permission to search students. Ask an administrator."
+              : "Could not search students. Check your connection and try again."
+          );
+        })
+        .finally(() => {
+          if (!cancelled) setSearchingStudents(false);
+        });
     }, 350);
-    return () => clearTimeout(t);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [studentSearch]);
 
   // Classrooms for the "By Classroom" audience picker — current academic
@@ -393,7 +426,21 @@ export default function Communications() {
                 </div>
               )}
 
-              {!searchingStudents && studentResults.length > 0 && (
+              {!searchingStudents && searchError && (
+                <div className="alert alert-danger py-2 px-3" style={{ fontSize: "var(--fs-sm)" }}>
+                  <i className="bi bi-exclamation-triangle me-1"></i>
+                  {searchError}
+                </div>
+              )}
+
+              {!searchingStudents && !searchError && studentSearch.trim() && studentResults.length === 0 && (
+                <div className="form-text-hint">
+                  <i className="bi bi-info-circle me-1"></i>
+                  No students matched "{studentSearch}".
+                </div>
+              )}
+
+              {!searchingStudents && !searchError && studentResults.length > 0 && (
                 <div style={{
                   maxHeight: "200px",
                   overflowY: "auto",
@@ -445,7 +492,9 @@ export default function Communications() {
                     <span key={s.id} className="filter-chip" style={{ padding: "0.4rem 0.6rem", fontSize: "var(--fs-sm)" }}>
                       <span style={{ fontWeight: 600 }}>{s.admission_no}</span>
                       <span style={{ marginLeft: "0.25rem" }}>{s.full_name}</span>
-                      <button onClick={() => removeStudent(s.id)}>
+                      {/* type="button" — without it this defaults to submit
+                          and fires the whole form on every deselect. */}
+                      <button type="button" onClick={() => removeStudent(s.id)}>
                         <i className="bi bi-x"></i>
                       </button>
                     </span>
