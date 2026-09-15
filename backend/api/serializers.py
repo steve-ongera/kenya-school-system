@@ -557,24 +557,45 @@ class FeeStructureItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.FeeStructureItem
         fields = "__all__"
- 
- 
+        # fee_structure is assigned by FeeStructureSerializer.create()
+        # after the parent FeeStructure has been created.
+        read_only_fields = ["fee_structure"]
+
+
 class FeeStructureSerializer(serializers.ModelSerializer):
     items = FeeStructureItemSerializer(many=True, required=False)
-    grade_level_name = serializers.CharField(source="grade_level.name", read_only=True)
-    term_label = serializers.CharField(source="term.__str__", read_only=True)
- 
+
+    grade_level_name = serializers.CharField(
+        source="grade_level.name",
+        read_only=True
+    )
+
+    term_label = serializers.CharField(
+        source="term.__str__",
+        read_only=True
+    )
+
     class Meta:
         model = models.FeeStructure
         fields = "__all__"
- 
+
     def create(self, validated_data):
+        # Remove nested items before creating the parent
         items_data = validated_data.pop("items", [])
-        fee_structure = models.FeeStructure.objects.create(**validated_data)
-        for item in items_data:
-            models.FeeStructureItem.objects.create(fee_structure=fee_structure, **item)
+
+        # Create the FeeStructure first
+        fee_structure = models.FeeStructure.objects.create(
+            **validated_data
+        )
+
+        # Create each item and attach it to the new FeeStructure
+        for item_data in items_data:
+            models.FeeStructureItem.objects.create(
+                fee_structure=fee_structure,
+                **item_data
+            )
+
         return fee_structure
- 
  
 class InvoiceSerializer(serializers.ModelSerializer):
     student_name = serializers.CharField(source="enrollment.student.user.get_full_name", read_only=True)
