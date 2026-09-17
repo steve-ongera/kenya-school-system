@@ -8,6 +8,7 @@ import ResetPassword from "./pages/ResetPassword";
 import Profile from "./pages/Profile";
 import ChangePassword from "./pages/ChangePassword";
 import Notifications from "./pages/Notifications";
+import VerifyReportCard from "./pages/VerifyReportCard";
 
 // admin
 import AdminDashboard from "./pages/admin/Dashboard";
@@ -24,6 +25,11 @@ import AdminPromotions from "./pages/admin/Promotions";
 import AdminFees from "./pages/admin/Fees";
 import AdminUsers from "./pages/admin/Users";
 import AdminSecurityMonitor from "./pages/admin/SecurityMonitor";
+// admin
+import AdminExpenses from "./pages/admin/Expenses";
+
+// finance
+import FinanceExpenses from "./pages/finance/Expenses";
 
 // admin finance reports
 import AdminFinanceCollections from "./pages/admin/finance/Collections";
@@ -78,6 +84,7 @@ export default function App() {
     <AuthProvider>
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/verify-report-card/:token" element={<VerifyReportCard />} />
         {/* Student-only self-service password reset. Admin/Teacher/Finance
             accounts are deliberately NOT reachable here - see AdminUsers /
             SecurityMonitor for staff password resets and unlocks. */}
@@ -104,6 +111,7 @@ export default function App() {
           <Route path="/admin/rankings" element={<RoleSection role="ADMIN"><AdminRankings /></RoleSection>} />
           <Route path="/admin/promotions" element={<RoleSection role="ADMIN"><AdminPromotions /></RoleSection>} />
           <Route path="/admin/fees" element={<RoleSection role="ADMIN"><AdminFees /></RoleSection>} />
+          <Route path="/admin/expenses" element={<RoleSection role="ADMIN"><AdminExpenses /></RoleSection>} />
           <Route path="/admin/users" element={<RoleSection role="ADMIN"><AdminUsers /></RoleSection>} />
           <Route path="/admin/security" element={<RoleSection role="ADMIN"><AdminSecurityMonitor /></RoleSection>} />
 
@@ -140,11 +148,13 @@ export default function App() {
           <Route path="/finance/structures" element={<RoleSection role="FINANCE"><FinanceStructures /></RoleSection>} />
           <Route path="/finance/invoices" element={<RoleSection role="FINANCE"><FinanceInvoices /></RoleSection>} />
           <Route path="/finance/payments" element={<RoleSection role="FINANCE"><FinancePayments /></RoleSection>} />
+          <Route path="/finance/expenses" element={<RoleSection role="FINANCE"><FinanceExpenses /></RoleSection>} />
 
           {/* FINANCE reports */}
           <Route path="/finance/reports/collections" element={<RoleSection role="FINANCE"><FinanceCollections /></RoleSection>} />
           <Route path="/finance/reports/class-analysis" element={<RoleSection role="FINANCE"><FinanceClassAnalysis /></RoleSection>} />
           <Route path="/finance/reports/detailed" element={<RoleSection role="FINANCE"><FinanceDetailedReport /></RoleSection>} />
+
 
           {/* COMMUNICATIONS - Admin and Finance can both broadcast; each keeps its own path so the sidebar entry sits naturally in its own role group */}
           <Route path="/admin/communications" element={<ProtectedRoute allowedRoles={["ADMIN"]}><Communications /></ProtectedRoute>} />

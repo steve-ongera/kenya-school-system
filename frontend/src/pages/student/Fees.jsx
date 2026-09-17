@@ -72,7 +72,17 @@ export default function StudentFees() {
     financeApi.status().then(({ data }) => setFeeStatus(data)).catch(() => {});
   }, []);
 
-  const totalDue = invoices.reduce((s, i) => s + Number(i.amount_due), 0);
+  // ---- Balance calculation --------------------------------------------
+  // IMPORTANT: use term_charge (amount_due - brought_forward), NOT raw
+  // amount_due, when summing across invoices. Each invoice's amount_due
+  // already folds in every prior term's unpaid balance via
+  // brought_forward (see Invoice.brought_forward / services.generate_invoice
+  // on the backend). Summing amount_due directly re-adds the same arrears
+  // once per later invoice and overstates the balance - term_charge is
+  // each invoice's OWN fee for that term alone, so summing that avoids
+  // double-counting. (Per-invoice display below still shows amount_due /
+  // balance as-is, which is correct at the row level.)
+  const totalDue = invoices.reduce((s, i) => s + Number(i.term_charge), 0);
   const totalPaid = invoices.reduce((s, i) => s + Number(i.amount_paid), 0);
   const netBalance = totalDue - totalPaid;
 

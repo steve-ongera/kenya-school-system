@@ -20,6 +20,174 @@ const ROLE_ICONS = {
   FINANCE: "bi-cash-stack",
 };
 
+const emptyEditForm = {
+  first_name: "",
+  last_name: "",
+  email: "",
+  phone_number: "",
+  national_id: "",
+  role: "TEACHER",
+  is_active_staff: true,
+};
+
+function errorText(err, fallback) {
+  const data = err?.response?.data;
+  if (!data) return fallback;
+  if (typeof data === "string") return data;
+  if (data.detail) return data.detail;
+  if (typeof data === "object") {
+    return Object.entries(data)
+      .map(([field, errors]) => `${field}: ${Array.isArray(errors) ? errors.join(" ") : errors}`)
+      .join(" | ");
+  }
+  return fallback;
+}
+
+// ===========================================================================
+// Edit User modal
+// ===========================================================================
+function EditUserModal({ user, form, setForm, saving, error, onSave, onCancel }) {
+  return (
+    <>
+      <div className="modal d-block" tabIndex="-1" role="dialog" style={{ zIndex: 1055 }}>
+        <div className="modal-dialog modal-dialog-centered" role="document">
+          <form className="modal-content" onSubmit={onSave}>
+            <div className="modal-header">
+              <h5 className="modal-title">Edit User — {user.username}</h5>
+              <button type="button" className="btn-close" onClick={onCancel} aria-label="Close" />
+            </div>
+            <div className="modal-body">
+              {error && <div className="alert alert-danger py-2 px-3">{error}</div>}
+
+              <div className="row g-3">
+                <div className="col-12">
+                  <label className="form-label small text-muted">Username</label>
+                  <input className="form-control" value={user.username} disabled />
+                  <div className="form-text">Username is the login identity and can't be changed here.</div>
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">First Name</label>
+                  <input
+                    className="form-control"
+                    required
+                    value={form.first_name}
+                    onChange={(e) => setForm({ ...form, first_name: e.target.value })}
+                  />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Last Name</label>
+                  <input
+                    className="form-control"
+                    required
+                    value={form.last_name}
+                    onChange={(e) => setForm({ ...form, last_name: e.target.value })}
+                  />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Role</label>
+                  <select
+                    className="form-select"
+                    value={form.role}
+                    onChange={(e) => setForm({ ...form, role: e.target.value })}
+                  >
+                    {ROLE_OPTIONS.map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">National ID</label>
+                  <input
+                    className="form-control"
+                    value={form.national_id}
+                    onChange={(e) => setForm({ ...form, national_id: e.target.value })}
+                  />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Email</label>
+                  <input
+                    type="email"
+                    className="form-control"
+                    value={form.email}
+                    onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Phone</label>
+                  <input
+                    className="form-control"
+                    value={form.phone_number}
+                    onChange={(e) => setForm({ ...form, phone_number: e.target.value })}
+                  />
+                </div>
+                <div className="col-12">
+                  <div className="form-check">
+                    <input
+                      type="checkbox"
+                      className="form-check-input"
+                      id="editIsActiveStaff"
+                      checked={form.is_active_staff}
+                      onChange={(e) => setForm({ ...form, is_active_staff: e.target.checked })}
+                    />
+                    <label className="form-check-label" htmlFor="editIsActiveStaff">
+                      Account active (unchecking suspends login access without deleting the account)
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onCancel}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary btn-sm" disabled={saving}>
+                {saving ? "Saving…" : "Save Changes"}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+      <div className="modal-backdrop show" style={{ zIndex: 1050 }} />
+    </>
+  );
+}
+
+// ===========================================================================
+// Delete confirmation modal
+// ===========================================================================
+function DeleteUserModal({ user, saving, error, onConfirm, onCancel }) {
+  return (
+    <>
+      <div className="modal d-block" tabIndex="-1" role="dialog" style={{ zIndex: 1055 }}>
+        <div className="modal-dialog modal-dialog-centered" role="document">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">Delete User Account?</h5>
+              <button type="button" className="btn-close" onClick={onCancel} aria-label="Close" />
+            </div>
+            <div className="modal-body">
+              {error && <div className="alert alert-danger py-2 px-3">{error}</div>}
+              <p className="mb-0">
+                Delete <strong>{user.first_name} {user.last_name}</strong> ({user.username}, {user.role})? This
+                cannot be undone.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onCancel}>
+                Cancel
+              </button>
+              <button type="button" className="btn btn-danger btn-sm" onClick={onConfirm} disabled={saving}>
+                {saving ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="modal-backdrop show" style={{ zIndex: 1050 }} />
+    </>
+  );
+}
+
 export default function AdminUsers() {
   const [users, setUsers] = useState([]);
   const [totalItems, setTotalItems] = useState(0);
@@ -37,6 +205,17 @@ export default function AdminUsers() {
   const [roleFilter, setRoleFilter] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
+
+  // ---- Edit user modal state ---------------------------------------------
+  const [editingUser, setEditingUser] = useState(null); // the raw user row being edited
+  const [editForm, setEditForm] = useState(emptyEditForm);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState("");
+
+  // ---- Delete user modal state --------------------------------------------
+  const [deletingUser, setDeletingUser] = useState(null);
+  const [deleteSaving, setDeleteSaving] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   // Debounce the search box.
   useEffect(() => {
@@ -86,17 +265,87 @@ export default function AdminUsers() {
       setMessage("Account created successfully.");
       setMessageType("success");
     } catch (err) {
-      const data = err.response?.data;
-      let readable = "Could not create account.";
-      if (data && typeof data === "object") {
-        readable = Object.entries(data)
-          .map(([field, errors]) => `${field}: ${Array.isArray(errors) ? errors.join(" ") : errors}`)
-          .join(" | ");
-      }
-      setMessage(readable);
+      setMessage(errorText(err, "Could not create account."));
       setMessageType("danger");
     } finally {
       setFormSaving(false);
+    }
+  };
+
+  // ---------------------------------------------------------------------
+  // Edit user
+  // ---------------------------------------------------------------------
+  const startEdit = (user) => {
+    setEditingUser(user);
+    setEditError("");
+    setEditForm({
+      first_name: user.first_name || "",
+      last_name: user.last_name || "",
+      email: user.email || "",
+      phone_number: user.phone_number || "",
+      national_id: user.national_id || "",
+      role: user.role,
+      is_active_staff: user.is_active_staff ?? true,
+    });
+  };
+
+  const cancelEdit = () => {
+    setEditingUser(null);
+    setEditForm(emptyEditForm);
+    setEditError("");
+  };
+
+  const saveEdit = async (e) => {
+    e.preventDefault();
+    setEditSaving(true);
+    setEditError("");
+    try {
+      // Send "" as null for national_id so we don't trip the unique
+      // constraint by round-tripping an empty string for every blank user.
+      const payload = { ...editForm, national_id: editForm.national_id || null };
+      await api.patch(`/users/${editingUser.id}/`, payload);
+      cancelEdit();
+      await loadUsers();
+      setMessage("User account updated.");
+      setMessageType("success");
+    } catch (err) {
+      setEditError(errorText(err, "Could not update this user."));
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  // ---------------------------------------------------------------------
+  // Delete user
+  // ---------------------------------------------------------------------
+  const startDelete = (user) => {
+    setDeletingUser(user);
+    setDeleteError("");
+  };
+
+  const cancelDelete = () => {
+    setDeletingUser(null);
+    setDeleteError("");
+  };
+
+  const confirmDelete = async () => {
+    setDeleteSaving(true);
+    setDeleteError("");
+    try {
+      await api.delete(`/users/${deletingUser.id}/`);
+      cancelDelete();
+      // If we just deleted the last row on this page, step back a page.
+      if (users.length === 1 && currentPage > 1) {
+        setCurrentPage((p) => p - 1);
+      } else {
+        await loadUsers();
+      }
+      setMessage("User account deleted.");
+      setMessageType("success");
+    } catch (err) {
+      setDeleteError(errorText(err, "Could not delete this user."));
+    } finally {
+      setDeleteSaving(false);
     }
   };
 
@@ -281,7 +530,8 @@ export default function AdminUsers() {
                   <th>Role</th>
                   <th>Email</th>
                   <th>Phone</th>
-                  <th style={{ width: "80px" }}>Actions</th>
+                  <th>Status</th>
+                  <th style={{ width: "90px" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -309,11 +559,28 @@ export default function AdminUsers() {
                     <td>{u.email || <span className="text-muted-soft">-</span>}</td>
                     <td>{u.phone_number || <span className="text-muted-soft">-</span>}</td>
                     <td>
+                      {u.is_active_staff ? (
+                        <span className="badge badge-success">Active</span>
+                      ) : (
+                        <span className="badge badge-neutral">Suspended</span>
+                      )}
+                    </td>
+                    <td>
                       <div className="table-actions">
-                        <button className="btn btn-sm btn-outline-primary btn-icon" title="Edit">
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-primary btn-icon"
+                          title="Edit"
+                          onClick={() => startEdit(u)}
+                        >
                           <i className="bi bi-pencil"></i>
                         </button>
-                        <button className="btn btn-sm btn-outline-danger btn-icon" title="Delete">
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-danger btn-icon"
+                          title="Delete"
+                          onClick={() => startDelete(u)}
+                        >
                           <i className="bi bi-trash"></i>
                         </button>
                       </div>
@@ -336,6 +603,28 @@ export default function AdminUsers() {
           startIndex={startIndex}
           endIndex={endIndex}
           totalItems={totalItems}
+        />
+      )}
+
+      {editingUser && (
+        <EditUserModal
+          user={editingUser}
+          form={editForm}
+          setForm={setEditForm}
+          saving={editSaving}
+          error={editError}
+          onSave={saveEdit}
+          onCancel={cancelEdit}
+        />
+      )}
+
+      {deletingUser && (
+        <DeleteUserModal
+          user={deletingUser}
+          saving={deleteSaving}
+          error={deleteError}
+          onConfirm={confirmDelete}
+          onCancel={cancelDelete}
         />
       )}
     </div>

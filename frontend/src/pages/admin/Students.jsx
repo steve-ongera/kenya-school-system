@@ -8,6 +8,11 @@ import Modal from "../../components/Modal";
 const emptyAddForm = {
   first_name: "", last_name: "", email: "", phone_number: "", national_id: "",
   gender: "M", curriculum_type: "CBC", classroom_id: "", date_of_birth: "", upi_number: "",
+  // NEW — for migrating a student who already has an admission number and
+  // a real admission date from a previous system. Leave both blank for a
+  // genuinely new admission: behavior is identical to before (auto-generated
+  // admission number, date_admitted defaults to today on the backend).
+  admission_no: "", date_admitted: "",
   parent_name: "", parent_phone: "", parent_email: "", parent_relationship: "GUARDIAN",
 };
 
@@ -206,6 +211,11 @@ export default function AdminStudents() {
       const payload = {
         ...addForm,
         date_of_birth: addForm.date_of_birth || null,
+        // NEW — blank means "let the backend auto-generate / default to
+        // today", exactly as before. A non-blank value is only meant for
+        // migrating a student who already has these from a prior system.
+        admission_no: addForm.admission_no.trim(),
+        date_admitted: addForm.date_admitted || null,
       };
       const { data } = await studentsApi.admit(payload);
       setMessage(
@@ -219,7 +229,13 @@ export default function AdminStudents() {
       setCurrentPage(1);
       await loadStudents();
     } catch (err) {
-      setMessage(err.response?.data?.detail || err.response?.data?.classroom_id?.[0] || "Could not admit student.");
+      const data = err.response?.data;
+      const detail =
+        data?.detail ||
+        data?.admission_no?.[0] ||
+        data?.classroom_id?.[0] ||
+        "Could not admit student.";
+      setMessage(detail);
       setMessageType("danger");
     } finally {
       setAddSaving(false);
@@ -697,6 +713,34 @@ export default function AdminStudents() {
                 <option value="8-4-4">8-4-4 (Legacy)</option>
               </select>
             </div>
+
+            {/* NEW — migrating an already-admitted student */}
+            <div className="col-md-6">
+              <label className="form-label">Admission Number (optional)</label>
+              <input
+                className="form-control"
+                placeholder="Leave blank to auto-generate"
+                value={addForm.admission_no}
+                onChange={(e) => setAddForm({ ...addForm, admission_no: e.target.value })}
+              />
+            </div>
+            <div className="col-md-6">
+              <label className="form-label">Date Admitted (optional)</label>
+              <input
+                type="date"
+                className="form-control"
+                value={addForm.date_admitted}
+                onChange={(e) => setAddForm({ ...addForm, date_admitted: e.target.value })}
+              />
+            </div>
+            <div className="col-12">
+              <div className="form-text" style={{ fontSize: "var(--fs-xs)" }}>
+                Leave both blank for a brand-new admission — the admission number auto-generates and
+                today's date is used, exactly as before. Only fill these in when migrating a student
+                who was already admitted under your previous system and already has these on record.
+              </div>
+            </div>
+
             <div className="col-md-12">
               <label className="form-label">Classroom</label>
               <select className="form-select" required value={addForm.classroom_id}
@@ -756,8 +800,8 @@ export default function AdminStudents() {
           </div>
 
           <p className="text-muted-soft mt-3" style={{ fontSize: "var(--fs-xs)" }}>
-            The admission number is generated automatically and used as the student's login username.
-            The initial password for every new student is always <strong>password123</strong>.
+            When left blank, the admission number is generated automatically and used as the student's
+            login username. The initial password for every new student is always <strong>password123</strong>.
           </p>
           <div className="mt-3 d-flex gap-2 justify-content-end">
             <button type="button" className="btn btn-secondary" onClick={() => setShowAddModal(false)}>Cancel</button>

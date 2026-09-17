@@ -172,7 +172,7 @@ export default function Login() {
         )}
 
         <div style={{ marginTop: "1.5rem", textAlign: "center", fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>
-          <span>© {new Date().getFullYear()} Innovationhub Softwares. All rights reserved.</span>
+          <span>Masomo School MIS © {new Date().getFullYear()} Steve Ongera. All rights reserved.</span>
         </div>
       </div>
     </div>

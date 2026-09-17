@@ -4,17 +4,27 @@ Views should stay thin: parse request -> call a service -> return response.
 """
 import base64
 import io
+import random
+from collections import defaultdict, namedtuple
+from datetime import timedelta
 from decimal import Decimal
-from django.core.mail import send_mail
+from itertools import cycle
 
 import qrcode
 import requests
 from django.conf import settings
+from django.core import signing
+from django.core.mail import send_mail
+from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.db import transaction
-from django.db.models import Sum, Avg, Count, Q
+from django.db.models import Avg, Count, F, Q, Sum
 from django.utils import timezone
+from django.utils.crypto import get_random_string
+from rest_framework_simplejwt.tokens import RefreshToken
 
-from . import models
+from . import models, serializers, utils
+
+_signer = TimestampSigner(salt="2fa-login-challenge")
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +45,6 @@ def generate_admission_no(year: int) -> str:
     Format:
         ADM + 5-digit zero-padded sequence
     """
-
     last = (
         models.StudentProfile.objects
         .filter(admission_no__regex=r"^ADM\d+$")
@@ -44,7 +53,6 @@ def generate_admission_no(year: int) -> str:
     )
 
     next_seq = 1
-
     if last:
         try:
             next_seq = int(last.admission_no[3:]) + 1
@@ -52,6 +60,7 @@ def generate_admission_no(year: int) -> str:
             pass
 
     return f"ADM{next_seq:05d}"
+
 
 # ---------------------------------------------------------------------------
 # SELF-SERVICE PROFILE UPDATES
@@ -82,6 +91,177 @@ def update_profile(user: models.User, data: dict) -> models.User:
 
 
 # ---------------------------------------------------------------------------
+# AUTH / LOGIN - tokens, lockout, OTP (2FA), password reset
+# ---------------------------------------------------------------------------
+def issue_tokens_for_user(user):
+    refresh = RefreshToken.for_user(user)
+    refresh["role"] = user.role
+    return {
+        "access": str(refresh.access_token),
+        "refresh": str(refresh),
+        "user": serializers.UserSerializer(user).data,
+    }
+
+
+def make_challenge_token(user):
+    return _signer.sign(str(user.id))
+
+
+def read_challenge_token(token):
+    """Returns the user id (a UUID string), or None if the token is missing/expired/tampered."""
+    try:
+        return _signer.unsign(token, max_age=settings.OTP_EXPIRY_MINUTES * 60)
+    except (BadSignature, SignatureExpired):
+        return None
+
+
+def validate_login_username(username):
+    """Blocks the "giant garbage string" case before it ever touches the database."""
+    if not username or len(username) > utils.USERNAME_MAX_LENGTH or not utils.USERNAME_PATTERN.match(username):
+        raise ValueError("Invalid username format.")
+    return username
+
+
+def register_failed_login(user, ip_address, result):
+    models.LoginAttemptLog.objects.create(
+        username_attempted=user.username, user=user, ip_address=ip_address, result=result
+    )
+
+    # In DEBUG, track it in the log for visibility but never actually lock
+    # the account - matches the STK-push DEBUG-bypass convention already
+    # used elsewhere in this codebase.
+    if settings.DEBUG or not user.requires_2fa:
+        return False
+
+    user.failed_login_attempts += 1
+    user.last_failed_login_at = timezone.now()
+    locked_now = False
+    if user.failed_login_attempts >= settings.ACCOUNT_LOCKOUT_MAX_ATTEMPTS:
+        user.locked_until = timezone.now() + timedelta(minutes=settings.ACCOUNT_LOCKOUT_DURATION_MINUTES)
+        locked_now = True
+
+    user.save(update_fields=["failed_login_attempts", "last_failed_login_at", "locked_until"])
+
+    if locked_now:
+        models.LoginAttemptLog.objects.create(
+            username_attempted=user.username, user=user, ip_address=ip_address,
+            result=models.LoginAttemptLog.Result.ACCOUNT_LOCKED,
+        )
+        notify_admins_account_locked(user)
+    elif user.failed_login_attempts == settings.ACCOUNT_LOCKOUT_MAX_ATTEMPTS - 1:
+        # warn admins one attempt before lockout, not on every single failure
+        notify_admins_suspicious_activity(user)
+
+    return locked_now
+
+
+def reset_failed_logins(user):
+    if user.failed_login_attempts or user.locked_until:
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        user.save(update_fields=["failed_login_attempts", "locked_until"])
+
+
+def unlock_user(user):
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    user.save(update_fields=["failed_login_attempts", "locked_until"])
+
+
+def generate_and_send_otp(user):
+    code = f"{random.randint(0, 999999):06d}"
+    user.otp_code = code
+    user.otp_expires_at = timezone.now() + timedelta(minutes=settings.OTP_EXPIRY_MINUTES)
+    user.save(update_fields=["otp_code", "otp_expires_at"])
+
+    if settings.DEBUG:
+        # dev convenience only - never do this in production
+        print(f"[DEV OTP] {user.username} -> {code}")
+    else:
+        _dispatch_otp(user, code)
+
+    models.LoginAttemptLog.objects.create(
+        username_attempted=user.username, user=user, result=models.LoginAttemptLog.Result.OTP_SENT
+    )
+    return code
+
+
+def _dispatch_otp(user, code):
+    """Wire this to your real SMS/email provider. Placeholder uses Django's send_mail."""
+    if user.email:
+        send_mail(
+            subject="Your login verification code",
+            message=f"Your one-time code is {code}. It expires in {settings.OTP_EXPIRY_MINUTES} minutes. "
+                    f"If you did not request this, contact IT immediately.",
+            from_email=None,
+            recipient_list=[user.email],
+        )
+    # else: plug in your SMS gateway (Africa's Talking / Twilio) using user.phone_number
+
+
+def verify_otp(user, submitted_code, ip_address):
+    submitted_code = (submitted_code or "").strip()
+
+    if not user.otp_code or not user.otp_expires_at or timezone.now() > user.otp_expires_at:
+        register_failed_login(user, ip_address, models.LoginAttemptLog.Result.OTP_FAILED)
+        return False
+    if submitted_code != user.otp_code.strip():
+        register_failed_login(user, ip_address, models.LoginAttemptLog.Result.OTP_FAILED)
+        return False
+
+    user.otp_code = None
+    user.otp_expires_at = None
+    user.save(update_fields=["otp_code", "otp_expires_at"])
+    models.LoginAttemptLog.objects.create(
+        username_attempted=user.username, user=user, ip_address=ip_address,
+        result=models.LoginAttemptLog.Result.OTP_SUCCESS,
+    )
+    return True
+
+
+def _notify_admins(subject, body):
+    """Reuses the existing Communication/notification system to alert every active Admin."""
+    admin_ids = models.User.objects.filter(role=models.User.Role.ADMIN, is_active_staff=True)
+    if not admin_ids.exists():
+        return
+    comm = models.Communication.objects.create(
+        sender=None,
+        subject=subject,
+        body=body,
+        category=models.Communication.Category.GENERAL,
+        audience_type=models.Communication.AudienceType.ROLE,
+        target_roles=[models.User.Role.ADMIN],
+        include_students=False,
+        include_guardians=False,
+        send_in_app=True,
+        send_sms=False,
+        send_email=False,
+    )
+    send_communication(comm)  # existing function - resolves audience + dispatches
+
+
+def notify_admins_suspicious_activity(user):
+    _notify_admins(
+        subject=f"Repeated failed login: {user.get_full_name() or user.username}",
+        body=(
+            f"{user.username} ({user.get_role_display()}) has {user.failed_login_attempts} failed login "
+            f"attempt(s) at {timezone.now():%Y-%m-%d %H:%M}. One more failure will lock this account."
+        ),
+    )
+
+
+def notify_admins_account_locked(user):
+    _notify_admins(
+        subject=f"Account locked: {user.get_full_name() or user.username}",
+        body=(
+            f"{user.username} ({user.get_role_display()}) was locked after "
+            f"{user.failed_login_attempts} failed login attempts. Unlock it from User Accounts "
+            f"if this was the legitimate user."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # PASSWORD MANAGEMENT (students)
 # ---------------------------------------------------------------------------
 def reset_student_password(student: models.StudentProfile, new_password: str = None) -> str:
@@ -102,15 +282,46 @@ def reset_student_password(student: models.StudentProfile, new_password: str = N
     return password
 
 
+def generate_password_reset_token(student_user):
+    token = get_random_string(48)
+    student_user.password_reset_token = token
+    student_user.password_reset_expires_at = timezone.now() + timedelta(
+        minutes=settings.PASSWORD_RESET_TOKEN_EXPIRY_MINUTES
+    )
+    student_user.save(update_fields=["password_reset_token", "password_reset_expires_at"])
+    return token
+
+
+def send_password_reset_link(student_user, token):
+    link = f"{settings.FRONTEND_URL}/reset-password/{token}"
+    if settings.DEBUG:
+        print(f"[DEV RESET LINK] {student_user.username} -> {link}")
+        return
+    guardian_link = models.ParentStudentLink.objects.filter(
+        student__user=student_user
+    ).select_related("parent__user").first()
+    recipient_email = student_user.email or (guardian_link.parent.user.email if guardian_link else None)
+    if recipient_email:
+        send_mail(
+            subject="Password reset request",
+            message=f"A password reset was requested for admission number "
+                     f"{student_user.student_profile.admission_no}. "
+                     f"Use this link within {settings.PASSWORD_RESET_TOKEN_EXPIRY_MINUTES} minutes: {link}\n\n"
+                     f"If you didn't request this, ignore this message.",
+            from_email=None,
+            recipient_list=[recipient_email],
+        )
+
+
 # ---------------------------------------------------------------------------
 # SUBJECT SELECTION VALIDATION
 # ---------------------------------------------------------------------------
-def validate_subject_selection(grade_level: models.GradeLevel, subject_ids: list[int]):
-    """
-    Raises ValueError with a human-readable message if the chosen subject
-    list breaks the grade's compulsory / min / max rules.
-    Returns the cleaned list of Subject instances on success.
-    """
+def validate_subject_selection(
+    grade_level: models.GradeLevel,
+    subject_ids: list[int],
+    pathway_id: int | None = None,
+    track_id: int | None = None,
+):
     grade_subjects = models.GradeSubject.objects.filter(grade_level=grade_level).select_related("subject")
     compulsory_ids = {gs.subject_id for gs in grade_subjects if gs.is_compulsory}
     optional_ids = {gs.subject_id for gs in grade_subjects if not gs.is_compulsory}
@@ -127,47 +338,238 @@ def validate_subject_selection(grade_level: models.GradeLevel, subject_ids: list
 
     chosen_optional = chosen & optional_ids
     rule = getattr(grade_level, "selection_rule", None)
+
+    # ---- CBC single-pathway check ----
+    if rule and rule.requires_pathway:
+        if not pathway_id:
+            raise ValueError("Please choose a pathway (STEM / Social Sciences / Arts & Sports Science) first.")
+        pathway = models.Pathway.objects.filter(pk=pathway_id, is_active=True).first()
+        if not pathway:
+            raise ValueError("Invalid or inactive pathway selected.")
+        mismatched = models.Subject.objects.filter(id__in=chosen_optional).exclude(
+            Q(pathway=pathway) | Q(pathway__isnull=True)
+        )
+        if mismatched.exists():
+            raise ValueError(f"All optional subjects must belong to the {pathway.name} pathway you selected.")
+
+    # ---- 8-4-4 group/track check ----
+    if models.SelectionTrack.objects.filter(grade_level=grade_level, is_active=True).exists():
+        if not track_id:
+            raise ValueError("Please choose an elective track first (e.g. Technical + Humanities, or Triple Science).")
+        track = models.SelectionTrack.objects.filter(
+            pk=track_id, grade_level=grade_level, is_active=True
+        ).prefetch_related("group_rules__group").first()
+        if not track:
+            raise ValueError("Invalid track for this grade.")
+
+        allowed_group_ids = {r.group_id for r in track.group_rules.all()}
+        chosen_subjects = models.Subject.objects.filter(id__in=chosen_optional).select_related("elective_group")
+
+        # any optional subject with a group must belong to a group this track allows
+        stray = [s.name for s in chosen_subjects if s.elective_group_id and s.elective_group_id not in allowed_group_ids]
+        if stray:
+            raise ValueError(f"These subjects don't belong to the '{track.name}' track: {', '.join(stray)}")
+
+        for tgr in track.group_rules.all():
+            count = sum(1 for s in chosen_subjects if s.elective_group_id == tgr.group_id)
+            if count < tgr.min_choose:
+                raise ValueError(f"Choose at least {tgr.min_choose} {tgr.group.name} subject(s).")
+            if count > tgr.max_choose:
+                raise ValueError(f"Choose at most {tgr.max_choose} {tgr.group.name} subject(s).")
+
     if rule:
         if len(chosen_optional) < rule.min_optional_subjects:
-            raise ValueError(
-                f"Must select at least {rule.min_optional_subjects} optional subject(s)."
-            )
+            raise ValueError(f"Must select at least {rule.min_optional_subjects} optional subject(s).")
         if len(chosen_optional) > rule.max_optional_subjects:
-            raise ValueError(
-                f"May select at most {rule.max_optional_subjects} optional subject(s)."
-            )
+            raise ValueError(f"May select at most {rule.max_optional_subjects} optional subject(s).")
         total = len(chosen)
         if not (rule.min_total_subjects <= total <= rule.max_total_subjects):
-            raise ValueError(
-                f"Total subjects must be between {rule.min_total_subjects} and {rule.max_total_subjects}."
-            )
+            raise ValueError(f"Total subjects must be between {rule.min_total_subjects} and {rule.max_total_subjects}.")
 
     return models.Subject.objects.filter(id__in=chosen)
 
 
 @transaction.atomic
-def set_student_subjects(enrollment: models.Enrollment, subject_ids: list[int]):
-    subjects = validate_subject_selection(enrollment.classroom.grade_level, subject_ids)
+def set_student_subjects(enrollment, subject_ids, pathway_id=None, track_id=None, allow_relock=False):
+    """
+    allow_relock=True bypasses the lock - reserved for Admin/Teacher calls.
+    A regular student self-service call must leave this False: once a
+    student has submitted their subject selection, subjects_locked_at is
+    set and every subsequent student-initiated call is rejected until an
+    admin clears it via EnrollmentViewSet.unlock_subjects.
+    """
+    if enrollment.subjects_locked_at and not allow_relock:
+        raise ValueError(
+            "Your subject selection has already been submitted and locked. "
+            "Contact the school office if you need to make changes."
+        )
+
+    subjects = validate_subject_selection(enrollment.classroom.grade_level, subject_ids, pathway_id, track_id)
     models.StudentSubjectSelection.objects.filter(enrollment=enrollment).delete()
     models.StudentSubjectSelection.objects.bulk_create(
         [models.StudentSubjectSelection(enrollment=enrollment, subject=s) for s in subjects]
     )
+
+    update_fields = []
+    if pathway_id:
+        enrollment.pathway_id = pathway_id
+        update_fields.append("pathway")
+    if track_id:
+        enrollment.selection_track_id = track_id
+        update_fields.append("selection_track")
+    if not enrollment.subjects_locked_at:
+        enrollment.subjects_locked_at = timezone.now()
+        update_fields.append("subjects_locked_at")
+    if update_fields:
+        enrollment.save(update_fields=update_fields)
+
     return subjects
 
 
 # ---------------------------------------------------------------------------
-# GRADING
+# GRADING (with fallback to a standard high-school scale)
 # ---------------------------------------------------------------------------
+GradeResult = namedtuple("GradeResult", ["grade_letter", "points", "remark"])
+
+# Standard KCSE-style 12-point scale — used ONLY when the school hasn't
+# configured a GradingScale for this curriculum/subject yet, so a report
+# card never shows a blank grade just because Grading Scales isn't set up.
+_DEFAULT_GRADING_SCALE = [
+    (80, 100,   "A",  12, "Excellent"),
+    (75, 79.99, "A-", 11, "Very Good"),
+    (70, 74.99, "B+", 10, "Very Good"),
+    (65, 69.99, "B",  9,  "Good"),
+    (60, 64.99, "B-", 8,  "Good"),
+    (55, 59.99, "C+", 7,  "Average"),
+    (50, 54.99, "C",  6,  "Average"),
+    (45, 49.99, "C-", 5,  "Below Average"),
+    (40, 44.99, "D+", 4,  "Below Average"),
+    (35, 39.99, "D",  3,  "Weak"),
+    (30, 34.99, "D-", 2,  "Weak"),
+    (0,  29.99, "E",  1,  "Needs Improvement"),
+]
+
+
+def default_grade_for_percentage(percentage) -> GradeResult:
+    pct = float(percentage)
+    for lo, hi, letter, points, remark in _DEFAULT_GRADING_SCALE:
+        if lo <= pct <= hi:
+            return GradeResult(letter, Decimal(points), remark)
+    return GradeResult("E", Decimal(1), "Needs Improvement")
+
+
 def grade_for_percentage(curriculum_type: str, percentage: Decimal, subject: models.Subject = None):
-    """Looks up the applicable grading scale row for a percentage score."""
+    """
+    Looks up the applicable GradingScale row for a percentage score.
+    Falls back to the standard high-school scale when nothing is
+    configured, so grade/points are ALWAYS returned, never None.
+    """
     qs = models.GradingScale.objects.filter(
         curriculum_type=curriculum_type,
         min_percentage__lte=percentage,
         max_percentage__gte=percentage,
     )
-    # subject-specific scale takes priority over the curriculum-wide default
     specific = qs.filter(subject=subject).first() if subject else None
-    return specific or qs.filter(subject__isnull=True).first()
+    scale = specific or qs.filter(subject__isnull=True).first()
+    return scale or default_grade_for_percentage(percentage)
+
+
+# ---------------------------------------------------------------------------
+# REPORT CARD QR VERIFICATION (stateless — signed token, no DB row needed)
+# ---------------------------------------------------------------------------
+REPORT_CARD_TOKEN_SALT = "report-card-verify-v1"
+
+
+def generate_report_card_token(enrollment_id: int, term_id: int, exam_id: int = None) -> str:
+    return signing.dumps(
+        {"enrollment_id": enrollment_id, "term_id": term_id, "exam_id": exam_id},
+        salt=REPORT_CARD_TOKEN_SALT,
+    )
+
+
+def read_report_card_token(token: str):
+    try:
+        return signing.loads(token, salt=REPORT_CARD_TOKEN_SALT)
+    except signing.BadSignature:
+        return None
+
+
+def generate_report_card_qr_base64(token: str) -> str:
+    verify_url = f"{settings.FRONTEND_URL}/verify-report-card/{token}"
+    img = qrcode.make(verify_url)
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
+def get_report_card_verification(token: str) -> dict:
+    """
+    Recomputes the student's result LIVE — never trusts a stored snapshot —
+    so if a mark is corrected after printing, an old report card's QR will
+    show the discrepancy instead of falsely confirming stale figures.
+    Deliberately excludes fee data - this endpoint is public.
+    """
+    payload = read_report_card_token(token)
+    if not payload:
+        return {"valid": False, "detail": "This QR code is invalid or has been tampered with."}
+
+    enrollment = models.Enrollment.objects.select_related(
+        "student__user", "classroom__grade_level", "classroom__stream", "classroom__academic_year"
+    ).filter(pk=payload["enrollment_id"]).first()
+    term = models.Term.objects.filter(pk=payload["term_id"]).first()
+    if not enrollment or not term:
+        return {"valid": False, "detail": "This report card no longer exists."}
+
+    exam = models.Exam.objects.filter(pk=payload["exam_id"]).first() if payload.get("exam_id") else None
+    classroom = enrollment.classroom
+
+    def result_filter(**extra):
+        base = {"exam__term": term, **extra}
+        if exam:
+            base = {"exam": exam, **extra}
+        return models.ExamResult.objects.filter(
+            is_absent=False, marks_obtained__isnull=False, max_marks__gt=0, **base
+        )
+
+    offered_subject_ids = set(
+        models.Subject.objects.filter(grade_subjects__grade_level=classroom.grade_level).values_list("id", flat=True)
+    )
+    scored_subject_ids = set(result_filter(enrollment=enrollment).values_list("subject_id", flat=True))
+    subjects = models.Subject.objects.filter(id__in=(offered_subject_ids | scored_subject_ids))
+
+    pct_values, points_values = [], []
+    for subject in subjects:
+        qs = result_filter(enrollment=enrollment, subject=subject)
+        if qs.exists():
+            total_pct = sum(float(r.marks_obtained) / float(r.max_marks) * 100 for r in qs)
+            avg_pct = round(total_pct / qs.count(), 1)
+            grade = grade_for_percentage(classroom.grade_level.curriculum_type, Decimal(str(avg_pct)), subject)
+            pct_values.append(avg_pct)
+            points_values.append(float(grade.points))
+
+    has_marks = bool(pct_values)
+    average = round(sum(pct_values) / len(pct_values), 1) if has_marks else None
+    overall_grade = (
+        grade_for_percentage(classroom.grade_level.curriculum_type, Decimal(str(average))) if has_marks else None
+    )
+    ranking = models.TermPositionRanking.objects.filter(
+        enrollment=enrollment, term=term, checkpoint=models.TermPositionRanking.Checkpoint.ENDTERM
+    ).first()
+
+    return {
+        "valid": True,
+        "student_name": enrollment.student.user.get_full_name(),
+        "admission_no": enrollment.student.admission_no,
+        "classroom": str(classroom),
+        "academic_year": classroom.academic_year.year,
+        "term": str(term),
+        "exam": exam.name if exam else "All Exams (Combined)",
+        "average_marks": average,
+        "overall_grade": overall_grade.grade_letter if overall_grade else None,
+        "total_points": round(sum(points_values), 1) if points_values else None,
+        "average_points": round(sum(points_values) / len(points_values), 2) if points_values else None,
+        "class_position": ranking.class_position if ranking else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -290,20 +692,129 @@ def bulk_promote_classroom(classroom: models.ClassRoom, target_classroom: models
     return results
 
 
+def resolve_next_classroom_target(source_classroom: models.ClassRoom) -> dict:
+    """
+    Dry-run resolution of where `source_classroom` promotes TO: same
+    stream, grade_level.next_grade, and the AcademicYear whose year is
+    source_classroom.academic_year.year + 1. Curriculum-agnostic - this
+    walks the SAME next_grade chain whether the grade is CBC (Grade 9 ->
+    Grade 10 -> ...) or legacy 8-4-4 (Form 1 -> Form 2 -> Form 3 -> Form 4).
+    Does NOT create anything - used by the preview endpoint.
+    """
+    grade_level = source_classroom.grade_level
+    next_grade = grade_level.next_grade
+    if next_grade is None:
+        return {"graduating": True}
+
+    if next_grade.curriculum_type != grade_level.curriculum_type:
+        raise ValueError(
+            f"{grade_level}'s next grade is set to {next_grade}, which is a different "
+            f"curriculum ({next_grade.get_curriculum_type_display()} vs "
+            f"{grade_level.get_curriculum_type_display()}). Fix the 'next grade' link on "
+            "Grade Levels before promoting this class."
+        )
+
+    target_year_value = source_classroom.academic_year.year + 1
+    target_academic_year = models.AcademicYear.objects.filter(year=target_year_value).first()
+    if not target_academic_year:
+        raise ValueError(
+            f"Academic year {target_year_value} hasn't been set up yet. "
+            "Create it under Academic Calendar before promoting this class."
+        )
+
+    existing_classroom = models.ClassRoom.objects.filter(
+        grade_level=next_grade, stream=source_classroom.stream, academic_year=target_academic_year,
+    ).first()
+
+    return {
+        "graduating": False,
+        "grade_level": next_grade,
+        "stream": source_classroom.stream,
+        "academic_year": target_academic_year,
+        "existing_classroom": existing_classroom,
+    }
+
+
+def get_or_create_next_classroom(source_classroom: models.ClassRoom) -> models.ClassRoom:
+    """Same resolution as above, but creates the target ClassRoom if it doesn't exist yet."""
+    info = resolve_next_classroom_target(source_classroom)
+    if info["graduating"]:
+        raise ValueError("This grade has no next grade configured - it's a graduating class, not a promotion.")
+
+    target_classroom, _ = models.ClassRoom.objects.get_or_create(
+        grade_level=info["grade_level"], stream=info["stream"], academic_year=info["academic_year"],
+    )
+    return target_classroom
+
+
+@transaction.atomic
+def bulk_promote_classroom_auto(source_classroom: models.ClassRoom, force: bool = False, promoted_by=None) -> dict:
+    """
+    The guarded, auto-targeting entry point the UI calls. Refuses outright
+    if this source_classroom already has a ClassroomPromotion record -
+    that's the single source of truth for "already promoted", independent
+    of how many ACTIVE enrollments happen to remain in it.
+    """
+    existing = models.ClassroomPromotion.objects.select_related("target_classroom").filter(
+        source_classroom=source_classroom
+    ).first()
+    if existing:
+        target_label = str(existing.target_classroom) if existing.target_classroom else "graduation"
+        raise ValueError(
+            f"This class has already been promoted (to {target_label}) on "
+            f"{existing.promoted_at:%d %b %Y, %H:%M} by "
+            f"{existing.promoted_by.get_full_name() if existing.promoted_by else 'an admin'}. "
+            "Ask an administrator to clear that record first if this needs to be redone."
+        )
+
+    next_grade = source_classroom.grade_level.next_grade
+
+    if next_grade is None:
+        # Top of the ladder (Grade 12 / Form 4) - nowhere to promote TO,
+        # so this bulk action graduates the class instead.
+        active = source_classroom.enrollments.filter(status=models.Enrollment.Status.ACTIVE)
+        count = active.count()
+        active.update(status=models.Enrollment.Status.GRADUATED)
+        models.ClassroomPromotion.objects.create(
+            source_classroom=source_classroom, target_classroom=None,
+            promoted_by=promoted_by, student_count=count,
+        )
+        return {"promoted": [], "failed": [], "graduated_count": count, "target_classroom": None}
+
+    target_classroom = get_or_create_next_classroom(source_classroom)
+    results = bulk_promote_classroom(source_classroom, target_classroom, force=force)  # existing function, unchanged
+
+    models.ClassroomPromotion.objects.create(
+        source_classroom=source_classroom,
+        target_classroom=target_classroom,
+        promoted_by=promoted_by,
+        student_count=len(results["promoted"]),
+    )
+    results["target_classroom"] = str(target_classroom)
+    results["target_classroom_id"] = target_classroom.id
+    results["graduated_count"] = 0
+    return results
+
+
 # ---------------------------------------------------------------------------
 # FEES - carry-forward ledger, STK push (with DEBUG bypass), receipts
 # ---------------------------------------------------------------------------
 def get_outstanding_balance(student: models.StudentProfile) -> Decimal:
     """
-    Sums balance (amount_due - amount_paid) across EVERY invoice this
-    student has ever had, across every enrollment/classroom/academic year.
-    Positive = still owes money overall. Negative = has a credit/prepaid
-    balance that will reduce what's due on their next invoice.
+    Sums each invoice's OWN term charge (amount_due minus whatever was
+    already brought forward into it) minus everything ever paid.
+
+    Summing amount_due directly double-counts arrears, since invoice N's
+    amount_due already includes invoice N-1's unpaid balance via
+    brought_forward - summing raw amount_due across invoices re-adds that
+    same arrears again for every later invoice. See Invoice.term_charge.
     """
     invoices = models.Invoice.objects.filter(enrollment__student=student)
-    total_due = invoices.aggregate(s=Sum("amount_due"))["s"] or Decimal("0")
+    total_charged = invoices.aggregate(
+        s=Sum(F("amount_due") - F("brought_forward"))
+    )["s"] or Decimal("0")
     total_paid = invoices.aggregate(s=Sum("amount_paid"))["s"] or Decimal("0")
-    return total_due - total_paid
+    return total_charged - total_paid
 
 
 def generate_invoice(enrollment: models.Enrollment, term: models.Term) -> models.Invoice:
@@ -350,13 +861,56 @@ def generate_receipt_no() -> str:
     return f"{prefix}{next_seq:05d}"
 
 
+def recalculate_student_invoice_chain(student: models.StudentProfile):
+    """
+    Walks every invoice for `student`, oldest term first, and recomputes
+    brought_forward / amount_due from ACTUAL payments made so far -
+    never trusting the stale snapshot Invoice.brought_forward normally
+    holds.
+
+    This is what fixes the "phantom balance" bug: if an older term's
+    invoice gets paid off directly, AFTER a newer invoice had already
+    baked that old unpaid amount in as its brought_forward, the newer
+    invoice's amount_due never used to shrink to reflect it - leaving a
+    balance that could never be cleared no matter what you paid.
+
+    Call this after EVERY payment (any invoice, any student) - see
+    record_payment() below - so the chain is always self-correcting
+    instead of drifting further out of sync over time.
+    """
+    invoices = list(
+        models.Invoice.objects.filter(enrollment__student=student)
+        .select_related("fee_structure")
+        .order_by("fee_structure__term__academic_year__year", "fee_structure__term__term_number")
+    )
+
+    running_balance = Decimal("0")  # unpaid (or credit, if negative) carried into the NEXT invoice
+    changed_ids = []
+
+    for invoice in invoices:
+        own_charge = invoice.fee_structure.total_amount
+        correct_brought_forward = running_balance
+        correct_amount_due = own_charge + correct_brought_forward
+
+        if invoice.brought_forward != correct_brought_forward or invoice.amount_due != correct_amount_due:
+            invoice.brought_forward = correct_brought_forward
+            invoice.amount_due = correct_amount_due
+            invoice.save(update_fields=["brought_forward", "amount_due"])
+            changed_ids.append(invoice.id)
+
+        # what carries into the NEXT invoice: this invoice's own balance
+        # (negative = this invoice is itself in credit)
+        running_balance = correct_amount_due - invoice.amount_paid
+
+    return changed_ids
+
+
 def record_payment(invoice: models.Invoice, amount: Decimal, method: str, reference: str, recorded_by):
     """
-    Records a payment against an invoice. Deliberately does NOT clamp the
-    amount to the outstanding balance - a student paying more than they owe
-    is allowed, and simply leaves the invoice with a negative `balance`
-    (a credit), which get_outstanding_balance() picks up and
-    generate_invoice() then carries forward to the next term automatically.
+    Records a payment against an invoice, then immediately recalculates
+    that student's ENTIRE invoice chain so every later invoice's
+    brought_forward/amount_due reflects what was just paid - regardless
+    of which invoice (oldest or not) the payment landed on.
     """
     payment = models.Payment.objects.create(
         invoice=invoice, amount=amount, method=method, reference=reference,
@@ -364,6 +918,10 @@ def record_payment(invoice: models.Invoice, amount: Decimal, method: str, refere
     )
     invoice.amount_paid = invoice.payments.aggregate(total=Sum("amount"))["total"] or 0
     invoice.save(update_fields=["amount_paid"])
+
+    recalculate_student_invoice_chain(invoice.enrollment.student)
+    invoice.refresh_from_db()  # amount_due/brought_forward may have just changed above
+
     return payment
 
 
@@ -488,30 +1046,50 @@ def generate_receipt_qr_base64(payment: models.Payment) -> str:
     return base64.b64encode(buffer.getvalue()).decode()
 
 
-# ---------------------------------------------------------------------------
-# BULK CLASSROOM CREATION
-# ---------------------------------------------------------------------------
-def bulk_create_classrooms(academic_year, grade_level_ids, stream_ids):
+def record_bulk_payment(student: models.StudentProfile, amount: Decimal, method: str, reference: str, recorded_by):
     """
-    Creates one ClassRoom for every (grade_level x stream) combination for
-    the given academic_year. Idempotent - if a classroom already exists
-    for a given combination (unique_together on ClassRoom), it's skipped
-    rather than erroring, so this is safe to re-run e.g. after adding a
-    new stream mid-year.
+    Pays a student's TOTAL outstanding balance in one call, applying it
+    oldest-invoice-first. Re-queries the student's invoices after EVERY
+    payment (rather than working off a list computed once up front)
+    because record_payment() now recalculates the whole chain each time,
+    which can shrink a later invoice's balance mid-loop.
     """
-    grade_levels = models.GradeLevel.objects.filter(id__in=grade_level_ids)
-    streams = models.Stream.objects.filter(id__in=stream_ids)
+    if amount <= 0:
+        raise ValueError("Payment amount must be greater than zero.")
 
-    created, skipped = [], []
-    for grade_level in grade_levels:
-        for stream in streams:
-            obj, was_created = models.ClassRoom.objects.get_or_create(
-                grade_level=grade_level, stream=stream, academic_year=academic_year,
-            )
-            (created if was_created else skipped).append(obj)
+    remaining = Decimal(amount)
+    payments = []
 
-    return {"created": created, "skipped": skipped}
+    while remaining > 0:
+        invoice = (
+            models.Invoice.objects.filter(enrollment__student=student, amount_due__gt=F("amount_paid"))
+            .select_related("fee_structure__term")
+            .order_by("fee_structure__term__academic_year__year", "fee_structure__term__term_number")
+            .first()
+        )
+        if not invoice:
+            break  # every invoice is fully settled
+        pay_amount = min(remaining, invoice.balance)
+        payments.append(record_payment(invoice, pay_amount, method, reference, recorded_by))
+        remaining -= pay_amount
 
+    if remaining > 0:
+        # every invoice fully settled but money's left over - park it as
+        # credit on the most recent invoice, same as an ordinary
+        # single-invoice overpayment
+        target = (
+            models.Invoice.objects.filter(enrollment__student=student)
+            .order_by("-fee_structure__term__academic_year__year", "-fee_structure__term__term_number")
+            .first()
+        )
+        if not target:
+            raise ValueError("This student has no invoices yet - nothing to pay against.")
+        payments.append(record_payment(target, remaining, method, reference, recorded_by))
+
+    if not payments:
+        raise ValueError("This student has no invoices yet - nothing to pay against.")
+
+    return payments
 
 
 # ---------------------------------------------------------------------------
@@ -671,8 +1249,8 @@ def run_daily_invoice_generation() -> dict:
         "terms_processed": len(results),
         "results": results,
     }
-    
-    
+
+
 # ---------------------------------------------------------------------------
 # PARENTS / GUARDIANS
 # ---------------------------------------------------------------------------
@@ -697,7 +1275,6 @@ def attach_guardian(
     Only creates a new User + ParentGuardianProfile when no matching
     parent account is found.
     """
-
     existing_user = models.User.objects.filter(
         role=models.User.Role.PARENT,
         phone_number=phone_number
@@ -755,19 +1332,80 @@ def attach_guardian(
     return guardian_profile
 
 
-# ===========================================================================
-# COMMUNICATIONS - append to services.py.
-# Needs at top of services.py (add if not already present):
-#   from django.conf import settings
-#   from django.core.mail import send_mail
-#   from django.utils import timezone
-#   from . import models
-#
-# ASSUMPTION: this calls services.get_outstanding_balance(student), inferred
-# from the docstring on Invoice.brought_forward referencing it. If your
-# actual signature differs, that's the only call site to fix.
-# ===========================================================================
+def upsert_guardian(
+    student: models.StudentProfile,
+    full_name: str,
+    phone_number: str,
+    relationship: str,
+    email: str = "",
+):
+    """
+    Used by the admin Edit-Student form to keep "one guardian per student"
+    in sync with whatever's typed in the form.
 
+    - If the student already has a guardian with the same phone number,
+      update their relationship, name, and email in place.
+    - If the phone number changed, remove the old guardian link and attach
+      the new guardian through attach_guardian().
+    - attach_guardian() handles reusing an existing PARENT account with
+      the same phone number.
+    - This intentionally supports one guardian per student through this form.
+      Students with multiple guardians can still be managed directly via
+      the parent-links endpoints.
+    """
+    if not phone_number:
+        return None
+
+    existing_links = (
+        models.ParentStudentLink.objects
+        .filter(student=student)
+        .select_related("parent__user")
+    )
+
+    match = existing_links.filter(
+        parent__user__phone_number=phone_number
+    ).first()
+
+    if match:
+        # Update relationship
+        if match.relationship != relationship:
+            match.relationship = relationship
+            match.save(update_fields=["relationship"])
+
+        # Update guardian name
+        if full_name and match.parent.user.get_full_name() != full_name:
+            parts = full_name.split(" ", 1)
+
+            match.parent.user.first_name = parts[0]
+            match.parent.user.last_name = parts[1] if len(parts) > 1 else ""
+
+            match.parent.user.save(
+                update_fields=["first_name", "last_name"]
+            )
+
+        # Update guardian email
+        if email and match.parent.user.email != email:
+            match.parent.user.email = email
+            match.parent.user.save(update_fields=["email"])
+
+        return match.parent
+
+    # Phone number changed / no matching guardian.
+    # Remove the old guardian link(s) and attach the new/reused guardian.
+    existing_links.delete()
+
+    return attach_guardian(
+        student,
+        full_name,
+        phone_number,
+        relationship,
+        email,
+    )
+
+
+# ---------------------------------------------------------------------------
+# COMMUNICATIONS & MESSAGING
+# ---------------------------------------------------------------------------
 def send_sms_notification(phone_number, message):
     """
     Placeholder SMS gateway. Wire this up to Africa's Talking, Twilio, etc.
@@ -870,13 +1508,8 @@ def _personalize_fee_body(communication, user, primary_student):
 
     lines = [communication.body, ""]
     for student in students:
-        try:
-            balance = get_outstanding_balance(student)  # existing helper - see module docstring above
-            lines.append(f"{student.user.get_full_name()} ({student.admission_no}): KES {balance:,.2f} outstanding")
-        except NameError:
-            # get_outstanding_balance isn't defined under that exact name in
-            # this project - adjust the call above to match your services.py.
-            break
+        balance = get_outstanding_balance(student)
+        lines.append(f"{student.user.get_full_name()} ({student.admission_no}): KES {balance:,.2f} outstanding")
     return "\n".join(lines)
 
 
@@ -924,318 +1557,34 @@ def send_communication(communication):
     return created
 
 
-
-import random
-from datetime import timedelta
-from django.conf import settings
-from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
-from django.utils.crypto import get_random_string
-from django.utils import timezone
-from rest_framework_simplejwt.tokens import RefreshToken
-
-from . import models, serializers, utils
-
-_signer = TimestampSigner(salt="2fa-login-challenge")
-
-
 # ---------------------------------------------------------------------------
-# TOKEN ISSUING
+# BULK CLASSROOM CREATION
 # ---------------------------------------------------------------------------
-def issue_tokens_for_user(user):
-    refresh = RefreshToken.for_user(user)
-    refresh["role"] = user.role
-    return {
-        "access": str(refresh.access_token),
-        "refresh": str(refresh),
-        "user": serializers.UserSerializer(user).data,
-    }
-
-
-def make_challenge_token(user):
-    return _signer.sign(str(user.id))
-
-
-def read_challenge_token(token):
-    """Returns the user id (a UUID string), or None if the token is missing/expired/tampered."""
-    try:
-        return _signer.unsign(token, max_age=settings.OTP_EXPIRY_MINUTES * 60)
-    except (BadSignature, SignatureExpired):
-        return None
-
-
-# ---------------------------------------------------------------------------
-# USERNAME VALIDATION (blocks the "giant garbage string" case)
-# ---------------------------------------------------------------------------
-def validate_login_username(username):
-    if not username or len(username) > utils.USERNAME_MAX_LENGTH or not utils.USERNAME_PATTERN.match(username):
-        raise ValueError("Invalid username format.")
-    return username
-
-
-# ---------------------------------------------------------------------------
-# LOCKOUT / FAILED ATTEMPTS
-# ---------------------------------------------------------------------------
-def register_failed_login(user, ip_address, result):
-    models.LoginAttemptLog.objects.create(
-        username_attempted=user.username, user=user, ip_address=ip_address, result=result
-    )
-
-    # In DEBUG, track it in the log for visibility but never actually lock
-    # the account - matches the STK-push DEBUG-bypass convention already
-    # used elsewhere in this codebase.
-    if settings.DEBUG or not user.requires_2fa:
-        return False
-
-    user.failed_login_attempts += 1
-    user.last_failed_login_at = timezone.now()
-    locked_now = False
-    if user.failed_login_attempts >= settings.ACCOUNT_LOCKOUT_MAX_ATTEMPTS:
-        user.locked_until = timezone.now() + timedelta(minutes=settings.ACCOUNT_LOCKOUT_DURATION_MINUTES)
-        locked_now = True
-
-    user.save(update_fields=["failed_login_attempts", "last_failed_login_at", "locked_until"])
-
-    if locked_now:
-        models.LoginAttemptLog.objects.create(
-            username_attempted=user.username, user=user, ip_address=ip_address,
-            result=models.LoginAttemptLog.Result.ACCOUNT_LOCKED,
-        )
-        notify_admins_account_locked(user)
-    elif user.failed_login_attempts == settings.ACCOUNT_LOCKOUT_MAX_ATTEMPTS - 1:
-        # warn admins one attempt before lockout, not on every single failure
-        notify_admins_suspicious_activity(user)
-
-    return locked_now
-
-
-def reset_failed_logins(user):
-    if user.failed_login_attempts or user.locked_until:
-        user.failed_login_attempts = 0
-        user.locked_until = None
-        user.save(update_fields=["failed_login_attempts", "locked_until"])
-
-
-def unlock_user(user):
-    user.failed_login_attempts = 0
-    user.locked_until = None
-    user.save(update_fields=["failed_login_attempts", "locked_until"])
-
-
-# ---------------------------------------------------------------------------
-# OTP (2FA) - Admin / Teacher / Finance only
-# ---------------------------------------------------------------------------
-def generate_and_send_otp(user):
-    code = f"{random.randint(0, 999999):06d}"
-    user.otp_code = code
-    user.otp_expires_at = timezone.now() + timedelta(minutes=settings.OTP_EXPIRY_MINUTES)
-    user.save(update_fields=["otp_code", "otp_expires_at"])
-
-    if settings.DEBUG:
-        # dev convenience only - never do this in production
-        print(f"[DEV OTP] {user.username} -> {code}")
-    else:
-        _dispatch_otp(user, code)
-
-    models.LoginAttemptLog.objects.create(
-        username_attempted=user.username, user=user, result=models.LoginAttemptLog.Result.OTP_SENT
-    )
-    return code
-
-
-def _dispatch_otp(user, code):
-    """Wire this to your real SMS/email provider. Placeholder uses Django's send_mail."""
-    from django.core.mail import send_mail
-    if user.email:
-        send_mail(
-            subject="Your login verification code",
-            message=f"Your one-time code is {code}. It expires in {settings.OTP_EXPIRY_MINUTES} minutes. "
-                    f"If you did not request this, contact IT immediately.",
-            from_email=None,
-            recipient_list=[user.email],
-        )
-    # else: plug in your SMS gateway (Africa's Talking / Twilio) using user.phone_number
-
-
-def verify_otp(user, submitted_code, ip_address):
-    submitted_code = (submitted_code or "").strip()
-
-    if not user.otp_code or not user.otp_expires_at or timezone.now() > user.otp_expires_at:
-        register_failed_login(user, ip_address, models.LoginAttemptLog.Result.OTP_FAILED)
-        return False
-    if submitted_code != user.otp_code.strip():
-        register_failed_login(user, ip_address, models.LoginAttemptLog.Result.OTP_FAILED)
-        return False
-
-    user.otp_code = None
-    user.otp_expires_at = None
-    user.save(update_fields=["otp_code", "otp_expires_at"])
-    models.LoginAttemptLog.objects.create(
-        username_attempted=user.username, user=user, ip_address=ip_address,
-        result=models.LoginAttemptLog.Result.OTP_SUCCESS,
-    )
-    return True
-
-
-# ---------------------------------------------------------------------------
-# ADMIN NOTIFICATIONS (reuses the existing Communication/notification system)
-# ---------------------------------------------------------------------------
-def _notify_admins(subject, body):
-    admin_ids = models.User.objects.filter(role=models.User.Role.ADMIN, is_active_staff=True)
-    if not admin_ids.exists():
-        return
-    comm = models.Communication.objects.create(
-        sender=None,
-        subject=subject,
-        body=body,
-        category=models.Communication.Category.GENERAL,
-        audience_type=models.Communication.AudienceType.ROLE,
-        target_roles=[models.User.Role.ADMIN],
-        include_students=False,
-        include_guardians=False,
-        send_in_app=True,
-        send_sms=False,
-        send_email=False,
-    )
-    send_communication(comm)  # existing function - resolves audience + dispatches
-
-
-def notify_admins_suspicious_activity(user):
-    _notify_admins(
-        subject=f"Repeated failed login: {user.get_full_name() or user.username}",
-        body=(
-            f"{user.username} ({user.get_role_display()}) has {user.failed_login_attempts} failed login "
-            f"attempt(s) at {timezone.now():%Y-%m-%d %H:%M}. One more failure will lock this account."
-        ),
-    )
-
-
-def notify_admins_account_locked(user):
-    _notify_admins(
-        subject=f"Account locked: {user.get_full_name() or user.username}",
-        body=(
-            f"{user.username} ({user.get_role_display()}) was locked after "
-            f"{user.failed_login_attempts} failed login attempts. Unlock it from User Accounts "
-            f"if this was the legitimate user."
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# STUDENT-ONLY PASSWORD RESET
-# ---------------------------------------------------------------------------
-def generate_password_reset_token(student_user):
-    token = get_random_string(48)
-    student_user.password_reset_token = token
-    student_user.password_reset_expires_at = timezone.now() + timedelta(
-        minutes=settings.PASSWORD_RESET_TOKEN_EXPIRY_MINUTES
-    )
-    student_user.save(update_fields=["password_reset_token", "password_reset_expires_at"])
-    return token
-
-
-def send_password_reset_link(student_user, token):
-    link = f"{settings.FRONTEND_URL}/reset-password/{token}"
-    if settings.DEBUG:
-        print(f"[DEV RESET LINK] {student_user.username} -> {link}")
-        return
-    from django.core.mail import send_mail
-    guardian_link = models.ParentStudentLink.objects.filter(
-        student__user=student_user
-    ).select_related("parent__user").first()
-    recipient_email = student_user.email or (guardian_link.parent.user.email if guardian_link else None)
-    if recipient_email:
-        send_mail(
-            subject="Password reset request",
-            message=f"A password reset was requested for admission number "
-                     f"{student_user.student_profile.admission_no}. "
-                     f"Use this link within {settings.PASSWORD_RESET_TOKEN_EXPIRY_MINUTES} minutes: {link}\n\n"
-                     f"If you didn't request this, ignore this message.",
-            from_email=None,
-            recipient_list=[recipient_email],
-        )
-        
-        
-
-def upsert_guardian(
-    student: models.StudentProfile,
-    full_name: str,
-    phone_number: str,
-    relationship: str,
-    email: str = "",
-):
+def bulk_create_classrooms(academic_year, grade_level_ids, stream_ids):
     """
-    Used by the admin Edit-Student form to keep "one guardian per student"
-    in sync with whatever's typed in the form.
-
-    - If the student already has a guardian with the same phone number,
-      update their relationship, name, and email in place.
-    - If the phone number changed, remove the old guardian link and attach
-      the new guardian through attach_guardian().
-    - attach_guardian() handles reusing an existing PARENT account with
-      the same phone number.
-    - This intentionally supports one guardian per student through this form.
-      Students with multiple guardians can still be managed directly via
-      the parent-links endpoints.
+    Creates one ClassRoom for every (grade_level x stream) combination for
+    the given academic_year. Idempotent - if a classroom already exists
+    for a given combination (unique_together on ClassRoom), it's skipped
+    rather than erroring, so this is safe to re-run e.g. after adding a
+    new stream mid-year.
     """
+    grade_levels = models.GradeLevel.objects.filter(id__in=grade_level_ids)
+    streams = models.Stream.objects.filter(id__in=stream_ids)
 
-    if not phone_number:
-        return None
-
-    existing_links = (
-        models.ParentStudentLink.objects
-        .filter(student=student)
-        .select_related("parent__user")
-    )
-
-    match = existing_links.filter(
-        parent__user__phone_number=phone_number
-    ).first()
-
-    if match:
-        # Update relationship
-        if match.relationship != relationship:
-            match.relationship = relationship
-            match.save(update_fields=["relationship"])
-
-        # Update guardian name
-        if full_name and match.parent.user.get_full_name() != full_name:
-            parts = full_name.split(" ", 1)
-
-            match.parent.user.first_name = parts[0]
-            match.parent.user.last_name = parts[1] if len(parts) > 1 else ""
-
-            match.parent.user.save(
-                update_fields=["first_name", "last_name"]
+    created, skipped = [], []
+    for grade_level in grade_levels:
+        for stream in streams:
+            obj, was_created = models.ClassRoom.objects.get_or_create(
+                grade_level=grade_level, stream=stream, academic_year=academic_year,
             )
+            (created if was_created else skipped).append(obj)
 
-        # Update guardian email
-        if email and match.parent.user.email != email:
-            match.parent.user.email = email
-            match.parent.user.save(update_fields=["email"])
-
-        return match.parent
-
-    # Phone number changed / no matching guardian.
-    # Remove the old guardian link(s) and attach the new/reused guardian.
-    existing_links.delete()
-
-    return attach_guardian(
-        student,
-        full_name,
-        phone_number,
-        relationship,
-        email,
-    )
-    
-    
-    
-# ===========================================================================
-# TIMETABLE MANAGEMENT - append to services.py
-# ===========================================================================
-from collections import defaultdict
-from itertools import cycle
+    return {"created": created, "skipped": skipped}
 
 
+# ---------------------------------------------------------------------------
+# TIMETABLE MANAGEMENT
+# ---------------------------------------------------------------------------
 def get_unallocated_subjects(academic_year, classroom=None):
     """
     For each classroom in academic_year (or just one, if given), returns the
@@ -1279,16 +1628,36 @@ def auto_generate_timetable(term):
     teacher (see full_allocation_check) - raises ValueError otherwise so
     the frontend can show exactly which classroom/subject is still open.
 
+    TEACHER CLASH RULE:
+    A teacher may only be in ONE (subject, classroom) at a time, with a
+    single deliberate exception: if the SAME teacher teaches the SAME
+    subject to a DIFFERENT stream of the SAME grade (e.g. Form 4 Blue and
+    Form 4 Red both doing Maths with the same teacher), those lessons are
+    allowed to share the same slot - that's a genuinely combined class,
+    not a double-booking. Any other overlap (different subject, and/or
+    different grade) is always blocked, no exceptions.
+
+    Classrooms are processed grade-by-grade, then stream name
+    alphabetically (e.g. "Form 4 Blue" before "Form 4 Red"), so that when
+    the second stream's allocation is placed, the scheduler actively
+    looks for the slot where the first stream's matching (teacher,
+    subject, grade) lesson already sits and tries to land on it - this is
+    what makes combining actually happen, rather than the two streams
+    merely avoiding a clash in unrelated slots.
+
     Algorithm (per classroom, subjects interleaved so the same subject
     doesn't cluster on one day):
       - build a "todo" queue from each TeacherSubjectAllocation's
         periods_per_week / double_lesson
-      - walk the week's days in round-robin, and for each todo item find
-        the first day where: the subject hasn't already been placed that
-        day (skipped for double lessons, which may still take 2 days) AND
-        there's a free block of the right size (1 or 2 consecutive
-        LESSON slots) AND the teacher isn't already busy in that slot
-        (checked against every other classroom too)
+      - walk the week's days in round-robin, and for each todo item:
+          1. FIRST try to align onto a slot where this exact teacher is
+             already teaching this exact subject to a sibling classroom
+             in the same grade (the "combine" pass).
+          2. Otherwise fall back to the normal search: the first day
+             where the subject hasn't already been placed that day
+             (skipped for double lessons) AND there's a free block of
+             the right size AND the teacher has no clashing booking
+             elsewhere (clashing = a different subject or grade).
       - anything that can't be placed after a full pass is reported back
         as "skipped" for manual placement on the grid
 
@@ -1315,14 +1684,37 @@ def auto_generate_timetable(term):
     if not days:
         raise ValueError({"detail": "No LESSON period slots configured yet. Set up the timetable structure first."})
 
-    classrooms = models.ClassRoom.objects.filter(academic_year=term.academic_year)
+    # Deterministic order: grade level sequence, then stream name -
+    # e.g. Form 4 Blue is fully placed before Form 4 Red is attempted,
+    # so Red's matching allocations have something to combine onto.
+    classrooms = models.ClassRoom.objects.filter(academic_year=term.academic_year).select_related(
+        "grade_level", "stream"
+    ).order_by("grade_level__level_order", "stream__name")
 
     # wipe only the auto-generated entries for this term - manual edits survive
     models.TimetableEntry.objects.filter(term=term, auto_generated=True).delete()
 
-    teacher_busy = defaultdict(set)  # period_slot_id -> {teacher_id, ...}
-    for entry in models.TimetableEntry.objects.filter(term=term).select_related("allocation"):
-        teacher_busy[entry.period_slot_id].add(entry.allocation.teacher_id)
+    # period_slot_id -> teacher_id -> [(subject_id, grade_level_id, classroom_id), ...]
+    teacher_busy = defaultdict(lambda: defaultdict(list))
+    for entry in models.TimetableEntry.objects.filter(term=term).select_related(
+        "allocation__subject", "classroom__grade_level"
+    ):
+        teacher_busy[entry.period_slot_id][entry.allocation.teacher_id].append(
+            (entry.allocation.subject_id, entry.classroom.grade_level_id, entry.classroom_id)
+        )
+
+    def bookings_compatible(bookings, subject_id, grade_level_id):
+        """True if the teacher's existing bookings at this slot are all the
+        SAME subject+grade as what we're trying to place (i.e. combinable),
+        or if there are no existing bookings at all."""
+        if not bookings:
+            return True
+        return all(b_subject == subject_id and b_grade == grade_level_id for b_subject, b_grade, _ in bookings)
+
+    def has_matching_presence(bookings, subject_id, grade_level_id):
+        """True if the teacher already has a compatible booking here that we
+        could combine onto (used only for the 'prefer to align' pass)."""
+        return bool(bookings) and bookings_compatible(bookings, subject_id, grade_level_id)
 
     created, skipped = [], []
 
@@ -1363,6 +1755,47 @@ def auto_generate_timetable(term):
 
         for alloc, block_size in queue:
             placed = False
+            grade_level_id = classroom.grade_level_id
+
+            # ---- Pass 1: try to COMBINE onto a slot where this teacher
+            # already teaches this exact subject to a sibling stream of
+            # the same grade. ----
+            for day in days:
+                if placed:
+                    break
+                if alloc.subject_id in subjects_placed_today[day] and not alloc.double_lesson:
+                    continue
+                slots = lesson_slots_by_day[day]
+                for start in range(len(slots) - block_size + 1):
+                    block = slots[start:start + block_size]
+                    if any(s.id in classroom_occupied for s in block):
+                        continue
+                    if not all(
+                        has_matching_presence(
+                            teacher_busy[s.id].get(alloc.teacher_id, []), alloc.subject_id, grade_level_id
+                        )
+                        for s in block
+                    ):
+                        continue
+                    for s in block:
+                        entry = models.TimetableEntry.objects.create(
+                            classroom=classroom, period_slot=s, term=term, allocation=alloc,
+                            is_double=(block_size == 2), auto_generated=True,
+                        )
+                        created.append(entry.id)
+                        classroom_occupied.add(s.id)
+                        teacher_busy[s.id][alloc.teacher_id].append((alloc.subject_id, grade_level_id, classroom.id))
+                    subjects_placed_today[day].add(alloc.subject_id)
+                    placed = True
+                    break
+
+            if placed:
+                continue
+
+            # ---- Pass 2: normal search. A teacher may be placed here only
+            # if they have no OTHER-subject/OTHER-grade booking in this
+            # slot; a matching (same subject+grade) booking is fine too,
+            # it just means Pass 1 will find it next time. ----
             for _ in range(len(days) * 2):  # bounded attempts across the week
                 day = next(day_cycle)
                 if alloc.subject_id in subjects_placed_today[day] and not alloc.double_lesson:
@@ -1372,7 +1805,12 @@ def auto_generate_timetable(term):
                     block = slots[start:start + block_size]
                     if any(s.id in classroom_occupied for s in block):
                         continue
-                    if any(alloc.teacher_id in teacher_busy[s.id] for s in block):
+                    if any(
+                        not bookings_compatible(
+                            teacher_busy[s.id].get(alloc.teacher_id, []), alloc.subject_id, grade_level_id
+                        )
+                        for s in block
+                    ):
                         continue
                     for s in block:
                         entry = models.TimetableEntry.objects.create(
@@ -1381,7 +1819,7 @@ def auto_generate_timetable(term):
                         )
                         created.append(entry.id)
                         classroom_occupied.add(s.id)
-                        teacher_busy[s.id].add(alloc.teacher_id)
+                        teacher_busy[s.id][alloc.teacher_id].append((alloc.subject_id, grade_level_id, classroom.id))
                     subjects_placed_today[day].add(alloc.subject_id)
                     placed = True
                     break
@@ -1394,116 +1832,6 @@ def auto_generate_timetable(term):
                 })
 
     return {"created_count": len(created), "skipped": skipped}
-
-
-
-# ---------------------------------------------------------------------------
-# CLASSROOM-LEVEL AUTO PROMOTION (resolves target itself, blocks re-runs)
-# ---------------------------------------------------------------------------
-
-def resolve_next_classroom_target(source_classroom: models.ClassRoom) -> dict:
-    """
-    Dry-run resolution of where `source_classroom` promotes TO: same
-    stream, grade_level.next_grade, and the AcademicYear whose year is
-    source_classroom.academic_year.year + 1. Curriculum-agnostic - this
-    walks the SAME next_grade chain whether the grade is CBC (Grade 9 ->
-    Grade 10 -> ...) or legacy 8-4-4 (Form 1 -> Form 2 -> Form 3 -> Form 4).
-    Does NOT create anything - used by the preview endpoint.
-    """
-    grade_level = source_classroom.grade_level
-    next_grade = grade_level.next_grade
-    if next_grade is None:
-        return {"graduating": True}
-
-    if next_grade.curriculum_type != grade_level.curriculum_type:
-        raise ValueError(
-            f"{grade_level}'s next grade is set to {next_grade}, which is a different "
-            f"curriculum ({next_grade.get_curriculum_type_display()} vs "
-            f"{grade_level.get_curriculum_type_display()}). Fix the 'next grade' link on "
-            "Grade Levels before promoting this class."
-        )
-
-    target_year_value = source_classroom.academic_year.year + 1
-    target_academic_year = models.AcademicYear.objects.filter(year=target_year_value).first()
-    if not target_academic_year:
-        raise ValueError(
-            f"Academic year {target_year_value} hasn't been set up yet. "
-            "Create it under Academic Calendar before promoting this class."
-        )
-
-    existing_classroom = models.ClassRoom.objects.filter(
-        grade_level=next_grade, stream=source_classroom.stream, academic_year=target_academic_year,
-    ).first()
-
-    return {
-        "graduating": False,
-        "grade_level": next_grade,
-        "stream": source_classroom.stream,
-        "academic_year": target_academic_year,
-        "existing_classroom": existing_classroom,
-    }
-    
-    
-
-def get_or_create_next_classroom(source_classroom: models.ClassRoom) -> models.ClassRoom:
-    """Same resolution as above, but creates the target ClassRoom if it doesn't exist yet."""
-    info = resolve_next_classroom_target(source_classroom)
-    if info["graduating"]:
-        raise ValueError("This grade has no next grade configured - it's a graduating class, not a promotion.")
-
-    target_classroom, _ = models.ClassRoom.objects.get_or_create(
-        grade_level=info["grade_level"], stream=info["stream"], academic_year=info["academic_year"],
-    )
-    return target_classroom
-
-
-@transaction.atomic
-def bulk_promote_classroom_auto(source_classroom: models.ClassRoom, force: bool = False, promoted_by=None) -> dict:
-    """
-    The guarded, auto-targeting entry point the UI calls. Refuses outright
-    if this source_classroom already has a ClassroomPromotion record -
-    that's the single source of truth for "already promoted", independent
-    of how many ACTIVE enrollments happen to remain in it.
-    """
-    existing = models.ClassroomPromotion.objects.select_related("target_classroom").filter(
-        source_classroom=source_classroom
-    ).first()
-    if existing:
-        target_label = str(existing.target_classroom) if existing.target_classroom else "graduation"
-        raise ValueError(
-            f"This class has already been promoted (to {target_label}) on "
-            f"{existing.promoted_at:%d %b %Y, %H:%M} by "
-            f"{existing.promoted_by.get_full_name() if existing.promoted_by else 'an admin'}. "
-            "Ask an administrator to clear that record first if this needs to be redone."
-        )
-
-    next_grade = source_classroom.grade_level.next_grade
-
-    if next_grade is None:
-        # Top of the ladder (Grade 12 / Form 4) - nowhere to promote TO,
-        # so this bulk action graduates the class instead.
-        active = source_classroom.enrollments.filter(status=models.Enrollment.Status.ACTIVE)
-        count = active.count()
-        active.update(status=models.Enrollment.Status.GRADUATED)
-        models.ClassroomPromotion.objects.create(
-            source_classroom=source_classroom, target_classroom=None,
-            promoted_by=promoted_by, student_count=count,
-        )
-        return {"promoted": [], "failed": [], "graduated_count": count, "target_classroom": None}
-
-    target_classroom = get_or_create_next_classroom(source_classroom)
-    results = bulk_promote_classroom(source_classroom, target_classroom, force=force)  # existing function, unchanged
-
-    models.ClassroomPromotion.objects.create(
-        source_classroom=source_classroom,
-        target_classroom=target_classroom,
-        promoted_by=promoted_by,
-        student_count=len(results["promoted"]),
-    )
-    results["target_classroom"] = str(target_classroom)
-    results["target_classroom_id"] = target_classroom.id
-    results["graduated_count"] = 0
-    return results
 
 
 # ---------------------------------------------------------------------------
@@ -1609,6 +1937,9 @@ def save_admin_exam_spreadsheet(exam: models.Exam, entries: list, entered_by) ->
     return {"saved": saved, "errors": errors}
 
 
+# ---------------------------------------------------------------------------
+# LICENSING / SUBSCRIPTIONS
+# ---------------------------------------------------------------------------
 class LicenseLimitExceeded(Exception):
     pass
 
@@ -1742,6 +2073,3 @@ def get_license_usage(school):
 
 def list_active_packages():
     return models.SubscriptionPackage.objects.filter(is_active=True).order_by("display_order", "monthly_price")
-
-
-

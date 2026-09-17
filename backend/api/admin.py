@@ -2,22 +2,25 @@
 Admin site configuration for the school management system.
 
 Organized to mirror models.py:
-  1. Identity & RBAC (User)
+  1. Identity & RBAC (User, LoginAttemptLog)
   2. School / Academic Calendar
-  3. Curriculum / Grade Structure
+  3. Curriculum / Grade Structure (incl. ClassroomPromotion tracking)
   4. Students, Guardians, Enrollment History
-  5. Subjects
+  5. Subjects (CBC Pathways + 8-4-4 Elective Groups/Tracks)
   6. Teacher Allocation
-  7. Exams, Results, Grading, Ranking
-  8. Promotion Rules
-  9. Fees (incl. M-Pesa STK push trail)
-  10. Licensing (tiers, tokens, subscription packages)
+  7. Timetable (PeriodSlot, TimetableEntry)
+  8. Exams, Results, Grading, Ranking
+  9. Promotion Rules
+  10. Fees (incl. M-Pesa STK push trail + missing-fee-structure alerts)
+  11. Communications & Messaging (broadcasts + 1:1 threads)
+  12. Licensing (tiers, tokens, subscription packages)
 
 Performance notes: several tables here (ExamResult, Enrollment, Invoice,
-Payment) can run into the tens of thousands of rows across 4 years of data,
-so FK widgets use autocomplete_fields/raw_id_fields instead of plain <select>
-dropdowns, list views use select_related, and the heaviest tables skip the
-exact row count query (show_full_result_count = False).
+Payment, CommunicationRecipient) can run into the tens of thousands of rows
+across several years of data, so FK widgets use autocomplete_fields/
+raw_id_fields instead of plain <select> dropdowns, list views use
+select_related, and the heaviest tables skip the exact row count query
+(show_full_result_count = False).
 """
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
@@ -25,12 +28,16 @@ from django.db.models import Sum
 from django.utils.html import format_html
 
 from api.models import (
-    AcademicYear, ClassRoom, Enrollment, Exam, ExamResult, ExamType,
-    FeeStructure, FeeStructureItem, GradeLevel, GradeSubject, GradingScale,
-    Invoice, MpesaSTKPushRequest, ParentGuardianProfile, ParentStudentLink,
-    Payment, PromotionRule, School, Stream, StudentProfile,
-    StudentSubjectSelection, Subject, SubjectPaper, SubjectSelectionRule,
-    Term, TeacherSubjectAllocation, TermPositionRanking, User,
+    AcademicYear, ClassRoom, ClassroomPromotion, Communication,
+    CommunicationRecipient, Conversation, DirectMessage, Enrollment, Exam,
+    ExamResult, ExamType, FeeStructure, FeeStructureItem,
+    FeeStructureMissingAlert, GradeLevel, GradeSubject, GradingScale,
+    Invoice, LoginAttemptLog, MpesaSTKPushRequest, ParentGuardianProfile,
+    ParentStudentLink, Pathway, Payment, PeriodSlot, PromotionRule, School,
+    SelectionTrack, Stream, StudentProfile, StudentSubjectSelection,
+    Subject, SubjectGroup, SubjectPaper, SubjectSelectionRule, Term,
+    TeacherSubjectAllocation, TermPositionRanking, TimetableEntry,
+    TrackGroupRule, User,
 )
 
 admin.site.site_header = "Masomo  School Administration"
@@ -57,6 +64,12 @@ STK_STATUS_COLORS = {
     "PENDING": "#ef6c00", "COMPLETED": "#2e7d32", "FAILED": "#c62828", "CANCELLED": "#757575",
 }
 
+LOGIN_RESULT_COLORS = {
+    "SUCCESS": "#2e7d32", "OTP_SUCCESS": "#2e7d32", "OTP_SENT": "#1565c0",
+    "BAD_PASSWORD": "#c62828", "UNKNOWN_USER": "#c62828", "OTP_FAILED": "#c62828",
+    "INVALID_FORMAT": "#c62828", "ACCOUNT_LOCKED": "#6a1b9a",
+}
+
 
 # ---------------------------------------------------------------------------
 # 1. IDENTITY & RBAC
@@ -65,15 +78,16 @@ STK_STATUS_COLORS = {
 class UserAdmin(DjangoUserAdmin):
     model = User
     ordering = ["-date_joined"]
-    list_display = ("username", "full_name", "role_badge", "email", "phone_number", "is_active", "is_staff")
+    list_display = ("username", "full_name","is_super_admin", "role_badge", "email", "phone_number", "is_active", "is_staff")
     list_filter = ("role", "is_active", "is_staff", "is_active_staff")
     search_fields = ("username", "first_name", "last_name", "email", "national_id", "phone_number")
     list_per_page = 50
 
+
     fieldsets = (
         (None, {"fields": ("username", "password")}),
         ("Personal info", {"fields": ("first_name", "last_name", "email", "phone_number", "national_id")}),
-        ("Role & status", {"fields": ("role", "is_active_staff", "is_active", "is_staff", "is_superuser")}),
+        ("Role & status", {"fields": ("role", "is_active_staff", "is_active", "is_staff", "is_superuser","is_super_admin")}),
         ("Permissions", {"fields": ("groups", "user_permissions")}),
         ("Important dates", {"fields": ("last_login", "date_joined")}),
     )
@@ -95,6 +109,35 @@ class UserAdmin(DjangoUserAdmin):
             "PARENT": "#ef6c00", "FINANCE": "#00838f",
         }
         return _badge(obj.get_role_display(), colors.get(obj.role, "#616161"))
+
+
+@admin.register(LoginAttemptLog)
+class LoginAttemptLogAdmin(admin.ModelAdmin):
+    """
+    Every login/OTP attempt, success or not - a system-generated audit
+    trail (see services.register_failed_login / generate_and_send_otp /
+    verify_otp). Never hand-created, so add is disabled; kept fully
+    read-only so nobody can quietly edit history.
+    """
+    list_display = ("username_attempted", "user", "result_badge", "ip_address", "created_at")
+    list_filter = ("result",)
+    search_fields = ("username_attempted", "ip_address", "user__username", "user__first_name", "user__last_name")
+    autocomplete_fields = ("user",)
+    list_select_related = ("user",)
+    list_per_page = 50
+    show_full_result_count = False
+    date_hierarchy = "created_at"
+    readonly_fields = [f.name for f in LoginAttemptLog._meta.fields]
+
+    @admin.display(description="Result")
+    def result_badge(self, obj):
+        return _badge(obj.get_result_display(), LOGIN_RESULT_COLORS.get(obj.result, "#616161"))
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +199,7 @@ class StreamAdmin(admin.ModelAdmin):
 
 @admin.register(ClassRoom)
 class ClassRoomAdmin(admin.ModelAdmin):
-    list_display = ("__str__", "grade_level", "stream", "academic_year", "class_teacher", "student_count")
+    list_display = ("__str__", "grade_level", "stream", "academic_year", "class_teacher", "student_count", "promoted_badge")
     list_filter = ("academic_year", "grade_level__curriculum_type", "grade_level", "stream")
     search_fields = (
         "grade_level__name", "stream__name",
@@ -169,6 +212,41 @@ class ClassRoomAdmin(admin.ModelAdmin):
     @admin.display(description="Students")
     def student_count(self, obj):
         return obj.enrollments.count()
+
+    @admin.display(description="Promoted?")
+    def promoted_badge(self, obj):
+        record = getattr(obj, "promotion_record", None)
+        if not record:
+            return "—"
+        target = record.target_classroom or "Graduated"
+        return _badge(f"-> {target}", "#1565c0")
+
+
+@admin.register(ClassroomPromotion)
+class ClassroomPromotionAdmin(admin.ModelAdmin):
+    """
+    One row per source classroom that has been bulk-promoted (see
+    services.bulk_promote_classroom_auto). Its existence is what blocks a
+    second bulk-promote run against the same classroom - the "Undo" action
+    on the API (ClassroomPromotionViewSet.undo) deletes this row to clear
+    that guard, so keep deletion available here too for support cases.
+    """
+    list_display = ("source_classroom", "target_or_graduated", "student_count", "promoted_by", "promoted_at")
+    list_filter = ("promoted_at",)
+    search_fields = (
+        "source_classroom__grade_level__name", "source_classroom__stream__name",
+        "target_classroom__grade_level__name", "target_classroom__stream__name",
+    )
+    autocomplete_fields = ("source_classroom", "target_classroom", "promoted_by")
+    list_select_related = (
+        "source_classroom__grade_level", "source_classroom__stream",
+        "target_classroom__grade_level", "target_classroom__stream", "promoted_by",
+    )
+    date_hierarchy = "promoted_at"
+
+    @admin.display(description="Promoted To")
+    def target_or_graduated(self, obj):
+        return str(obj.target_classroom) if obj.target_classroom else _badge("GRADUATED", "#6a1b9a")
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +348,7 @@ class EnrollmentAdmin(admin.ModelAdmin):
 
 
 # ---------------------------------------------------------------------------
-# 5. SUBJECTS
+# 5. SUBJECTS (CBC Pathways + 8-4-4 Elective Groups/Tracks)
 # ---------------------------------------------------------------------------
 class SubjectPaperInline(admin.TabularInline):
     model = SubjectPaper
@@ -279,9 +357,10 @@ class SubjectPaperInline(admin.TabularInline):
 
 @admin.register(Subject)
 class SubjectAdmin(admin.ModelAdmin):
-    list_display = ("name", "code", "curriculum_type", "has_papers")
-    list_filter = ("curriculum_type", "has_papers")
+    list_display = ("name", "code", "curriculum_type", "has_papers", "pathway", "elective_group")
+    list_filter = ("curriculum_type", "has_papers", "pathway", "elective_group")
     search_fields = ("name", "code")
+    autocomplete_fields = ("pathway", "elective_group")
     inlines = [SubjectPaperInline]
 
 
@@ -304,9 +383,10 @@ class GradeSubjectAdmin(admin.ModelAdmin):
 @admin.register(SubjectSelectionRule)
 class SubjectSelectionRuleAdmin(admin.ModelAdmin):
     list_display = (
-        "grade_level", "min_optional_subjects", "max_optional_subjects",
+        "grade_level", "requires_pathway", "min_optional_subjects", "max_optional_subjects",
         "min_total_subjects", "max_total_subjects",
     )
+    list_filter = ("requires_pathway",)
     autocomplete_fields = ("grade_level",)
 
 
@@ -321,13 +401,54 @@ class StudentSubjectSelectionAdmin(admin.ModelAdmin):
     show_full_result_count = False
 
 
+@admin.register(Pathway)
+class PathwayAdmin(admin.ModelAdmin):
+    """CBC pathway (STEM / Social Sciences / Arts & Sports Science) that a Subject or SubjectSelectionRule can require."""
+    list_display = ("name", "code", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("name", "code")
+    ordering = ("name",)
+
+
+@admin.register(SubjectGroup)
+class SubjectGroupAdmin(admin.ModelAdmin):
+    """8-4-4 elective category (Technical / Humanities / Sciences) - used by SelectionTrack/TrackGroupRule, fully independent of CBC Pathway."""
+    list_display = ("name", "code")
+    search_fields = ("name", "code")
+    ordering = ("name",)
+
+
+class TrackGroupRuleInline(admin.TabularInline):
+    model = TrackGroupRule
+    extra = 0
+    autocomplete_fields = ("group",)
+
+
+@admin.register(SelectionTrack)
+class SelectionTrackAdmin(admin.ModelAdmin):
+    """One allowed 8-4-4 elective 'path' at a grade, e.g. Form 3's 'Technical + Humanities' vs 'Triple Science'."""
+    list_display = ("grade_level", "name", "is_active")
+    list_filter = ("is_active", "grade_level__curriculum_type", "grade_level")
+    search_fields = ("name", "grade_level__name")
+    autocomplete_fields = ("grade_level",)
+    inlines = [TrackGroupRuleInline]
+
+
+@admin.register(TrackGroupRule)
+class TrackGroupRuleAdmin(admin.ModelAdmin):
+    list_display = ("track", "group", "min_choose", "max_choose")
+    list_filter = ("group",)
+    search_fields = ("track__name", "group__name")
+    autocomplete_fields = ("track", "group")
+
+
 # ---------------------------------------------------------------------------
 # 6. TEACHER ALLOCATION
 # ---------------------------------------------------------------------------
 @admin.register(TeacherSubjectAllocation)
 class TeacherSubjectAllocationAdmin(admin.ModelAdmin):
-    list_display = ("teacher", "subject", "classroom", "academic_year")
-    list_filter = ("academic_year", "subject__curriculum_type")
+    list_display = ("teacher", "subject", "classroom", "academic_year", "periods_per_week", "double_lesson")
+    list_filter = ("academic_year", "subject__curriculum_type", "double_lesson")
     search_fields = (
         "teacher__first_name", "teacher__last_name", "teacher__username",
         "subject__name", "subject__code", "classroom__grade_level__name",
@@ -338,7 +459,47 @@ class TeacherSubjectAllocationAdmin(admin.ModelAdmin):
 
 
 # ---------------------------------------------------------------------------
-# 7. EXAMS, RESULTS, GRADING, RANKING
+# 7. TIMETABLE
+# ---------------------------------------------------------------------------
+@admin.register(PeriodSlot)
+class PeriodSlotAdmin(admin.ModelAdmin):
+    """
+    The shared weekly structure (one row per day+order) that every
+    classroom's timetable is built from - see the bulk-set endpoint on
+    PeriodSlotViewSet for the usual way this gets edited (Structure Setup
+    tab), rather than row by row here.
+    """
+    list_display = ("day", "order", "slot_type", "label", "start_time", "end_time")
+    list_filter = ("day", "slot_type")
+    search_fields = ("label",)
+    ordering = ("day", "order")
+
+
+@admin.register(TimetableEntry)
+class TimetableEntryAdmin(admin.ModelAdmin):
+    list_display = (
+        "classroom", "term", "period_slot", "allocation", "is_double", "auto_generated_badge",
+    )
+    list_filter = ("term__academic_year", "auto_generated", "is_double", "period_slot__day")
+    search_fields = (
+        "classroom__grade_level__name", "classroom__stream__name",
+        "allocation__subject__name", "allocation__teacher__first_name", "allocation__teacher__last_name",
+    )
+    autocomplete_fields = ("classroom", "period_slot", "term", "allocation")
+    list_select_related = (
+        "classroom__grade_level", "classroom__stream", "period_slot", "term__academic_year",
+        "allocation__subject", "allocation__teacher",
+    )
+    list_per_page = 50
+    show_full_result_count = False
+
+    @admin.display(description="Origin", boolean=False)
+    def auto_generated_badge(self, obj):
+        return _badge("Auto", "#1565c0") if obj.auto_generated else _badge("Manual", "#757575")
+
+
+# ---------------------------------------------------------------------------
+# 8. EXAMS, RESULTS, GRADING, RANKING
 # ---------------------------------------------------------------------------
 @admin.register(ExamType)
 class ExamTypeAdmin(admin.ModelAdmin):
@@ -427,7 +588,7 @@ class TermPositionRankingAdmin(admin.ModelAdmin):
 
 
 # ---------------------------------------------------------------------------
-# 8. PROMOTION RULES
+# 9. PROMOTION RULES
 # ---------------------------------------------------------------------------
 @admin.register(PromotionRule)
 class PromotionRuleAdmin(admin.ModelAdmin):
@@ -436,7 +597,7 @@ class PromotionRuleAdmin(admin.ModelAdmin):
 
 
 # ---------------------------------------------------------------------------
-# 9. FEES (incl. M-Pesa STK push trail)
+# 10. FEES (incl. M-Pesa STK push trail + missing-fee-structure alerts)
 # ---------------------------------------------------------------------------
 class FeeStructureItemInline(admin.TabularInline):
     model = FeeStructureItem
@@ -547,8 +708,112 @@ class MpesaSTKPushRequestAdmin(admin.ModelAdmin):
         return _badge(obj.get_status_display(), STK_STATUS_COLORS.get(obj.status, "#616161"))
 
 
+@admin.register(FeeStructureMissingAlert)
+class FeeStructureMissingAlertAdmin(admin.ModelAdmin):
+    """
+    Raised automatically by services.generate_invoices_for_term whenever a
+    (grade_level, term) has active students but no FeeStructure configured.
+    Auto-resolves once ICT/Finance adds the missing FeeStructure and the
+    engine successfully invoices that grade/term - the action below is a
+    manual override for support cases only.
+    """
+    list_display = ("grade_level", "term", "affected_student_count", "resolved_badge", "first_detected_at", "last_checked_at")
+    list_filter = ("is_resolved", "term__academic_year", "grade_level__curriculum_type")
+    search_fields = ("grade_level__name",)
+    autocomplete_fields = ("grade_level", "term")
+    list_select_related = ("grade_level", "term__academic_year")
+    date_hierarchy = "first_detected_at"
+    actions = ["mark_resolved"]
 
-from django.contrib import admin
+    @admin.display(description="Status")
+    def resolved_badge(self, obj):
+        return _badge("Resolved", "#2e7d32") if obj.is_resolved else _badge("Open", "#c62828")
+
+    @admin.action(description="Mark selected alerts as resolved")
+    def mark_resolved(self, request, queryset):
+        from django.utils import timezone as _tz
+        updated = queryset.update(is_resolved=True, resolved_at=_tz.now())
+        self.message_user(request, f"{updated} alert(s) marked resolved.")
+
+
+# ---------------------------------------------------------------------------
+# 11. COMMUNICATIONS & MESSAGING
+# ---------------------------------------------------------------------------
+@admin.register(Communication)
+class CommunicationAdmin(admin.ModelAdmin):
+    """
+    Admin/Finance broadcasts (see services.send_communication). Normally
+    created via the Communications page, not here, but kept editable for
+    support/debugging - creating one here does NOT re-send it, since
+    dispatch only happens inside CommunicationCreateSerializer.create().
+    """
+    list_display = ("subject", "category", "audience_type", "sender", "recipient_count", "created_at")
+    list_filter = ("category", "audience_type", "send_in_app", "send_sms", "send_email")
+    search_fields = ("subject", "body", "sender__first_name", "sender__last_name")
+    autocomplete_fields = ("sender", "academic_year", "grade_level", "classroom")
+    filter_horizontal = ("target_students",)
+    list_select_related = ("sender", "academic_year", "grade_level", "classroom")
+    date_hierarchy = "created_at"
+
+    @admin.display(description="Recipients")
+    def recipient_count(self, obj):
+        return obj.recipients.values("user_id").distinct().count()
+
+
+@admin.register(CommunicationRecipient)
+class CommunicationRecipientAdmin(admin.ModelAdmin):
+    """Per-(communication, user, channel) delivery record - also what powers each user's navbar bell for the IN_APP channel. Can grow large, so paginated and read-mostly."""
+    list_display = ("communication", "user", "channel", "status_badge", "is_read", "sent_at")
+    list_filter = ("channel", "status", "is_read")
+    search_fields = (
+        "communication__subject", "user__first_name", "user__last_name", "user__username", "error_message",
+    )
+    autocomplete_fields = ("communication", "user")
+    list_select_related = ("communication", "user")
+    list_per_page = 50
+    show_full_result_count = False
+
+    @admin.display(description="Status")
+    def status_badge(self, obj):
+        colors = {"PENDING": "#ef6c00", "SENT": "#2e7d32", "FAILED": "#c62828"}
+        return _badge(obj.get_status_display(), colors.get(obj.status, "#616161"))
+
+
+@admin.register(Conversation)
+class ConversationAdmin(admin.ModelAdmin):
+    """1:1 thread, e.g. a class teacher and a parent discussing their child."""
+    list_display = ("id", "participant_names", "student", "created_at")
+    search_fields = (
+        "participants__first_name", "participants__last_name", "participants__username",
+        "student__admission_no", "student__user__first_name", "student__user__last_name",
+    )
+    autocomplete_fields = ("student",)
+    filter_horizontal = ("participants",)
+    date_hierarchy = "created_at"
+
+    @admin.display(description="Participants")
+    def participant_names(self, obj):
+        return ", ".join(u.get_full_name() or u.username for u in obj.participants.all()[:3])
+
+
+@admin.register(DirectMessage)
+class DirectMessageAdmin(admin.ModelAdmin):
+    list_display = ("conversation", "sender", "body_preview", "created_at")
+    search_fields = ("body", "sender__first_name", "sender__last_name", "sender__username")
+    autocomplete_fields = ("conversation", "sender")
+    list_select_related = ("conversation", "sender")
+    list_per_page = 50
+    show_full_result_count = False
+    date_hierarchy = "created_at"
+
+    @admin.display(description="Message")
+    def body_preview(self, obj):
+        return (obj.body[:60] + "…") if len(obj.body) > 60 else obj.body
+
+
+# ---------------------------------------------------------------------------
+# 12. LICENSING (SaaS plan tiers, upgrade tokens, subscription packages)
+# ---------------------------------------------------------------------------
 from django.utils import timezone
 from django.contrib import messages
 from . import models

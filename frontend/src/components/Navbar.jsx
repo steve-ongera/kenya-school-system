@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { useFullscreen } from "../hooks/useFullscreen";
 import { notificationApi, messagingApi } from "../services/api";
 import { NAV_BY_ROLE } from "../config/navigation";
 
@@ -39,6 +40,7 @@ const MAX_SUGGESTIONS = 8;
 export default function Navbar({ onToggleSidebar }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const { isFullscreen, toggle: toggleFullscreen } = useFullscreen();
 
   const [openMenu, setOpenMenu] = useState(null); // 'notifications' | 'messages' | 'profile' | null
   const [query, setQuery] = useState("");
@@ -251,6 +253,16 @@ export default function Navbar({ onToggleSidebar }) {
       <div className="app-navbar__spacer" />
 
       <div ref={containerRef} className="d-flex align-items-center gap-1">
+        {/* Fullscreen toggle */}
+        <button
+          className="app-navbar__icon-btn"
+          onClick={toggleFullscreen}
+          aria-label={isFullscreen ? "Exit fullscreen" : "Maximize screen"}
+          title={isFullscreen ? "Exit fullscreen" : "Maximize screen"}
+        >
+          <i className={`bi ${isFullscreen ? "bi-fullscreen-exit" : "bi-arrows-fullscreen"}`}></i>
+        </button>
+
         {/* Notifications */}
         <div className="position-relative">
           <button

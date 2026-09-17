@@ -148,6 +148,37 @@ export default function AdminMarkEntry() {
     }
   };
 
+  // ==========================================================================
+  // 🧪 DEV / TESTING ONLY — DELETE THIS FUNCTION AND ITS BUTTON BELOW BEFORE
+  // SHIPPING TO PRODUCTION. Fills every visible cell in the loaded spreadsheet
+  // with a random mark (30%-95% of that column's max_marks) purely client-side
+  // — nothing is sent to the server until the real "Save All Marks" is clicked.
+  // ==========================================================================
+  const seedDemoMarks = () => {
+    if (!sheet) return;
+    setCells((prev) => {
+      const next = { ...prev };
+      sheet.students.forEach((s) => {
+        sheet.subjects.forEach((subj) => {
+          subj.columns.forEach((col) => {
+            const key = `${s.enrollment_id}:${subj.subject_id}:${col.paper_id ?? "single"}`;
+            const max = col.max_marks || 100;
+            const min = Math.round(max * 0.3);
+            const cap = Math.round(max * 0.95);
+            const value = Math.floor(min + Math.random() * (cap - min + 1));
+            next[key] = { marks_obtained: String(value) };
+          });
+        });
+      });
+      return next;
+    });
+    setMessage("Demo marks filled in locally (not saved yet). Click Save All Marks to persist, or reload the page to discard.");
+    setMessageType("warning");
+  };
+  // ==========================================================================
+  // 🧪 END DEV / TESTING ONLY BLOCK
+  // ==========================================================================
+
   const save = async () => {
     if (!sheet) return;
     setSaving(true);
@@ -337,9 +368,20 @@ export default function AdminMarkEntry() {
           </div>
 
           {sheet.students.length > 0 && (
-            <div className="p-3">
+            <div className="p-3 d-flex gap-2 align-items-center flex-wrap">
               <button className="btn btn-success" disabled={saving} onClick={save}>
                 {saving ? "Saving..." : "Save All Marks"}
+              </button>
+
+              {/* 🧪 DEV/TESTING ONLY — remove this button before production 🧪 */}
+              <button
+                type="button"
+                className="btn btn-warning border border-danger border-2"
+                style={{ fontWeight: 700 }}
+                onClick={seedDemoMarks}
+                title="DEV ONLY: fills the grid with random marks for testing — remove before production"
+              >
+                🧪 Seed Demo Marks (DEV ONLY — REMOVE ME)
               </button>
             </div>
           )}

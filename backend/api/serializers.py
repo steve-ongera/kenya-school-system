@@ -2,9 +2,11 @@ from django.contrib.auth import password_validation
 from rest_framework import serializers
 from decimal import Decimal
 from django.db.models import Count
+from django.db import transaction
+
 from . import utils
 from . import models, services
-from django.db import transaction
+
 
 # ---------------------------------------------------------------------------
 # USERS / AUTH
@@ -102,8 +104,6 @@ class ChangePasswordSerializer(serializers.Serializer):
         return value
 
 
-from . import utils
-
 class LoginRequestSerializer(serializers.Serializer):
     # hard length cap rejects the "600-character garbage username" case
     # before it ever touches the database
@@ -124,6 +124,7 @@ class VerifyOtpSerializer(serializers.Serializer):
         trim_whitespace=True,
         error_messages={"invalid": "Enter the 6-digit code."},
     )
+
 
 class ForgotPasswordRequestSerializer(serializers.Serializer):
     admission_no = serializers.CharField(max_length=30)
@@ -154,6 +155,8 @@ class LoginAttemptLogSerializer(serializers.ModelSerializer):
             "id", "username_attempted", "user", "user_full_name", "user_role",
             "ip_address", "result", "created_at",
         ]
+
+
 # ---------------------------------------------------------------------------
 # SCHOOL / CALENDAR
 # ---------------------------------------------------------------------------
@@ -192,7 +195,6 @@ class StreamSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-
 class ClassRoomSerializer(serializers.ModelSerializer):
     grade_level_name = serializers.CharField(source="grade_level.name", read_only=True)
     curriculum_type = serializers.CharField(source="grade_level.curriculum_type", read_only=True)
@@ -202,15 +204,33 @@ class ClassRoomSerializer(serializers.ModelSerializer):
     student_count = serializers.SerializerMethodField()
     academic_year_year = serializers.IntegerField(source="academic_year.year", read_only=True)
     academic_year_is_current = serializers.BooleanField(source="academic_year.is_current", read_only=True)
+    # Lets the frontend show "Promoted -> Grade 10 (2027)" or "Graduated"
+    # on a past classroom instead of just an empty student_count.
+    is_promoted = serializers.SerializerMethodField()
+    promoted_to_label = serializers.SerializerMethodField()
 
     class Meta:
         model = models.ClassRoom
         fields = "__all__"
 
     def get_student_count(self, obj):
+        # Deliberately ACTIVE-only: this is "how many students are sitting
+        # in this class right now", used on the live Classes page. It
+        # correctly goes to 0 once the class is promoted - the /students/
+        # roster endpoint must NOT use this same filter, or it will hide
+        # the historical list entirely.
         return obj.enrollments.filter(status=models.Enrollment.Status.ACTIVE).count()
-    
-    
+
+    def get_is_promoted(self, obj):
+        return hasattr(obj, "promotion_record")
+
+    def get_promoted_to_label(self, obj):
+        record = getattr(obj, "promotion_record", None)
+        if not record:
+            return None
+        return str(record.target_classroom) if record.target_classroom else "Graduated"
+
+
 # ---------------------------------------------------------------------------
 # STUDENTS / GUARDIANS / ENROLLMENT
 # ---------------------------------------------------------------------------
@@ -228,8 +248,6 @@ class StudentProfileSerializer(serializers.ModelSerializer):
 
 
 class StudentEnrollSerializer(serializers.Serializer):
-    """Used by the admin 'admit new student' endpoint - creates User + StudentProfile + Enrollment (+ parent/guardian) together."""
-
     first_name = serializers.CharField()
     last_name = serializers.CharField()
     email = serializers.EmailField(required=False, allow_blank=True)
@@ -241,33 +259,47 @@ class StudentEnrollSerializer(serializers.Serializer):
     classroom_id = serializers.PrimaryKeyRelatedField(queryset=models.ClassRoom.objects.all())
     upi_number = serializers.CharField(required=False, allow_blank=True)
 
-    # Parent/guardian - optional, but strongly recommended so fee
-    # notifications and communication have somewhere to go.
+    # For migrating a student who already has an admission number and a
+    # real admission date from a previous system. Leave both blank for a
+    # genuinely new admission: admission_no auto-generates as normal, and
+    # date_admitted defaults to today (the model's own default).
+    admission_no = serializers.CharField(
+        required=False, allow_blank=True, max_length=30,
+        help_text="Leave blank to auto-generate. Provide one only when migrating an "
+                   "already-admitted student from a previous system.",
+    )
+    date_admitted = serializers.DateField(
+        required=False, allow_null=True,
+        help_text="Leave blank to default to today. Provide the original admission date "
+                   "when migrating an already-admitted student.",
+    )
+
     parent_name = serializers.CharField(required=False, allow_blank=True)
     parent_phone = serializers.CharField(required=False, allow_blank=True, max_length=20)
-    parent_email = serializers.EmailField(required=False, allow_blank=True)   # add near parent_name/parent_phone
+    parent_email = serializers.EmailField(required=False, allow_blank=True)
     parent_relationship = serializers.ChoiceField(
         choices=models.ParentStudentLink.Relationship.choices,
         required=False,
         default=models.ParentStudentLink.Relationship.GUARDIAN,
     )
 
-    def validate_national_id(self, value):
+    def validate_admission_no(self, value):
+        value = value.strip()
         if not value:
             return value
-        if models.User.objects.filter(national_id=value).exists():
-            raise serializers.ValidationError("This national ID is already registered to another account.")
+        if models.StudentProfile.objects.filter(admission_no=value).exists():
+            raise serializers.ValidationError("This admission number is already in use.")
+        # The username is derived from admission_no with "/" -> "-", so two
+        # differently-formatted admission numbers could still collide on
+        # username - catch that here rather than as an opaque 500 on save.
+        username_candidate = value.replace("/", "-")
+        if models.User.objects.filter(username=username_candidate).exists():
+            raise serializers.ValidationError(
+                f"The username '{username_candidate}' derived from this admission number is already taken."
+            )
         return value
 
     def validate_classroom_id(self, value):
-        """
-        Guards against admitting a student into a classroom from a
-        non-current academic year (e.g. 2023) - which silently produces a
-        student whose current_classroom never shows up anywhere, since
-        StudentProfile.current_enrollment filters on
-        academic_year__is_current=True. Catching it here means this can't
-        happen again even if the frontend dropdown ever regresses.
-        """
         if not value.academic_year.is_current:
             raise serializers.ValidationError(
                 f"'{value}' belongs to {value.academic_year.year}, which is not the current "
@@ -280,13 +312,18 @@ class StudentEnrollSerializer(serializers.Serializer):
         parent_name = validated_data.pop("parent_name", "").strip()
         parent_phone = validated_data.pop("parent_phone", "").strip()
         parent_email = validated_data.pop("parent_email", "").strip()
-        
         parent_relationship = validated_data.pop(
             "parent_relationship", models.ParentStudentLink.Relationship.GUARDIAN
         )
 
+        # Use the supplied admission_no / date_admitted if given, otherwise
+        # fall back to the auto-generate / today's-date behavior.
+        admission_no = validated_data.pop("admission_no", "").strip()
+        date_admitted = validated_data.pop("date_admitted", None)
+
         year = classroom.academic_year.year
-        admission_no = services.generate_admission_no(year)
+        if not admission_no:
+            admission_no = services.generate_admission_no(year)
 
         user = models.User.objects.create(
             username=admission_no.replace("/", "-"),
@@ -297,15 +334,10 @@ class StudentEnrollSerializer(serializers.Serializer):
             national_id=validated_data.get("national_id") or None,
             role=models.User.Role.STUDENT,
         )
-        # Fixed default password for every new student - "password123" -
-        # matching services.reset_student_password()'s own default, so
-        # there's exactly one default password for the front desk to
-        # remember, instead of the admission number (which changes per
-        # student and is easy to mistype when read out verbally).
         user.set_password("password123")
         user.save()
 
-        profile = models.StudentProfile.objects.create(
+        profile_kwargs = dict(
             user=user,
             admission_no=admission_no,
             gender=validated_data["gender"],
@@ -313,21 +345,17 @@ class StudentEnrollSerializer(serializers.Serializer):
             curriculum_type=validated_data["curriculum_type"],
             upi_number=validated_data.get("upi_number", ""),
         )
+        if date_admitted:
+            profile_kwargs["date_admitted"] = date_admitted
+        profile = models.StudentProfile.objects.create(**profile_kwargs)
+
         enrollment = models.Enrollment.objects.create(
             student=profile, classroom=classroom, academic_year=classroom.academic_year,
         )
 
-        # Link (or create) the parent/guardian, if one was provided at
-        # the admission desk.
         if parent_phone:
-                   services.attach_guardian(profile, parent_name, parent_phone, parent_relationship, parent_email)
+            services.attach_guardian(profile, parent_name, parent_phone, parent_relationship, parent_email)
 
-        # Invoice the student for the current term right away, so admitting
-        # someone mid-term (e.g. a walk-in admission today) doesn't leave
-        # them without a fee statement until tomorrow's scheduled run.
-        # If the current term's FeeStructure for this grade isn't set up
-        # yet, this quietly raises the same FeeStructureMissingAlert the
-        # daily engine would - it never blocks admission.
         current_term = models.Term.objects.filter(is_current=True).first()
         if current_term:
             try:
@@ -362,7 +390,7 @@ class StudentEnrollSerializer(serializers.Serializer):
                 "relationship": guardian_link.get_relationship_display(),
             } if guardian_link else None,
         }
-        
+
 
 class ParentGuardianProfileSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(source="user.get_full_name", read_only=True)
@@ -382,10 +410,19 @@ class EnrollmentSerializer(serializers.ModelSerializer):
     student_name = serializers.CharField(source="student.user.get_full_name", read_only=True)
     admission_no = serializers.CharField(source="student.admission_no", read_only=True)
     classroom_label = serializers.CharField(source="classroom.__str__", read_only=True)
+    grade_level_id = serializers.IntegerField(source="classroom.grade_level_id", read_only=True)
+    grade_level_name = serializers.CharField(source="classroom.grade_level.name", read_only=True)
+    curriculum_type = serializers.CharField(source="classroom.grade_level.curriculum_type", read_only=True)
+    pathway_name = serializers.CharField(source="pathway.name", read_only=True)
+    selection_track_name = serializers.CharField(source="selection_track.name", read_only=True)
+    subjects_locked = serializers.SerializerMethodField()
 
     class Meta:
         model = models.Enrollment
         fields = "__all__"
+
+    def get_subjects_locked(self, obj):
+        return obj.subjects_locked_at is not None
 
 
 class PromoteSerializer(serializers.Serializer):
@@ -397,272 +434,6 @@ class BulkPromoteSerializer(serializers.Serializer):
     source_classroom_id = serializers.PrimaryKeyRelatedField(queryset=models.ClassRoom.objects.all())
     target_classroom_id = serializers.PrimaryKeyRelatedField(queryset=models.ClassRoom.objects.all())
     force = serializers.BooleanField(default=False)
-
-
-# ---------------------------------------------------------------------------
-# SUBJECTS
-# ---------------------------------------------------------------------------
-class SubjectPaperSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = models.SubjectPaper
-        fields = "__all__"
-
-
-class SubjectSerializer(serializers.ModelSerializer):
-    papers = SubjectPaperSerializer(many=True, read_only=True)
-
-    class Meta:
-        model = models.Subject
-        fields = "__all__"
-
-
-class GradeSubjectSerializer(serializers.ModelSerializer):
-    subject_name = serializers.CharField(source="subject.name", read_only=True)
-
-    class Meta:
-        model = models.GradeSubject
-        fields = "__all__"
-
-
-class SubjectSelectionRuleSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = models.SubjectSelectionRule
-        fields = "__all__"
-
-
-class SetStudentSubjectsSerializer(serializers.Serializer):
-    subject_ids = serializers.ListField(child=serializers.IntegerField())
-
-
-class StudentSubjectSelectionSerializer(serializers.ModelSerializer):
-    subject_name = serializers.CharField(source="subject.name", read_only=True)
-
-    class Meta:
-        model = models.StudentSubjectSelection
-        fields = "__all__"
-
-
-# ---------------------------------------------------------------------------
-# TEACHER ALLOCATION
-# ---------------------------------------------------------------------------
-class TeacherSubjectAllocationSerializer(serializers.ModelSerializer):
-    teacher_name = serializers.CharField(source="teacher.get_full_name", read_only=True)
-    subject_name = serializers.CharField(source="subject.name", read_only=True)
-    classroom_label = serializers.CharField(source="classroom.__str__", read_only=True)
-
-    class Meta:
-        model = models.TeacherSubjectAllocation
-        fields = "__all__"
-
-
-# ---------------------------------------------------------------------------
-# EXAMS / RESULTS / GRADING / RANKING
-# ---------------------------------------------------------------------------
-class ExamTypeSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = models.ExamType
-        fields = "__all__"
-
-
-class ExamSerializer(serializers.ModelSerializer):
-    exam_type_name = serializers.CharField(source="exam_type.name", read_only=True)
-    term_label = serializers.CharField(source="term.__str__", read_only=True)
-
-    class Meta:
-        model = models.Exam
-        fields = "__all__"
-
-
-
-class ExamResultSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source="enrollment.student.user.get_full_name", read_only=True)
-    admission_no = serializers.CharField(source="enrollment.student.admission_no", read_only=True)
-    subject_name = serializers.CharField(source="subject.name", read_only=True)
-    paper_name = serializers.SerializerMethodField()
-    percentage = serializers.ReadOnlyField()
- 
-    class Meta:
-        model = models.ExamResult
-        fields = "__all__"
-        read_only_fields = ["entered_by", "entered_at"]
- 
-    def get_paper_name(self, obj):
-        return obj.paper.name if obj.paper_id else None
- 
-    def validate(self, attrs):
-        marks = attrs.get("marks_obtained")
-        max_marks = attrs.get("max_marks", 100)
-        is_absent = attrs.get("is_absent", False)
-        if not is_absent:
-            if marks is None:
-                raise serializers.ValidationError("marks_obtained is required unless is_absent is true.")
-            if marks < 0 or marks > max_marks:
-                raise serializers.ValidationError("marks_obtained must be between 0 and max_marks.")
-        return attrs
- 
-
-
-class BulkExamResultRowSerializer(serializers.Serializer):
-    """One row of a bulk mark-entry sheet submitted by a teacher."""
-
-    enrollment_id = serializers.IntegerField()
-    marks_obtained = serializers.DecimalField(max_digits=6, decimal_places=2, required=False, allow_null=True)
-    is_absent = serializers.BooleanField(default=False)
-
-
-class BulkExamResultSerializer(serializers.Serializer):
-    exam_id = serializers.IntegerField()
-    subject_id = serializers.IntegerField()
-    paper_id = serializers.IntegerField(required=False, allow_null=True)
-    max_marks = serializers.DecimalField(max_digits=6, decimal_places=2, default=100)
-    rows = BulkExamResultRowSerializer(many=True)
-
-
-class GradingScaleSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = models.GradingScale
-        fields = "__all__"
-
-
-class TermPositionRankingSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source="enrollment.student.user.get_full_name", read_only=True)
-    admission_no = serializers.CharField(source="enrollment.student.admission_no", read_only=True)
-    classroom_label = serializers.CharField(source="enrollment.classroom.__str__", read_only=True)
-
-    class Meta:
-        model = models.TermPositionRanking
-        fields = "__all__"
-
-
-class RankRequestSerializer(serializers.Serializer):
-    term_id = serializers.IntegerField()
-    classroom_id = serializers.IntegerField(required=False)
-    grade_level_id = serializers.IntegerField(required=False)
-    checkpoint = serializers.ChoiceField(choices=models.TermPositionRanking.Checkpoint.choices)
-
-
-# ---------------------------------------------------------------------------
-# PROMOTION RULES
-# ---------------------------------------------------------------------------
-class PromotionRuleSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = models.PromotionRule
-        fields = "__all__"
-
-
-# ---------------------------------------------------------------------------
-# FEES
-# ---------------------------------------------------------------------------
-class FeeStructureItemSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = models.FeeStructureItem
-        fields = "__all__"
-        # fee_structure is assigned by FeeStructureSerializer.create()
-        # after the parent FeeStructure has been created.
-        read_only_fields = ["fee_structure"]
-
-
-class FeeStructureSerializer(serializers.ModelSerializer):
-    items = FeeStructureItemSerializer(many=True, required=False)
-
-    grade_level_name = serializers.CharField(
-        source="grade_level.name",
-        read_only=True
-    )
-
-    term_label = serializers.CharField(
-        source="term.__str__",
-        read_only=True
-    )
-
-    class Meta:
-        model = models.FeeStructure
-        fields = "__all__"
-
-    def create(self, validated_data):
-        # Remove nested items before creating the parent
-        items_data = validated_data.pop("items", [])
-
-        # Create the FeeStructure first
-        fee_structure = models.FeeStructure.objects.create(
-            **validated_data
-        )
-
-        # Create each item and attach it to the new FeeStructure
-        for item_data in items_data:
-            models.FeeStructureItem.objects.create(
-                fee_structure=fee_structure,
-                **item_data
-            )
-
-        return fee_structure
- 
-class InvoiceSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source="enrollment.student.user.get_full_name", read_only=True)
-    admission_no = serializers.CharField(source="enrollment.student.admission_no", read_only=True)
-    term_label = serializers.CharField(source="fee_structure.term.__str__", read_only=True)
-    grade_level_name = serializers.CharField(source="fee_structure.grade_level.name", read_only=True)
-    balance = serializers.ReadOnlyField()
-    term_charge = serializers.ReadOnlyField()
-    payments = serializers.SerializerMethodField()
- 
-    class Meta:
-        model = models.Invoice
-        fields = "__all__"
- 
-    def get_payments(self, obj):
-        return PaymentSerializer(obj.payments.order_by("-paid_at"), many=True).data
- 
- 
-class PaymentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = models.Payment
-        fields = "__all__"
-        read_only_fields = ["recorded_by", "receipt_no"]
- 
- 
-class InitiatePaymentSerializer(serializers.Serializer):
-    """Used by students/parents/finance to pay an invoice - partial or full, via STK push (or the DEBUG bypass)."""
- 
-    invoice_id = serializers.IntegerField()
-    phone_number = serializers.CharField(max_length=15)
-    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("1"))
- 
-    def validate_phone_number(self, value):
-        cleaned = value.strip().replace(" ", "").replace("+", "")
-        if cleaned.startswith("0") and len(cleaned) == 10:
-            cleaned = "254" + cleaned[1:]
-        if not (cleaned.startswith("254") and len(cleaned) == 12 and cleaned.isdigit()):
-            raise serializers.ValidationError(
-                "Enter a valid Kenyan phone number, e.g. 07XXXXXXXX or 2547XXXXXXXX."
-            )
-        return cleaned
- 
- 
-class ReceiptSerializer(serializers.Serializer):
-    """Shape returned by GET /payments/{id}/receipt/ and the public verify endpoint."""
- 
-    receipt_no = serializers.CharField()
-    amount = serializers.DecimalField(max_digits=10, decimal_places=2)
-    method = serializers.CharField()
-    reference = serializers.CharField()
-    paid_at = serializers.DateTimeField()
-    student_name = serializers.CharField()
-    admission_no = serializers.CharField()
-    term = serializers.CharField()
-    qr_code_base64 = serializers.CharField(required=False)
-    
-    
-    
-    
-# ===========================================================================
-# ADD THESE TO serializers.py
-# (password_validation is already imported at the top of the file)
-#
-# Where to put them: right after your existing StudentProfileSerializer.
-# They do NOT replace StudentProfileSerializer — that one still powers the
-# list view. These power the View/Edit modals and the reset-password action.
-# ===========================================================================
 
 
 class StudentUserSerializer(serializers.ModelSerializer):
@@ -680,6 +451,9 @@ class StudentUserSerializer(serializers.ModelSerializer):
 
 
 class StudentProfileDetailSerializer(serializers.ModelSerializer):
+    """Powers the Student View/Edit modals and the reset-password action.
+    Does not replace StudentProfileSerializer, which still powers the list view."""
+
     user = StudentUserSerializer()
     full_name = serializers.CharField(source="user.get_full_name", read_only=True)
 
@@ -740,7 +514,7 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         # Manual national_id uniqueness check, excluding THIS student's own
-        # account — see the note on StudentUserSerializer above for why the
+        # account - see the note on StudentUserSerializer above for why the
         # nested field can't safely do this itself.
         national_id = (attrs.get("user") or {}).get("national_id")
         if national_id:
@@ -800,7 +574,7 @@ class ResetStudentPasswordSerializer(serializers.Serializer):
     """
     POST body for /students/{id}/reset_password/.
     Leave new_password blank to reset back to the default used on
-    admission (the admission number itself) — doubles as a plain
+    admission (the admission number itself) - doubles as a plain
     "forgot password" reset with no extra endpoint needed.
     """
 
@@ -810,8 +584,8 @@ class ResetStudentPasswordSerializer(serializers.Serializer):
         if value:
             password_validation.validate_password(value)
         return value
-    
-    
+
+
 class BulkCreateClassroomsSerializer(serializers.Serializer):
     """
     POST body: { "academic_year": 4, "grade_level_ids": [1,2,3,4], "stream_ids": [1,2,3,4] }
@@ -832,9 +606,8 @@ class BulkCreateClassroomsSerializer(serializers.Serializer):
             stream_ids=[s.id for s in validated_data["stream_ids"]],
         )
         return result
-    
-    
-    
+
+
 class ClassroomStudentSerializer(serializers.ModelSerializer):
     """
     Full student detail used by the classroom View modal's roster + CSV
@@ -868,18 +641,333 @@ class ClassroomStudentSerializer(serializers.ModelSerializer):
             }
             for link in links
         ]
-        
-        
 
-# ===========================================================================
-# ADD TO serializers.py, directly after the existing PaymentSerializer.
-# Read-only, enriched view of a Payment for the Finance "all payments" list:
-# who the student is, their own phone, their guardian's name/phone, which
-# class/term/year the payment's invoice belongs to, and who recorded it
-# (front-desk staff for manual entries, or the student/parent themselves
-# for a self-service STK push - see services.initiate_payment).
-# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# SUBJECTS
+# ---------------------------------------------------------------------------
+class SubjectPaperSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.SubjectPaper
+        fields = "__all__"
+
+
+class SubjectGroupSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.SubjectGroup
+        fields = "__all__"
+
+
+class TrackGroupRuleSerializer(serializers.ModelSerializer):
+    group_name = serializers.CharField(source="group.name", read_only=True)
+
+    class Meta:
+        model = models.TrackGroupRule
+        fields = "__all__"
+
+
+class SelectionTrackSerializer(serializers.ModelSerializer):
+    group_rules = TrackGroupRuleSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = models.SelectionTrack
+        fields = "__all__"
+
+
+class PathwaySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.Pathway
+        fields = "__all__"
+
+
+class SubjectSerializer(serializers.ModelSerializer):
+    papers = SubjectPaperSerializer(many=True, read_only=True)
+    pathway_name = serializers.CharField(source="pathway.name", read_only=True)
+    elective_group_name = serializers.CharField(source="elective_group.name", read_only=True)
+
+    class Meta:
+        model = models.Subject
+        fields = "__all__"
+
+
+class GradeSubjectSerializer(serializers.ModelSerializer):
+    subject_name = serializers.CharField(source="subject.name", read_only=True)
+    pathway = serializers.IntegerField(source="subject.pathway_id", read_only=True)
+    pathway_name = serializers.CharField(source="subject.pathway.name", read_only=True)
+    elective_group = serializers.IntegerField(source="subject.elective_group_id", read_only=True)
+    elective_group_name = serializers.CharField(source="subject.elective_group.name", read_only=True)
+
+    class Meta:
+        model = models.GradeSubject
+        fields = "__all__"
+
+
+class SubjectSelectionRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.SubjectSelectionRule
+        fields = "__all__"
+
+
+class SetStudentSubjectsSerializer(serializers.Serializer):
+    subject_ids = serializers.ListField(child=serializers.IntegerField())
+    pathway_id = serializers.IntegerField(required=False, allow_null=True)
+    track_id = serializers.IntegerField(required=False, allow_null=True)
+
+
+class StudentSubjectSelectionSerializer(serializers.ModelSerializer):
+    subject_name = serializers.CharField(source="subject.name", read_only=True)
+
+    class Meta:
+        model = models.StudentSubjectSelection
+        fields = "__all__"
+
+
+# ---------------------------------------------------------------------------
+# TEACHER ALLOCATION
+# ---------------------------------------------------------------------------
+class TeacherSubjectAllocationSerializer(serializers.ModelSerializer):
+    teacher_name = serializers.CharField(source="teacher.get_full_name", read_only=True)
+    subject_name = serializers.CharField(source="subject.name", read_only=True)
+    classroom_label = serializers.CharField(source="classroom.__str__", read_only=True)
+
+    class Meta:
+        model = models.TeacherSubjectAllocation
+        fields = "__all__"
+
+
+# ---------------------------------------------------------------------------
+# EXAMS / RESULTS / GRADING / RANKING
+# ---------------------------------------------------------------------------
+class ExamTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.ExamType
+        fields = "__all__"
+
+
+class ExamSerializer(serializers.ModelSerializer):
+    exam_type_name = serializers.CharField(source="exam_type.name", read_only=True)
+    term_label = serializers.CharField(source="term.__str__", read_only=True)
+    grade_level_name = serializers.CharField(source="grade_level.name", read_only=True)
+
+    class Meta:
+        model = models.Exam
+        fields = "__all__"
+
+
+class ExamResultSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source="enrollment.student.user.get_full_name", read_only=True)
+    admission_no = serializers.CharField(source="enrollment.student.admission_no", read_only=True)
+    subject_name = serializers.CharField(source="subject.name", read_only=True)
+    paper_name = serializers.SerializerMethodField()
+    percentage = serializers.ReadOnlyField()
+
+    class Meta:
+        model = models.ExamResult
+        fields = "__all__"
+        read_only_fields = ["entered_by", "entered_at"]
+
+    def get_paper_name(self, obj):
+        return obj.paper.name if obj.paper_id else None
+
+    def validate(self, attrs):
+        marks = attrs.get("marks_obtained")
+        max_marks = attrs.get("max_marks", 100)
+        is_absent = attrs.get("is_absent", False)
+        if not is_absent:
+            if marks is None:
+                raise serializers.ValidationError("marks_obtained is required unless is_absent is true.")
+            if marks < 0 or marks > max_marks:
+                raise serializers.ValidationError("marks_obtained must be between 0 and max_marks.")
+        return attrs
+
+
+class BulkExamResultRowSerializer(serializers.Serializer):
+    """One row of a bulk mark-entry sheet submitted by a teacher."""
+
+    enrollment_id = serializers.IntegerField()
+    marks_obtained = serializers.DecimalField(max_digits=6, decimal_places=2, required=False, allow_null=True)
+    is_absent = serializers.BooleanField(default=False)
+
+
+class BulkExamResultSerializer(serializers.Serializer):
+    exam_id = serializers.IntegerField()
+    subject_id = serializers.IntegerField()
+    paper_id = serializers.IntegerField(required=False, allow_null=True)
+    max_marks = serializers.DecimalField(max_digits=6, decimal_places=2, default=100)
+    rows = BulkExamResultRowSerializer(many=True)
+
+
+class GradingScaleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.GradingScale
+        fields = "__all__"
+
+
+class TermPositionRankingSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source="enrollment.student.user.get_full_name", read_only=True)
+    admission_no = serializers.CharField(source="enrollment.student.admission_no", read_only=True)
+    classroom_label = serializers.CharField(source="enrollment.classroom.__str__", read_only=True)
+
+    class Meta:
+        model = models.TermPositionRanking
+        fields = "__all__"
+
+
+class RankRequestSerializer(serializers.Serializer):
+    term_id = serializers.IntegerField()
+    classroom_id = serializers.IntegerField(required=False)
+    grade_level_id = serializers.IntegerField(required=False)
+    checkpoint = serializers.ChoiceField(choices=models.TermPositionRanking.Checkpoint.choices)
+
+
+# ---------------------------------------------------------------------------
+# PROMOTION RULES
+# ---------------------------------------------------------------------------
+class PromotionRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.PromotionRule
+        fields = "__all__"
+
+
+class ClassroomPromotionSerializer(serializers.ModelSerializer):
+    source_classroom_label = serializers.CharField(source="source_classroom.__str__", read_only=True)
+    target_classroom_label = serializers.CharField(source="target_classroom.__str__", read_only=True)
+    promoted_by_name = serializers.CharField(source="promoted_by.get_full_name", read_only=True)
+
+    class Meta:
+        model = models.ClassroomPromotion
+        fields = "__all__"
+
+
+# ---------------------------------------------------------------------------
+# FEES
+# ---------------------------------------------------------------------------
+class FeeStructureItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.FeeStructureItem
+        fields = "__all__"
+        # fee_structure is assigned by FeeStructureSerializer.create()
+        # after the parent FeeStructure has been created.
+        read_only_fields = ["fee_structure"]
+
+
+class FeeStructureSerializer(serializers.ModelSerializer):
+    items = FeeStructureItemSerializer(many=True, required=False)
+    grade_level_name = serializers.CharField(source="grade_level.name", read_only=True)
+    term_label = serializers.CharField(source="term.__str__", read_only=True)
+    academic_year_label = serializers.CharField(source="term.academic_year.year", read_only=True)
+    curriculum_type = serializers.CharField(source="grade_level.curriculum_type", read_only=True)
+    curriculum_display = serializers.CharField(source="grade_level.get_curriculum_type_display", read_only=True)
+
+    class Meta:
+        model = models.FeeStructure
+        fields = "__all__"
+
+    def create(self, validated_data):
+        items_data = validated_data.pop("items", [])
+        fee_structure = models.FeeStructure.objects.create(**validated_data)
+        for item_data in items_data:
+            models.FeeStructureItem.objects.create(
+                fee_structure=fee_structure,
+                **item_data
+            )
+        return fee_structure
+
+    def update(self, instance, validated_data):
+        # DRF's default update() can't assign a list to a reverse-FK
+        # manager, so nested `items` must be handled manually: replace
+        # the whole set (delete + recreate) rather than trying to diff it.
+        items_data = validated_data.pop("items", None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if items_data is not None:
+            instance.items.all().delete()
+            for item_data in items_data:
+                models.FeeStructureItem.objects.create(fee_structure=instance, **item_data)
+
+        return instance
+
+
+class InvoiceSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source="enrollment.student.user.get_full_name", read_only=True)
+    admission_no = serializers.CharField(source="enrollment.student.admission_no", read_only=True)
+    term_label = serializers.CharField(source="fee_structure.term.__str__", read_only=True)
+    grade_level_name = serializers.CharField(source="fee_structure.grade_level.name", read_only=True)
+    balance = serializers.ReadOnlyField()
+    term_charge = serializers.ReadOnlyField()
+    payments = serializers.SerializerMethodField()
+
+    class Meta:
+        model = models.Invoice
+        fields = "__all__"
+
+    def get_payments(self, obj):
+        return PaymentSerializer(obj.payments.order_by("-paid_at"), many=True).data
+
+
+class PaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.Payment
+        fields = "__all__"
+        read_only_fields = ["recorded_by", "receipt_no"]
+
+
+class InitiatePaymentSerializer(serializers.Serializer):
+    """Used by students/parents/finance to pay an invoice - partial or full, via STK push (or the DEBUG bypass)."""
+
+    invoice_id = serializers.IntegerField()
+    phone_number = serializers.CharField(max_length=15)
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("1"))
+
+    def validate_phone_number(self, value):
+        cleaned = value.strip().replace(" ", "").replace("+", "")
+        if cleaned.startswith("0") and len(cleaned) == 10:
+            cleaned = "254" + cleaned[1:]
+        if not (cleaned.startswith("254") and len(cleaned) == 12 and cleaned.isdigit()):
+            raise serializers.ValidationError(
+                "Enter a valid Kenyan phone number, e.g. 07XXXXXXXX or 2547XXXXXXXX."
+            )
+        return cleaned
+
+
+class BulkPaymentSerializer(serializers.Serializer):
+    """
+    POST body for paying a student's TOTAL outstanding balance in one go.
+    services.record_bulk_payment() splits it across their unpaid
+    invoices automatically (oldest first).
+    """
+    admission_no = serializers.CharField(max_length=30)
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("1"))
+    method = serializers.ChoiceField(choices=models.Payment.Method.choices)
+    reference = serializers.CharField(required=False, allow_blank=True, max_length=60)
+
+
+class ReceiptSerializer(serializers.Serializer):
+    """Shape returned by GET /payments/{id}/receipt/ and the public verify endpoint."""
+
+    receipt_no = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    method = serializers.CharField()
+    reference = serializers.CharField()
+    paid_at = serializers.DateTimeField()
+    student_name = serializers.CharField()
+    admission_no = serializers.CharField()
+    term = serializers.CharField()
+    qr_code_base64 = serializers.CharField(required=False)
+
+
 class PaymentListSerializer(serializers.ModelSerializer):
+    """
+    Enriched, read-only view of a Payment for the Finance "all payments"
+    list: who the student is, their own phone, their guardian's name/phone,
+    which class/term/year the payment's invoice belongs to, and who
+    recorded it (front-desk staff for manual entries, or the student/parent
+    themselves for a self-service STK push - see services.initiate_payment).
+    """
+
     admission_no = serializers.CharField(source="invoice.enrollment.student.admission_no", read_only=True)
     student_name = serializers.CharField(
         source="invoice.enrollment.student.user.get_full_name", read_only=True
@@ -922,16 +1010,70 @@ class PaymentListSerializer(serializers.ModelSerializer):
 
     def get_recorded_by_role(self, obj):
         return obj.recorded_by.get_role_display() if obj.recorded_by else None
-    
-    
-    
 
-# ===========================================================================
-# COMMUNICATIONS & MESSAGING 
-# ===========================================================================
 
-# ---- bulk Communication (Admin/Finance broadcast) --------------------------
+class ExpenseCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.ExpenseCategory
+        fields = "__all__"
+
+
+class ExpenseSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source="category.name", read_only=True)
+    recorded_by_name = serializers.CharField(source="recorded_by.get_full_name", read_only=True)
+    term_label = serializers.CharField(source="term.__str__", read_only=True)
+
+    class Meta:
+        model = models.Expense
+        fields = "__all__"
+        read_only_fields = ["total_amount", "recorded_by"]
+
+    def validate_quantity(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Quantity must be greater than zero.")
+        return value
+
+    def validate_unit_cost(self, value):
+        if value < 0:
+            raise serializers.ValidationError("Unit cost cannot be negative.")
+        return value
+
+
+# ---------------------------------------------------------------------------
+# LICENSING / SUBSCRIPTIONS
+# ---------------------------------------------------------------------------
+class LicenseUsageSerializer(serializers.Serializer):
+    tier = serializers.CharField()
+    tier_display = serializers.CharField()
+    valid_until = serializers.DateTimeField(allow_null=True)
+    trial_ends_at = serializers.DateTimeField(allow_null=True)
+    is_suspended = serializers.BooleanField()
+    is_expired = serializers.BooleanField()
+    usage = serializers.DictField()
+
+
+class RedeemTokenSerializer(serializers.Serializer):
+    token = serializers.CharField(max_length=64)
+
+
+class SubscriptionPackageSerializer(serializers.ModelSerializer):
+    tier_display = serializers.CharField(source="get_tier_display", read_only=True)
+
+    class Meta:
+        model = models.SubscriptionPackage
+        fields = [
+            "id", "tier", "tier_display", "monthly_price",
+            "max_students", "max_classrooms_per_year", "max_teachers",
+            "features", "display_order",
+        ]
+
+
+# ---------------------------------------------------------------------------
+# COMMUNICATIONS & MESSAGING
+# ---------------------------------------------------------------------------
 class CommunicationCreateSerializer(serializers.Serializer):
+    """Bulk Communication (Admin/Finance broadcast)."""
+
     subject = serializers.CharField(max_length=150)
     body = serializers.CharField()
     category = serializers.ChoiceField(choices=models.Communication.Category.choices, default=models.Communication.Category.GENERAL)
@@ -1022,7 +1164,6 @@ class CommunicationSerializer(serializers.ModelSerializer):
         return summary
 
 
-# ---- Notifications (navbar bell) -------------------------------------------
 class NotificationSerializer(serializers.ModelSerializer):
     """One row = one in-app CommunicationRecipient - what the navbar bell renders."""
 
@@ -1040,7 +1181,6 @@ class NotificationSerializer(serializers.ModelSerializer):
         return obj.personalized_body or obj.communication.body
 
 
-# ---- Direct Messaging (1:1 threads) ----------------------------------------
 class ConversationParticipantSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.User
@@ -1107,7 +1247,7 @@ class ConversationCreateSerializer(serializers.Serializer):
         recipient = validated_data["recipient_id"]
         student = validated_data.get("student_id")
 
-        # reuse an existing thread between the same two people about the
+        # Reuse an existing thread between the same two people about the
         # same student, instead of spawning a duplicate every time.
         existing = (
             models.Conversation.objects.filter(participants=sender)
@@ -1122,13 +1262,11 @@ class ConversationCreateSerializer(serializers.Serializer):
         message = models.DirectMessage.objects.create(conversation=conversation, sender=sender, body=validated_data["body"])
         message.read_by.add(sender)
         return conversation
-    
-    
-    
-# ===========================================================================
-# TIMETABLE MANAGEMENT - append to serializers.py
-# ===========================================================================
 
+
+# ---------------------------------------------------------------------------
+# TIMETABLE MANAGEMENT
+# ---------------------------------------------------------------------------
 class PeriodSlotSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.PeriodSlot
@@ -1191,7 +1329,7 @@ class PeriodSlotBulkSetSerializer(serializers.Serializer):
             models.PeriodSlot.objects.all().delete()  # cascades TimetableEntry too
             objs = [models.PeriodSlot(**row) for row in self.validated_data["slots"]]
             return models.PeriodSlot.objects.bulk_create(objs)
-        
+
 
 class TimetableEntrySerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="allocation.subject.name", read_only=True)
@@ -1217,7 +1355,7 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
         if allocation and classroom and allocation.classroom_id != classroom.id:
             raise serializers.ValidationError("This allocation does not belong to the selected classroom.")
 
-        # teacher clash: same period_slot+term, different classroom, same teacher
+        # Teacher clash: same period_slot+term, different classroom, same teacher.
         if period_slot and term and allocation:
             clash = models.TimetableEntry.objects.filter(
                 period_slot=period_slot, term=term, allocation__teacher=allocation.teacher
@@ -1238,40 +1376,3 @@ class TimetableGridQuerySerializer(serializers.Serializer):
 
 class AutoGenerateTimetableSerializer(serializers.Serializer):
     term = serializers.PrimaryKeyRelatedField(queryset=models.Term.objects.all())
-    
-    
-
-class ClassroomPromotionSerializer(serializers.ModelSerializer):
-    source_classroom_label = serializers.CharField(source="source_classroom.__str__", read_only=True)
-    target_classroom_label = serializers.CharField(source="target_classroom.__str__", read_only=True)
-    promoted_by_name = serializers.CharField(source="promoted_by.get_full_name", read_only=True)
-
-    class Meta:
-        model = models.ClassroomPromotion
-        fields = "__all__"
-        
-        
-class LicenseUsageSerializer(serializers.Serializer):
-    tier = serializers.CharField()
-    tier_display = serializers.CharField()
-    valid_until = serializers.DateTimeField(allow_null=True)
-    trial_ends_at = serializers.DateTimeField(allow_null=True)
-    is_suspended = serializers.BooleanField()
-    is_expired = serializers.BooleanField()
-    usage = serializers.DictField()
-
-
-class RedeemTokenSerializer(serializers.Serializer):
-    token = serializers.CharField(max_length=64)
-    
-    
-class SubscriptionPackageSerializer(serializers.ModelSerializer):
-    tier_display = serializers.CharField(source="get_tier_display", read_only=True)
-
-    class Meta:
-        model = models.SubscriptionPackage
-        fields = [
-            "id", "tier", "tier_display", "monthly_price",
-            "max_students", "max_classrooms_per_year", "max_teachers",
-            "features", "display_order",
-        ]

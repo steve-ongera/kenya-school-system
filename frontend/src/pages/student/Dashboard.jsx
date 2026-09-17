@@ -43,7 +43,15 @@ export default function StudentDashboard() {
     financeApi.invoices()
       .then(({ data }) => {
         const list = data.results ?? data;
-        const totalDue = list.reduce((s, i) => s + Number(i.amount_due), 0);
+        // Use term_charge (amount_due - brought_forward), NOT raw
+        // amount_due, when summing across invoices. Each invoice's
+        // amount_due already folds in every prior term's unpaid balance
+        // via brought_forward (see Invoice.brought_forward /
+        // services.generate_invoice on the backend). Summing amount_due
+        // directly re-adds the same arrears once per later invoice and
+        // overstates the balance - term_charge is each invoice's OWN fee
+        // for that term alone, so summing that avoids double-counting.
+        const totalDue = list.reduce((s, i) => s + Number(i.term_charge), 0);
         const totalPaid = list.reduce((s, i) => s + Number(i.amount_paid), 0);
         setNetBalance(totalDue - totalPaid);
       })
@@ -312,7 +320,7 @@ export default function StudentDashboard() {
               {performanceLoading ? (
                 <div className="skeleton skeleton-text" style={{ width: "100%", height: "220px" }}></div>
               ) : performance?.subject_performance?.length ? (
-                <ResponsiveContainer width="100%" height={220}>
+                <ResponsiveContainer width="100%" height={290}>
                   <PieChart>
                     <Pie
                       data={performance.subject_performance}

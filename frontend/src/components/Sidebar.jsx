@@ -1,4 +1,3 @@
-// components/Sidebar.jsx
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import logo from "../assets/masomo_logo.png";
@@ -83,7 +82,7 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
               }}>
                 <img
                   src={logo}
-                  alt="Moi Forces Logo"
+                  alt="Masomo System Logo"
                   style={{
                     width: "100%",
                     height: "100%",
@@ -98,7 +97,7 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
                 overflow: "hidden",
                 textOverflow: "ellipsis"
               }}>
-                MASOMO INFO SYSTEM
+                MASOMO SYSTEM
               </span>
             </div>
           ) : (
@@ -116,7 +115,7 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
             }}>
               <img
                 src={logo}
-                alt="Moi Forces Logo"
+                alt="Masomo System Logo"
                 style={{
                   width: "100%",
                   height: "100%",
@@ -164,7 +163,7 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
           )}
         </nav>
 
-        {/* Footer - School name and version only */}
+        {/* Footer - Branding and version only */}
         {showLabels && (
           <div className="app-sidebar__footer" style={{
             display: "flex",
@@ -181,7 +180,7 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
               letterSpacing: "0.04em",
               fontWeight: 500,
             }}>
-              InnovationHub Softwares
+              Masomo System © {new Date().getFullYear()}
             </div>
             <div style={{
               fontSize: "0.55rem",

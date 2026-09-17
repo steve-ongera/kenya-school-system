@@ -44,6 +44,12 @@ export default function FinanceStructures() {
   // ---- list filters ----
   const [filters, setFilters] = useState({ term__academic_year: "", grade_level: "" });
 
+  // ---- inline edit state (per fee structure) ----
+  const [editingId, setEditingId] = useState(null);
+  const [editItems, setEditItems] = useState([]);
+  const [editSaving, setEditSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
+
   const loadStructures = async (params = {}) => {
     setLoading(true);
     try {
@@ -96,6 +102,12 @@ export default function FinanceStructures() {
     setItems([emptyItem()]);
   };
 
+  const refreshList = () =>
+    loadStructures({
+      ...(filters.term__academic_year ? { term__academic_year: filters.term__academic_year } : {}),
+      ...(filters.grade_level ? { grade_level: filters.grade_level } : {}),
+    });
+
   const submit = async (e) => {
     e.preventDefault();
     setMessage(null);
@@ -127,10 +139,7 @@ export default function FinanceStructures() {
       });
       setMessage({ type: "success", text: " Fee structure created successfully." });
       resetForm();
-      loadStructures({
-        ...(filters.term__academic_year ? { term__academic_year: filters.term__academic_year } : {}),
-        ...(filters.grade_level ? { grade_level: filters.grade_level } : {}),
-      });
+      refreshList();
     } catch (err) {
       const data = err.response?.data;
       const text =
@@ -140,6 +149,82 @@ export default function FinanceStructures() {
       setMessage({ type: "danger", text });
     } finally {
       setSaving(false);
+    }
+  };
+
+  // ---- Inline edit (items + total) for an existing fee structure ----
+  const startEdit = (structure) => {
+    setMessage(null);
+    setEditingId(structure.id);
+    setEditItems(
+      (structure.items || []).length > 0
+        ? structure.items.map((i) => ({ name: i.name, amount: i.amount }))
+        : [emptyItem()]
+    );
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditItems([]);
+  };
+
+  const updateEditItem = (idx, field, value) => {
+    setEditItems((prev) => prev.map((item, i) => (i === idx ? { ...item, [field]: value } : item)));
+  };
+  const addEditItem = () => setEditItems((prev) => [...prev, emptyItem()]);
+  const removeEditItem = (idx) => setEditItems((prev) => prev.filter((_, i) => i !== idx));
+
+  const editTotal = editItems.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+
+  const saveEdit = async (id) => {
+    setMessage(null);
+    const cleanItems = editItems
+      .filter((i) => i.name.trim() && i.amount !== "")
+      .map((i) => ({ name: i.name.trim(), amount: Number(i.amount) }));
+
+    if (cleanItems.length === 0) {
+      setMessage({ type: "danger", text: "Add at least one fee item." });
+      return;
+    }
+
+    setEditSaving(true);
+    try {
+      await financeApi.updateFeeStructure(id, {
+        total_amount: editTotal,
+        items: cleanItems,
+      });
+      setMessage({ type: "success", text: " Fee structure updated successfully." });
+      cancelEdit();
+      refreshList();
+    } catch (err) {
+      const data = err.response?.data;
+      const text =
+        data?.non_field_errors?.[0] ||
+        (typeof data === "object" ? JSON.stringify(data) : null) ||
+        "Could not update fee structure.";
+      setMessage({ type: "danger", text });
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  const deleteStructure = async (structure) => {
+    const confirmed = window.confirm(
+      `Delete the fee structure for ${structure.grade_level_name} — ${structure.term_label}? This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setMessage(null);
+    setDeletingId(structure.id);
+    try {
+      await financeApi.deleteFeeStructure(structure.id);
+      setMessage({ type: "success", text: " Fee structure deleted." });
+      if (editingId === structure.id) cancelEdit();
+      refreshList();
+    } catch (err) {
+      setMessage({ type: "danger", text: "Could not delete fee structure." });
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -180,13 +265,18 @@ export default function FinanceStructures() {
     doc.setLineWidth(0.3);
     doc.line(12, 28, pageWidth - 12, 28);
 
-    // --- Meta block (Grade · Term · Academic Year) ---
+    // --- Meta block (Grade · Term · Academic Year · Curriculum) ---
     autoTable(doc, {
       startY: 32,
       theme: "grid",
       body: [
         ["Grade", structure.grade_level_name || "-", "Term", structure.term_label || "-"],
-        ["Academic Year", structure.academic_year_label || "-", "Curriculum", structure.curriculum_type || "-"],
+        [
+          "Academic Year",
+          structure.academic_year_label || "-",
+          "Curriculum",
+          structure.curriculum_display || structure.curriculum_type || "-",
+        ],
       ],
       styles: {
         fontSize: 9,
@@ -586,90 +676,192 @@ export default function FinanceStructures() {
         </div>
       ) : (
         <div className="row g-4">
-          {structures.map((f) => (
-            <div className="col-12 col-md-6 col-lg-4" key={f.id}>
-              <div className="card h-100">
-                <div className="card-body">
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.5rem" }}>
-                    <h6 style={{ fontWeight: 700, color: "var(--ink-900)", margin: 0 }}>
-                      {f.grade_level_name}
-                    </h6>
-                    <span className="badge badge-blue">
-                      <i className="bi bi-clock me-1"></i>
-                      {f.term_label}
-                    </span>
-                  </div>
-
-                  <div style={{ marginBottom: "1rem" }}>
-                    <span className="badge badge-neutral">
-                      <i className="bi bi-calendar3 me-1"></i>
-                      {f.academic_year_label || "Academic Year"}
-                    </span>
-                  </div>
-
-                  <div style={{
-                    background: "var(--bg-app)",
-                    borderRadius: "var(--radius-md)",
-                    padding: "0.75rem",
-                    marginBottom: "1rem"
-                  }}>
-                    <div style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)", marginBottom: "0.3rem" }}>
-                      <i className="bi bi-list-ul me-1"></i> Breakdown
+          {structures.map((f) => {
+            const isEditing = editingId === f.id;
+            return (
+              <div className="col-12 col-md-6 col-lg-4" key={f.id}>
+                <div className="card h-100">
+                  <div className="card-body">
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.5rem" }}>
+                      <h6 style={{ fontWeight: 700, color: "var(--ink-900)", margin: 0 }}>
+                        {f.grade_level_name}
+                      </h6>
+                      <span className="badge badge-blue">
+                        <i className="bi bi-clock me-1"></i>
+                        {f.term_label}
+                      </span>
                     </div>
-                    {(f.items || []).length > 0 ? (
-                      (f.items || []).map((item, idx) => (
-                        <div key={idx} style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          fontSize: "var(--fs-sm)",
-                          padding: "0.2rem 0",
-                          borderBottom: idx < (f.items || []).length - 1 ? "1px dashed var(--border-color)" : "none"
-                        }}>
-                          <span style={{ color: "var(--ink-700)" }}>{item.name}</span>
-                          <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
-                            KES {currency(item.amount)}
+
+                    <div style={{ marginBottom: "1rem", display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+                      <span className="badge badge-neutral">
+                        <i className="bi bi-calendar3 me-1"></i>
+                        {f.academic_year_label || "Academic Year"}
+                      </span>
+                      {f.curriculum_display && (
+                        <span className="badge badge-neutral">
+                          <i className="bi bi-mortarboard me-1"></i>
+                          {f.curriculum_display}
+                        </span>
+                      )}
+                    </div>
+
+                    {isEditing ? (
+                      <div style={{
+                        background: "var(--bg-app)",
+                        borderRadius: "var(--radius-md)",
+                        padding: "0.75rem",
+                        marginBottom: "1rem"
+                      }}>
+                        <div style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)", marginBottom: "0.5rem" }}>
+                          <i className="bi bi-pencil-square me-1"></i> Editing Fee Items
+                        </div>
+                        {editItems.map((item, idx) => (
+                          <div className="row g-2 mb-2" key={idx}>
+                            <div className="col-6">
+                              <input
+                                className="form-control form-control-sm"
+                                placeholder="Item name"
+                                value={item.name}
+                                onChange={(e) => updateEditItem(idx, "name", e.target.value)}
+                              />
+                            </div>
+                            <div className="col-4">
+                              <input
+                                type="number"
+                                className="form-control form-control-sm"
+                                placeholder="Amount"
+                                value={item.amount}
+                                onChange={(e) => updateEditItem(idx, "amount", e.target.value)}
+                              />
+                            </div>
+                            <div className="col-2">
+                              <button
+                                type="button"
+                                className="btn btn-outline-danger btn-sm w-100"
+                                onClick={() => removeEditItem(idx)}
+                                disabled={editItems.length === 1}
+                              >
+                                <i className="bi bi-trash"></i>
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          className="btn btn-outline-secondary btn-sm mb-2"
+                          onClick={addEditItem}
+                        >
+                          <i className="bi bi-plus-lg me-1"></i> Add Item
+                        </button>
+                        <div className="d-flex justify-content-between align-items-center border-top pt-2">
+                          <span className="text-muted" style={{ fontSize: "var(--fs-sm)" }}>Total:</span>
+                          <span className="fw-bold" style={{ color: "var(--blue-700)" }}>
+                            KES {currency(editTotal)}
                           </span>
                         </div>
-                      ))
+                      </div>
                     ) : (
-                      <span className="text-muted-soft" style={{ fontSize: "var(--fs-sm)" }}>No items</span>
+                      <div style={{
+                        background: "var(--bg-app)",
+                        borderRadius: "var(--radius-md)",
+                        padding: "0.75rem",
+                        marginBottom: "1rem"
+                      }}>
+                        <div style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)", marginBottom: "0.3rem" }}>
+                          <i className="bi bi-list-ul me-1"></i> Breakdown
+                        </div>
+                        {(f.items || []).length > 0 ? (
+                          (f.items || []).map((item, idx) => (
+                            <div key={idx} style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              fontSize: "var(--fs-sm)",
+                              padding: "0.2rem 0",
+                              borderBottom: idx < (f.items || []).length - 1 ? "1px dashed var(--border-color)" : "none"
+                            }}>
+                              <span style={{ color: "var(--ink-700)" }}>{item.name}</span>
+                              <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                                KES {currency(item.amount)}
+                              </span>
+                            </div>
+                          ))
+                        ) : (
+                          <span className="text-muted-soft" style={{ fontSize: "var(--fs-sm)" }}>No items</span>
+                        )}
+                      </div>
+                    )}
+
+                    {!isEditing && (
+                      <div style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        paddingTop: "0.75rem",
+                        borderTop: "2px solid var(--border-color)"
+                      }}>
+                        <span style={{ fontWeight: 600, color: "var(--ink-700)" }}>Total Due</span>
+                        <span style={{
+                          fontWeight: 700,
+                          fontSize: "1.1rem",
+                          color: "var(--blue-700)"
+                        }}>
+                          KES {currency(f.total_amount)}
+                        </span>
+                      </div>
                     )}
                   </div>
-
-                  <div style={{
+                  <div className="card-footer" style={{
+                    background: "transparent",
+                    borderTop: "1px solid var(--border-color)",
+                    padding: "0.75rem 1.25rem",
                     display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    paddingTop: "0.75rem",
-                    borderTop: "2px solid var(--border-color)"
+                    flexWrap: "wrap",
+                    gap: "0.5rem"
                   }}>
-                    <span style={{ fontWeight: 600, color: "var(--ink-700)" }}>Total Due</span>
-                    <span style={{
-                      fontWeight: 700,
-                      fontSize: "1.1rem",
-                      color: "var(--blue-700)"
-                    }}>
-                      KES {currency(f.total_amount)}
-                    </span>
+                    {isEditing ? (
+                      <>
+                        <button
+                          className="btn btn-sm btn-primary flex-fill"
+                          onClick={() => saveEdit(f.id)}
+                          disabled={editSaving}
+                        >
+                          <i className="bi bi-check-lg me-1"></i>
+                          {editSaving ? "Saving..." : "Save"}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-outline-secondary flex-fill"
+                          onClick={cancelEdit}
+                          disabled={editSaving}
+                        >
+                          <i className="bi bi-x-lg me-1"></i> Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button className="btn btn-sm btn-primary flex-fill" onClick={() => downloadPdf(f)}>
+                          <i className="bi bi-download me-1"></i> PDF
+                        </button>
+                        <button
+                          className="btn btn-sm btn-outline-secondary flex-fill"
+                          onClick={() => startEdit(f)}
+                        >
+                          <i className="bi bi-pencil me-1"></i> Edit
+                        </button>
+                        <button
+                          className="btn btn-sm btn-outline-danger flex-fill"
+                          onClick={() => deleteStructure(f)}
+                          disabled={deletingId === f.id}
+                        >
+                          <i className="bi bi-trash me-1"></i>
+                          {deletingId === f.id ? "Deleting..." : "Delete"}
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
-                <div className="card-footer" style={{
-                  background: "transparent",
-                  borderTop: "1px solid var(--border-color)",
-                  padding: "0.75rem 1.25rem",
-                  display: "flex",
-                  gap: "0.5rem"
-                }}>
-                  <button className="btn btn-sm btn-primary w-100" onClick={() => downloadPdf(f)}>
-                    <i className="bi bi-download me-1"></i> PDF
-                  </button>
-                  <button className="btn btn-sm btn-outline-secondary">
-                    <i className="bi bi-eye me-1"></i> View
-                  </button>
-                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

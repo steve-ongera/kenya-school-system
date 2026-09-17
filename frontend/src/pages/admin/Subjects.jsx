@@ -1,16 +1,30 @@
 import { useEffect, useState, useMemo } from "react";
-import { academicsApi } from "../../services/api";
+import {
+  academicsApi,
+  pathwaysApi,
+  subjectGroupsApi,
+  selectionTracksApi,
+  trackRulesApi,
+} from "../../services/api";
 import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
 import Pagination from "../../components/Pagination";
 
 const CURRICULA = ["CBC", "8-4-4"];
 
-const emptySubjectForm = { name: "", code: "", curriculum_type: "CBC", has_papers: false };
+const emptySubjectForm = {
+  name: "",
+  code: "",
+  curriculum_type: "CBC",
+  has_papers: false,
+  pathway: "",
+  elective_group: "",
+};
 const emptyPaperForm = { paper_number: 1, name: "", max_marks: 100 };
 const emptyGradeSubjectForm = { grade_level: "", subject: "", is_compulsory: true };
 const emptyRuleForm = {
   grade_level: "",
+  requires_pathway: false,
   min_optional_subjects: 0,
   max_optional_subjects: 0,
   min_total_subjects: 7,
@@ -25,6 +39,10 @@ const emptyGradingForm = {
   points: 0,
   remark: "",
 };
+const emptyPathwayForm = { name: "", code: "", description: "", is_active: true };
+const emptyGroupForm = { name: "", code: "" };
+const emptyTrackForm = { grade_level: "", name: "", is_active: true };
+const emptyTrackRuleForm = { group: "", min_choose: 1, max_choose: 1 };
 
 export default function AdminSubjects() {
   const [activeTab, setActiveTab] = useState("subjects");
@@ -34,6 +52,9 @@ export default function AdminSubjects() {
   const [gradeSubjects, setGradeSubjects] = useState([]);
   const [selectionRules, setSelectionRules] = useState([]);
   const [gradingScales, setGradingScales] = useState([]);
+  const [pathways, setPathways] = useState([]);
+  const [subjectGroups, setSubjectGroups] = useState([]);
+  const [selectionTracks, setSelectionTracks] = useState([]);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -49,11 +70,21 @@ export default function AdminSubjects() {
     () => Object.fromEntries(subjects.map((s) => [s.id, s])),
     [subjects]
   );
+  const pathwaysById = useMemo(
+    () => Object.fromEntries(pathways.map((p) => [p.id, p])),
+    [pathways]
+  );
+  const subjectGroupsById = useMemo(
+    () => Object.fromEntries(subjectGroups.map((g) => [g.id, g])),
+    [subjectGroups]
+  );
   const gradeLabel = (id) => {
     const g = gradeLevelsById[id];
     return g ? `${g.name} (${g.curriculum_type})` : "—";
   };
   const subjectLabel = (id) => subjectsById[id]?.name || "—";
+  const pathwayLabel = (id) => pathwaysById[id]?.name || "—";
+  const groupLabel = (id) => subjectGroupsById[id]?.name || "—";
 
   // ---- search / filter / pagination state ----
   const [searchQuery, setSearchQuery] = useState("");
@@ -91,6 +122,27 @@ export default function AdminSubjects() {
   const [editingGrading, setEditingGrading] = useState(null);
   const [showGradingModal, setShowGradingModal] = useState(false);
 
+  // Pathways
+  const [pathwayForm, setPathwayForm] = useState(emptyPathwayForm);
+  const [editingPathway, setEditingPathway] = useState(null);
+  const [showPathwayModal, setShowPathwayModal] = useState(false);
+
+  // Subject groups
+  const [groupForm, setGroupForm] = useState(emptyGroupForm);
+  const [editingGroup, setEditingGroup] = useState(null);
+  const [showGroupModal, setShowGroupModal] = useState(false);
+
+  // Selection tracks
+  const [trackForm, setTrackForm] = useState(emptyTrackForm);
+  const [editingTrack, setEditingTrack] = useState(null);
+  const [showTrackModal, setShowTrackModal] = useState(false);
+
+  // Track group rules (nested inside a track, mirrors the Papers pattern)
+  const [rulesTrack, setRulesTrack] = useState(null);
+  const [trackRuleForm, setTrackRuleForm] = useState(emptyTrackRuleForm);
+  const [editingTrackRule, setEditingTrackRule] = useState(null);
+  const [showTrackRulesModal, setShowTrackRulesModal] = useState(false);
+
   const flash = (text, type = "success") => {
     setMessage(text);
     setMessageType(type);
@@ -99,22 +151,32 @@ export default function AdminSubjects() {
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [s, g, gs, rules, grading] = await Promise.all([
+      const [s, g, gs, rules, grading, pw, sg, tr] = await Promise.all([
         academicsApi.subjects(),
         academicsApi.gradeLevels(),
         academicsApi.gradeSubjects(),
         academicsApi.selectionRules(),
         academicsApi.gradingScales(),
+        pathwaysApi.list(),
+        subjectGroupsApi.list(),
+        selectionTracksApi.list(),
       ]);
       setSubjects(s.data.results ?? s.data);
       setGradeLevels(g.data.results ?? g.data);
       setGradeSubjects(gs.data.results ?? gs.data);
       setSelectionRules(rules.data.results ?? rules.data);
       setGradingScales(grading.data.results ?? grading.data);
-      return s.data.results ?? s.data;
+      setPathways(pw.data.results ?? pw.data);
+      setSubjectGroups(sg.data.results ?? sg.data);
+      setSelectionTracks(tr.data.results ?? tr.data);
+      return {
+        subjects: s.data.results ?? s.data,
+        selectionTracks: tr.data.results ?? tr.data,
+      };
     } catch (error) {
       console.error("Failed to load data:", error);
       flash("Failed to load subject data.", "danger");
+      return {};
     } finally {
       setLoading(false);
     }
@@ -139,6 +201,8 @@ export default function AdminSubjects() {
       code: s.code,
       curriculum_type: s.curriculum_type,
       has_papers: s.has_papers,
+      pathway: s.pathway || "",
+      elective_group: s.elective_group || "",
     });
     setShowSubjectModal(true);
   };
@@ -146,11 +210,16 @@ export default function AdminSubjects() {
     e.preventDefault();
     setSaving(true);
     try {
+      const payload = {
+        ...subjectForm,
+        pathway: subjectForm.pathway || null,
+        elective_group: subjectForm.elective_group || null,
+      };
       if (editingSubject) {
-        await academicsApi.updateSubject(editingSubject.id, subjectForm);
+        await academicsApi.updateSubject(editingSubject.id, payload);
         flash("Subject updated.");
       } else {
-        await academicsApi.createSubject(subjectForm);
+        await academicsApi.createSubject(payload);
         flash("Subject created.");
       }
       setShowSubjectModal(false);
@@ -196,7 +265,7 @@ export default function AdminSubjects() {
         flash("Paper added.");
       }
       const refreshed = await loadAll();
-      const updatedSubject = (refreshed || []).find((s) => s.id === papersSubject.id);
+      const updatedSubject = (refreshed.subjects || []).find((s) => s.id === papersSubject.id);
       setPapersSubject(updatedSubject || papersSubject);
       setEditingPaper(null);
       setPaperForm({ ...emptyPaperForm, paper_number: (updatedSubject?.papers?.length || 0) + 1 });
@@ -212,7 +281,7 @@ export default function AdminSubjects() {
       await academicsApi.deleteSubjectPaper(paper.id);
       flash("Paper deleted.");
       const refreshed = await loadAll();
-      const updatedSubject = (refreshed || []).find((s) => s.id === papersSubject.id);
+      const updatedSubject = (refreshed.subjects || []).find((s) => s.id === papersSubject.id);
       setPapersSubject(updatedSubject || papersSubject);
     } catch (err) {
       flash(err.response?.data?.detail || "Could not delete paper.", "danger");
@@ -281,7 +350,7 @@ export default function AdminSubjects() {
     setEditingRule(existing || null);
     setRuleForm(
       existing
-        ? { ...existing }
+        ? { ...emptyRuleForm, ...existing }
         : { ...emptyRuleForm, grade_level: gradeLevelId }
     );
     setShowRuleModal(true);
@@ -369,6 +438,187 @@ export default function AdminSubjects() {
   };
 
   // ===========================================================================
+  // PATHWAYS (CBC - e.g. STEM / Social Sciences / Arts & Sports Science)
+  // ===========================================================================
+  const openAddPathway = () => {
+    setEditingPathway(null);
+    setPathwayForm(emptyPathwayForm);
+    setShowPathwayModal(true);
+  };
+  const openEditPathway = (p) => {
+    setEditingPathway(p);
+    setPathwayForm({
+      name: p.name,
+      code: p.code,
+      description: p.description || "",
+      is_active: p.is_active,
+    });
+    setShowPathwayModal(true);
+  };
+  const savePathway = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      if (editingPathway) {
+        await pathwaysApi.update(editingPathway.id, pathwayForm);
+        flash("Pathway updated.");
+      } else {
+        await pathwaysApi.create(pathwayForm);
+        flash("Pathway created.");
+      }
+      setShowPathwayModal(false);
+      await loadAll();
+    } catch (err) {
+      flash(err.response?.data ? JSON.stringify(err.response.data) : "Could not save pathway.", "danger");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const deletePathway = async (p) => {
+    if (!window.confirm(`Delete pathway "${p.name}"? Subjects linked to it will keep their subject record but lose their pathway tag.`)) return;
+    try {
+      await pathwaysApi.delete(p.id);
+      flash("Pathway deleted.");
+      await loadAll();
+    } catch (err) {
+      flash(err.response?.data?.detail || "Could not delete pathway.", "danger");
+    }
+  };
+
+  // ===========================================================================
+  // SUBJECT GROUPS (8-4-4 - e.g. Technical / Humanities / Sciences)
+  // ===========================================================================
+  const openAddGroup = () => {
+    setEditingGroup(null);
+    setGroupForm(emptyGroupForm);
+    setShowGroupModal(true);
+  };
+  const openEditGroup = (g) => {
+    setEditingGroup(g);
+    setGroupForm({ name: g.name, code: g.code });
+    setShowGroupModal(true);
+  };
+  const saveGroup = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      if (editingGroup) {
+        await subjectGroupsApi.update(editingGroup.id, groupForm);
+        flash("Subject group updated.");
+      } else {
+        await subjectGroupsApi.create(groupForm);
+        flash("Subject group created.");
+      }
+      setShowGroupModal(false);
+      await loadAll();
+    } catch (err) {
+      flash(err.response?.data ? JSON.stringify(err.response.data) : "Could not save group.", "danger");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const deleteGroup = async (g) => {
+    if (!window.confirm(`Delete group "${g.name}"?`)) return;
+    try {
+      await subjectGroupsApi.delete(g.id);
+      flash("Subject group deleted.");
+      await loadAll();
+    } catch (err) {
+      flash(err.response?.data?.detail || "Could not delete group.", "danger");
+    }
+  };
+
+  // ===========================================================================
+  // SELECTION TRACKS (8-4-4 - e.g. "Technical + Humanities" vs "Triple Science")
+  // ===========================================================================
+  const openAddTrack = () => {
+    setEditingTrack(null);
+    setTrackForm(emptyTrackForm);
+    setShowTrackModal(true);
+  };
+  const openEditTrack = (t) => {
+    setEditingTrack(t);
+    setTrackForm({ grade_level: t.grade_level, name: t.name, is_active: t.is_active });
+    setShowTrackModal(true);
+  };
+  const saveTrack = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      if (editingTrack) {
+        await selectionTracksApi.update(editingTrack.id, trackForm);
+        flash("Track updated.");
+      } else {
+        await selectionTracksApi.create(trackForm);
+        flash("Track created.");
+      }
+      setShowTrackModal(false);
+      await loadAll();
+    } catch (err) {
+      flash(err.response?.data ? JSON.stringify(err.response.data) : "Could not save track.", "danger");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const deleteTrack = async (t) => {
+    if (!window.confirm(`Delete track "${t.name}"? Its group rules will also be removed.`)) return;
+    try {
+      await selectionTracksApi.delete(t.id);
+      flash("Track deleted.");
+      await loadAll();
+    } catch (err) {
+      flash(err.response?.data?.detail || "Could not delete track.", "danger");
+    }
+  };
+
+  // ---- track group rules (nested inside a track, mirrors the Papers pattern) ----
+  const openTrackRulesModal = (track) => {
+    setRulesTrack(track);
+    setEditingTrackRule(null);
+    setTrackRuleForm(emptyTrackRuleForm);
+    setShowTrackRulesModal(true);
+  };
+  const openEditTrackRule = (rule) => {
+    setEditingTrackRule(rule);
+    setTrackRuleForm({ group: rule.group, min_choose: rule.min_choose, max_choose: rule.max_choose });
+  };
+  const saveTrackRule = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const payload = { ...trackRuleForm, track: rulesTrack.id };
+      if (editingTrackRule) {
+        await trackRulesApi.update(editingTrackRule.id, payload);
+        flash("Group rule updated.");
+      } else {
+        await trackRulesApi.create(payload);
+        flash("Group rule added.");
+      }
+      const refreshed = await loadAll();
+      const updatedTrack = (refreshed.selectionTracks || []).find((t) => t.id === rulesTrack.id);
+      setRulesTrack(updatedTrack || rulesTrack);
+      setEditingTrackRule(null);
+      setTrackRuleForm(emptyTrackRuleForm);
+    } catch (err) {
+      flash(err.response?.data ? JSON.stringify(err.response.data) : "Could not save group rule.", "danger");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const deleteTrackRule = async (rule) => {
+    if (!window.confirm("Remove this group rule from the track?")) return;
+    try {
+      await trackRulesApi.delete(rule.id);
+      flash("Group rule removed.");
+      const refreshed = await loadAll();
+      const updatedTrack = (refreshed.selectionTracks || []).find((t) => t.id === rulesTrack.id);
+      setRulesTrack(updatedTrack || rulesTrack);
+    } catch (err) {
+      flash(err.response?.data?.detail || "Could not remove group rule.", "danger");
+    }
+  };
+
+  // ===========================================================================
   // FILTERING + PAGINATION
   // ===========================================================================
   const filteredSubjects = useMemo(() => {
@@ -440,6 +690,8 @@ export default function AdminSubjects() {
     { key: "subjects", label: "Subjects", icon: "bi-book" },
     { key: "grades", label: "Grade Offerings", icon: "bi-link-45deg" },
     { key: "rules", label: "Selection Rules", icon: "bi-sliders2" },
+    { key: "pathways", label: "Pathways", icon: "bi-signpost-2" },
+    { key: "tracks", label: "Groups & Tracks", icon: "bi-diagram-3" },
     { key: "grading", label: "Grading Scales", icon: "bi-mortarboard" },
   ];
 
@@ -457,7 +709,7 @@ export default function AdminSubjects() {
         <div>
           <h1 className="page-title">Subjects</h1>
           <p className="page-subtitle">
-            Manage subjects, papers, grade offerings, selection rules, and grading scales
+            Manage subjects, papers, grade offerings, selection rules, pathways, groups/tracks, and grading scales
           </p>
         </div>
       </div>
@@ -574,6 +826,7 @@ export default function AdminSubjects() {
                           <th>Code</th>
                           <th>Name</th>
                           <th>Curriculum</th>
+                          <th>Pathway / Group</th>
                           <th>Papers</th>
                           <th style={{ width: "120px" }}>Actions</th>
                         </tr>
@@ -587,6 +840,15 @@ export default function AdminSubjects() {
                               <span className={`badge ${s.curriculum_type === "CBC" ? "badge-blue" : "badge-gold"}`}>
                                 {s.curriculum_type}
                               </span>
+                            </td>
+                            <td>
+                              {s.pathway && (
+                                <span className="badge badge-blue">{pathwayLabel(s.pathway)}</span>
+                              )}
+                              {s.elective_group && (
+                                <span className="badge badge-neutral ms-1">{groupLabel(s.elective_group)}</span>
+                              )}
+                              {!s.pathway && !s.elective_group && <span className="text-muted-soft">—</span>}
                             </td>
                             <td>
                               {s.has_papers ? (
@@ -823,6 +1085,7 @@ export default function AdminSubjects() {
                     <thead>
                       <tr>
                         <th>Grade</th>
+                        <th>Pathway?</th>
                         <th>Min Optional</th>
                         <th>Max Optional</th>
                         <th>Min Total</th>
@@ -838,13 +1101,20 @@ export default function AdminSubjects() {
                             <td><span className="badge badge-blue">{g.name} ({g.curriculum_type})</span></td>
                             {rule ? (
                               <>
+                                <td>
+                                  {rule.requires_pathway ? (
+                                    <span className="badge badge-success">Yes</span>
+                                  ) : (
+                                    <span className="text-muted-soft">No</span>
+                                  )}
+                                </td>
                                 <td>{rule.min_optional_subjects}</td>
                                 <td>{rule.max_optional_subjects}</td>
                                 <td>{rule.min_total_subjects}</td>
                                 <td>{rule.max_total_subjects}</td>
                               </>
                             ) : (
-                              <td colSpan={4}><span className="text-muted-soft">Not configured</span></td>
+                              <td colSpan={5}><span className="text-muted-soft">Not configured</span></td>
                             )}
                             <td>
                               <div className="table-actions">
@@ -874,6 +1144,247 @@ export default function AdminSubjects() {
                 </div>
               )}
             </div>
+          )}
+
+          {/* ============================ PATHWAYS TAB ============================ */}
+          {activeTab === "pathways" && (
+            <div className="table-wrap">
+              <div className="table-wrap__header">
+                <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                  <i className="bi bi-signpost-2 me-2"></i>CBC Pathways
+                </span>
+                <div className="d-flex align-items-center gap-2">
+                  <span style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>
+                    {pathways.length} pathway{pathways.length !== 1 ? "s" : ""}
+                  </span>
+                  <button className="btn btn-primary btn-sm" onClick={openAddPathway}>
+                    <i className="bi bi-plus-lg me-1"></i> Add Pathway
+                  </button>
+                </div>
+              </div>
+
+              {pathways.length === 0 ? (
+                <div className="empty-state">
+                  <i className="bi bi-signpost-2"></i>
+                  <h6>No pathways created yet</h6>
+                  <p className="text-muted-soft">
+                    e.g. STEM, Social Sciences, Arts &amp; Sports Science — used by grades where
+                    "Requires pathway" is turned on under Selection Rules.
+                  </p>
+                </div>
+              ) : (
+                <div className="table-responsive">
+                  <table className="table table-hover mb-0">
+                    <thead>
+                      <tr>
+                        <th>Code</th>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Status</th>
+                        <th style={{ width: "100px" }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pathways.map((p) => (
+                        <tr key={p.id}>
+                          <td><span className="badge badge-neutral">{p.code}</span></td>
+                          <td><span style={{ fontWeight: 600, color: "var(--ink-900)" }}>{p.name}</span></td>
+                          <td><span className="text-muted-soft">{p.description || "—"}</span></td>
+                          <td>
+                            {p.is_active ? (
+                              <span className="badge badge-success">Active</span>
+                            ) : (
+                              <span className="badge badge-neutral">Inactive</span>
+                            )}
+                          </td>
+                          <td>
+                            <div className="table-actions">
+                              <button
+                                className="btn btn-sm btn-outline-primary btn-icon"
+                                title="Edit"
+                                onClick={() => openEditPathway(p)}
+                              >
+                                <i className="bi bi-pencil"></i>
+                              </button>
+                              <button
+                                className="btn btn-sm btn-outline-danger btn-icon"
+                                title="Delete"
+                                onClick={() => deletePathway(p)}
+                              >
+                                <i className="bi bi-trash"></i>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ======================== GROUPS & TRACKS TAB ======================== */}
+          {activeTab === "tracks" && (
+            <>
+              {/* ---- Subject Groups ---- */}
+              <div className="table-wrap mb-4">
+                <div className="table-wrap__header">
+                  <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                    <i className="bi bi-collection me-2"></i>8-4-4 Subject Groups
+                  </span>
+                  <div className="d-flex align-items-center gap-2">
+                    <span style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>
+                      {subjectGroups.length} group{subjectGroups.length !== 1 ? "s" : ""}
+                    </span>
+                    <button className="btn btn-primary btn-sm" onClick={openAddGroup}>
+                      <i className="bi bi-plus-lg me-1"></i> Add Group
+                    </button>
+                  </div>
+                </div>
+
+                {subjectGroups.length === 0 ? (
+                  <div className="empty-state">
+                    <i className="bi bi-collection"></i>
+                    <h6>No subject groups created yet</h6>
+                    <p className="text-muted-soft">e.g. Technical, Humanities, Sciences</p>
+                  </div>
+                ) : (
+                  <div className="table-responsive">
+                    <table className="table table-hover mb-0">
+                      <thead>
+                        <tr>
+                          <th>Code</th>
+                          <th>Name</th>
+                          <th style={{ width: "100px" }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {subjectGroups.map((g) => (
+                          <tr key={g.id}>
+                            <td><span className="badge badge-neutral">{g.code}</span></td>
+                            <td><span style={{ fontWeight: 600, color: "var(--ink-900)" }}>{g.name}</span></td>
+                            <td>
+                              <div className="table-actions">
+                                <button
+                                  className="btn btn-sm btn-outline-primary btn-icon"
+                                  title="Edit"
+                                  onClick={() => openEditGroup(g)}
+                                >
+                                  <i className="bi bi-pencil"></i>
+                                </button>
+                                <button
+                                  className="btn btn-sm btn-outline-danger btn-icon"
+                                  title="Delete"
+                                  onClick={() => deleteGroup(g)}
+                                >
+                                  <i className="bi bi-trash"></i>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* ---- Selection Tracks ---- */}
+              <div className="table-wrap mb-4">
+                <div className="table-wrap__header">
+                  <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                    <i className="bi bi-diagram-3 me-2"></i>Selection Tracks
+                  </span>
+                  <div className="d-flex align-items-center gap-2">
+                    <span style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>
+                      {selectionTracks.length} track{selectionTracks.length !== 1 ? "s" : ""}
+                    </span>
+                    <button className="btn btn-primary btn-sm" onClick={openAddTrack}>
+                      <i className="bi bi-plus-lg me-1"></i> Add Track
+                    </button>
+                  </div>
+                </div>
+
+                {selectionTracks.length === 0 ? (
+                  <div className="empty-state">
+                    <i className="bi bi-diagram-3"></i>
+                    <h6>No tracks created yet</h6>
+                    <p className="text-muted-soft">
+                      e.g. Form 3's "Technical + Humanities" track vs "Triple Science" track.
+                      Each track's group rules decide how many subjects to choose per group.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="table-responsive">
+                    <table className="table table-hover mb-0">
+                      <thead>
+                        <tr>
+                          <th>Grade</th>
+                          <th>Track</th>
+                          <th>Group Rules</th>
+                          <th>Status</th>
+                          <th style={{ width: "140px" }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectionTracks.map((t) => (
+                          <tr key={t.id}>
+                            <td><span className="badge badge-gold">{gradeLabel(t.grade_level)}</span></td>
+                            <td><span style={{ fontWeight: 600, color: "var(--ink-900)" }}>{t.name}</span></td>
+                            <td>
+                              {t.group_rules?.length ? (
+                                t.group_rules.map((r) => (
+                                  <span key={r.id} className="badge badge-neutral me-1 mb-1">
+                                    {r.min_choose === r.max_choose
+                                      ? `${r.min_choose} ${r.group_name}`
+                                      : `${r.min_choose}-${r.max_choose} ${r.group_name}`}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="text-muted-soft">No rules yet</span>
+                              )}
+                            </td>
+                            <td>
+                              {t.is_active ? (
+                                <span className="badge badge-success">Active</span>
+                              ) : (
+                                <span className="badge badge-neutral">Inactive</span>
+                              )}
+                            </td>
+                            <td>
+                              <div className="table-actions">
+                                <button
+                                  className="btn btn-sm btn-outline-secondary btn-icon"
+                                  title="Manage group rules"
+                                  onClick={() => openTrackRulesModal(t)}
+                                >
+                                  <i className="bi bi-list-check"></i>
+                                </button>
+                                <button
+                                  className="btn btn-sm btn-outline-primary btn-icon"
+                                  title="Edit"
+                                  onClick={() => openEditTrack(t)}
+                                >
+                                  <i className="bi bi-pencil"></i>
+                                </button>
+                                <button
+                                  className="btn btn-sm btn-outline-danger btn-icon"
+                                  title="Delete"
+                                  onClick={() => deleteTrack(t)}
+                                >
+                                  <i className="bi bi-trash"></i>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </>
           )}
 
           {/* ========================= GRADING SCALES TAB ========================= */}
@@ -1060,6 +1571,39 @@ export default function AdminSubjects() {
                         <option key={c} value={c}>{c === "8-4-4" ? "8-4-4 (Legacy)" : c}</option>
                       ))}
                     </select>
+
+                    {subjectForm.curriculum_type === "CBC" && (
+                      <>
+                        <label className="form-label small">Pathway (optional, CBC electives only)</label>
+                        <select
+                          className="form-select mb-2"
+                          value={subjectForm.pathway || ""}
+                          onChange={(e) => setSubjectForm({ ...subjectForm, pathway: e.target.value })}
+                        >
+                          <option value="">None (compulsory subject)</option>
+                          {pathways.map((p) => (
+                            <option key={p.id} value={p.id}>{p.name}</option>
+                          ))}
+                        </select>
+                      </>
+                    )}
+
+                    {subjectForm.curriculum_type === "8-4-4" && (
+                      <>
+                        <label className="form-label small">Elective Group (optional, 8-4-4 electives only)</label>
+                        <select
+                          className="form-select mb-2"
+                          value={subjectForm.elective_group || ""}
+                          onChange={(e) => setSubjectForm({ ...subjectForm, elective_group: e.target.value })}
+                        >
+                          <option value="">None (compulsory subject)</option>
+                          {subjectGroups.map((g) => (
+                            <option key={g.id} value={g.id}>{g.name}</option>
+                          ))}
+                        </select>
+                      </>
+                    )}
+
                     <div className="form-check">
                       <input
                         type="checkbox"
@@ -1322,6 +1866,22 @@ export default function AdminSubjects() {
                     <button type="button" className="btn-close" onClick={() => setShowRuleModal(false)}></button>
                   </div>
                   <div className="modal-body">
+                    <div className="form-check mb-3">
+                      <input
+                        type="checkbox"
+                        className="form-check-input"
+                        id="requiresPathway"
+                        checked={ruleForm.requires_pathway || false}
+                        onChange={(e) => setRuleForm({ ...ruleForm, requires_pathway: e.target.checked })}
+                      />
+                      <label className="form-check-label" htmlFor="requiresPathway">
+                        Requires pathway selection (CBC — student must pick STEM / Social Sciences / Arts &amp; Sports Science first)
+                      </label>
+                    </div>
+                    <p className="text-muted-soft" style={{ fontSize: "var(--fs-xs)" }}>
+                      For 8-4-4 grades with elective tracks (Technical/Humanities/Sciences), leave this off —
+                      configure tracks instead under the "Groups &amp; Tracks" tab.
+                    </p>
                     <div className="row g-2">
                       <div className="col-6">
                         <label className="form-label small">Min optional</label>
@@ -1474,6 +2034,323 @@ export default function AdminSubjects() {
                     </button>
                   </div>
                 </form>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ---- Pathway modal ---- */}
+      {showPathwayModal && (
+        <>
+          <div className="modal-backdrop fade show"></div>
+          <div className="modal fade show d-block" tabIndex="-1">
+            <div className="modal-dialog">
+              <div className="modal-content">
+                <form onSubmit={savePathway}>
+                  <div className="modal-header">
+                    <h5 className="modal-title">{editingPathway ? "Edit Pathway" : "Add Pathway"}</h5>
+                    <button type="button" className="btn-close" onClick={() => setShowPathwayModal(false)}></button>
+                  </div>
+                  <div className="modal-body">
+                    <label className="form-label small">Name</label>
+                    <input
+                      className="form-control mb-2"
+                      placeholder="e.g. STEM"
+                      value={pathwayForm.name}
+                      onChange={(e) => setPathwayForm({ ...pathwayForm, name: e.target.value })}
+                      required
+                    />
+                    <label className="form-label small">Code</label>
+                    <input
+                      className="form-control mb-2"
+                      placeholder="e.g. STEM"
+                      value={pathwayForm.code}
+                      onChange={(e) => setPathwayForm({ ...pathwayForm, code: e.target.value })}
+                      required
+                    />
+                    <label className="form-label small">Description</label>
+                    <textarea
+                      className="form-control mb-2"
+                      rows={2}
+                      value={pathwayForm.description}
+                      onChange={(e) => setPathwayForm({ ...pathwayForm, description: e.target.value })}
+                    />
+                    <div className="form-check">
+                      <input
+                        type="checkbox"
+                        className="form-check-input"
+                        id="pathwayActive"
+                        checked={pathwayForm.is_active}
+                        onChange={(e) => setPathwayForm({ ...pathwayForm, is_active: e.target.checked })}
+                      />
+                      <label className="form-check-label" htmlFor="pathwayActive">Active</label>
+                    </div>
+                  </div>
+                  <div className="modal-footer">
+                    <button type="button" className="btn btn-light" onClick={() => setShowPathwayModal(false)}>
+                      Cancel
+                    </button>
+                    <button type="submit" className="btn btn-primary" disabled={saving}>
+                      {saving ? "Saving..." : "Save Pathway"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ---- Subject group modal ---- */}
+      {showGroupModal && (
+        <>
+          <div className="modal-backdrop fade show"></div>
+          <div className="modal fade show d-block" tabIndex="-1">
+            <div className="modal-dialog">
+              <div className="modal-content">
+                <form onSubmit={saveGroup}>
+                  <div className="modal-header">
+                    <h5 className="modal-title">{editingGroup ? "Edit Subject Group" : "Add Subject Group"}</h5>
+                    <button type="button" className="btn-close" onClick={() => setShowGroupModal(false)}></button>
+                  </div>
+                  <div className="modal-body">
+                    <label className="form-label small">Name</label>
+                    <input
+                      className="form-control mb-2"
+                      placeholder="e.g. Technical"
+                      value={groupForm.name}
+                      onChange={(e) => setGroupForm({ ...groupForm, name: e.target.value })}
+                      required
+                    />
+                    <label className="form-label small">Code</label>
+                    <input
+                      className="form-control mb-2"
+                      placeholder="e.g. TECHNICAL"
+                      value={groupForm.code}
+                      onChange={(e) => setGroupForm({ ...groupForm, code: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div className="modal-footer">
+                    <button type="button" className="btn btn-light" onClick={() => setShowGroupModal(false)}>
+                      Cancel
+                    </button>
+                    <button type="submit" className="btn btn-primary" disabled={saving}>
+                      {saving ? "Saving..." : "Save Group"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ---- Selection track modal ---- */}
+      {showTrackModal && (
+        <>
+          <div className="modal-backdrop fade show"></div>
+          <div className="modal fade show d-block" tabIndex="-1">
+            <div className="modal-dialog">
+              <div className="modal-content">
+                <form onSubmit={saveTrack}>
+                  <div className="modal-header">
+                    <h5 className="modal-title">{editingTrack ? "Edit Track" : "Add Track"}</h5>
+                    <button type="button" className="btn-close" onClick={() => setShowTrackModal(false)}></button>
+                  </div>
+                  <div className="modal-body">
+                    <label className="form-label small">Grade Level</label>
+                    <select
+                      className="form-select mb-2"
+                      required
+                      value={trackForm.grade_level}
+                      onChange={(e) => setTrackForm({ ...trackForm, grade_level: e.target.value })}
+                    >
+                      <option value="">Grade level...</option>
+                      {gradeLevels.map((g) => (
+                        <option key={g.id} value={g.id}>{g.name} ({g.curriculum_type})</option>
+                      ))}
+                    </select>
+                    <label className="form-label small">Track Name</label>
+                    <input
+                      className="form-control mb-2"
+                      placeholder="e.g. Technical + Humanities"
+                      value={trackForm.name}
+                      onChange={(e) => setTrackForm({ ...trackForm, name: e.target.value })}
+                      required
+                    />
+                    <div className="form-check">
+                      <input
+                        type="checkbox"
+                        className="form-check-input"
+                        id="trackActive"
+                        checked={trackForm.is_active}
+                        onChange={(e) => setTrackForm({ ...trackForm, is_active: e.target.checked })}
+                      />
+                      <label className="form-check-label" htmlFor="trackActive">Active</label>
+                    </div>
+                    {editingTrack && (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-secondary mt-3"
+                        onClick={() => {
+                          setShowTrackModal(false);
+                          openTrackRulesModal(editingTrack);
+                        }}
+                      >
+                        <i className="bi bi-list-check me-1"></i>Manage Group Rules
+                      </button>
+                    )}
+                  </div>
+                  <div className="modal-footer">
+                    <button type="button" className="btn btn-light" onClick={() => setShowTrackModal(false)}>
+                      Cancel
+                    </button>
+                    <button type="submit" className="btn btn-primary" disabled={saving}>
+                      {saving ? "Saving..." : "Save Track"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ---- Track group rules modal (nested inside a track) ---- */}
+      {showTrackRulesModal && rulesTrack && (
+        <>
+          <div className="modal-backdrop fade show"></div>
+          <div className="modal fade show d-block" tabIndex="-1">
+            <div className="modal-dialog modal-lg">
+              <div className="modal-content">
+                <div className="modal-header">
+                  <h5 className="modal-title">Group Rules — {rulesTrack.name}</h5>
+                  <button
+                    type="button"
+                    className="btn-close"
+                    onClick={() => {
+                      setShowTrackRulesModal(false);
+                      setEditingTrackRule(null);
+                    }}
+                  ></button>
+                </div>
+                <div className="modal-body">
+                  {rulesTrack.group_rules?.length > 0 ? (
+                    <table className="table table-sm mb-3">
+                      <thead>
+                        <tr>
+                          <th>Group</th>
+                          <th>Min</th>
+                          <th>Max</th>
+                          <th style={{ width: "90px" }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rulesTrack.group_rules.map((r) => (
+                          <tr key={r.id}>
+                            <td>{r.group_name}</td>
+                            <td>{r.min_choose}</td>
+                            <td>{r.max_choose}</td>
+                            <td>
+                              <div className="table-actions">
+                                <button
+                                  className="btn btn-sm btn-outline-primary btn-icon"
+                                  title="Edit"
+                                  onClick={() => openEditTrackRule(r)}
+                                >
+                                  <i className="bi bi-pencil"></i>
+                                </button>
+                                <button
+                                  className="btn btn-sm btn-outline-danger btn-icon"
+                                  title="Delete"
+                                  onClick={() => deleteTrackRule(r)}
+                                >
+                                  <i className="bi bi-trash"></i>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="text-muted-soft mb-3">No group rules added yet.</p>
+                  )}
+
+                  <hr />
+                  <h6 className="mb-2">{editingTrackRule ? "Edit Group Rule" : "Add Group Rule"}</h6>
+                  <form onSubmit={saveTrackRule}>
+                    <div className="row g-2">
+                      <div className="col-5">
+                        <label className="form-label small">Group</label>
+                        <select
+                          className="form-select"
+                          value={trackRuleForm.group}
+                          onChange={(e) => setTrackRuleForm({ ...trackRuleForm, group: e.target.value })}
+                          required
+                        >
+                          <option value="">Group...</option>
+                          {subjectGroups.map((g) => (
+                            <option key={g.id} value={g.id}>{g.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="col-3">
+                        <label className="form-label small">Min choose</label>
+                        <input
+                          type="number"
+                          min="0"
+                          className="form-control"
+                          value={trackRuleForm.min_choose}
+                          onChange={(e) => setTrackRuleForm({ ...trackRuleForm, min_choose: Number(e.target.value) })}
+                          required
+                        />
+                      </div>
+                      <div className="col-4">
+                        <label className="form-label small">Max choose</label>
+                        <input
+                          type="number"
+                          min="0"
+                          className="form-control"
+                          value={trackRuleForm.max_choose}
+                          onChange={(e) => setTrackRuleForm({ ...trackRuleForm, max_choose: Number(e.target.value) })}
+                          required
+                        />
+                      </div>
+                    </div>
+                    <div className="d-flex gap-2 mt-3">
+                      <button type="submit" className="btn btn-primary btn-sm" disabled={saving}>
+                        {saving ? "Saving..." : editingTrackRule ? "Update Rule" : "Add Rule"}
+                      </button>
+                      {editingTrackRule && (
+                        <button
+                          type="button"
+                          className="btn btn-light btn-sm"
+                          onClick={() => {
+                            setEditingTrackRule(null);
+                            setTrackRuleForm(emptyTrackRuleForm);
+                          }}
+                        >
+                          Cancel Edit
+                        </button>
+                      )}
+                    </div>
+                  </form>
+                </div>
+                <div className="modal-footer">
+                  <button
+                    type="button"
+                    className="btn btn-light"
+                    onClick={() => {
+                      setShowTrackRulesModal(false);
+                      setEditingTrackRule(null);
+                    }}
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
             </div>
           </div>
