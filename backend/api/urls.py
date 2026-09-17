@@ -37,6 +37,14 @@ router.register(r"login-attempts", views.LoginAttemptLogViewSet, basename="login
 router.register(r"period-slots", views.PeriodSlotViewSet, basename="period-slots")
 router.register(r"timetable-entries", views.TimetableEntryViewSet, basename="timetable-entries")
 router.register(r"subscription-packages", views.SubscriptionPackageViewSet, basename="subscription-package")
+router.register("pathways", views.PathwayViewSet)
+router.register("subject-groups", views.SubjectGroupViewSet)
+router.register("selection-tracks", views.SelectionTrackViewSet)
+router.register("track-group-rules", views.TrackGroupRuleViewSet)
+router.register(r"expense-categories", views.ExpenseCategoryViewSet, basename="expense-category")
+router.register(r"expenses", views.ExpenseViewSet, basename="expense")
+
+
 
 urlpatterns = [
     path("auth/login/", views.LoginView.as_view(), name="login"),  # replaces old login route
@@ -67,5 +75,7 @@ urlpatterns = [
     path("receipts/verify/<str:receipt_no>/", views.VerifyReceiptView.as_view(), name="verify-receipt"),
     path("messaging/recipients/", views.RecipientSearchView.as_view(), name="messaging-recipients"),
     path("finance-reports/student-balances/", views.FinanceStudentBalancesReportView.as_view()),
+    path("report-cards/<str:token>/qr/", views.ReportCardQrView.as_view()),
+    path("report-cards/verify/<str:token>/", views.ReportCardVerifyView.as_view()),
     path("", include(router.urls)),
 ]

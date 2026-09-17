@@ -116,6 +116,11 @@ export default function AdminFinanceClassAnalysis() {
     load(yearId);
   };
 
+  // Resolve the currently-selected academic year object so we can echo it
+  // in the page subtitle (defensive: only when data has loaded).
+  const currentYearObj =
+    data?.academic_years?.find((ay) => ay.id === selectedYear) || null;
+
   return (
     <div>
       {/* Breadcrumb */}
@@ -130,29 +135,57 @@ export default function AdminFinanceClassAnalysis() {
         <div>
           <h1 className="page-title">Class Analysis</h1>
           <p className="page-subtitle">
+            {!loading && currentYearObj && (
+              <>
+                <span className="fw-semibold text-brand">{currentYearObj.year}</span>
+                {currentYearObj.is_current && (
+                  <span className="text-muted-soft"> (current)</span>
+                )}
+                <span className="text-muted-soft"> · </span>
+              </>
+            )}
             Which classes are carrying the most unpaid fees, how collection has moved through the year, and
             how payments break down by method and gender.
           </p>
         </div>
         {!loading && data?.academic_years?.length > 0 && (
-          <ul className="nav nav-pills" style={{ marginBottom: 0 }}>
-            {data.academic_years.map((ay) => (
-              <li className="nav-item" key={ay.id}>
-                <button
-                  type="button"
-                  className={`nav-link ${selectedYear === ay.id ? "active" : ""}`}
-                  onClick={() => handleTabClick(ay.id)}
-                  style={{
-                    cursor: "pointer",
-                    border: "none",
-                    background: "transparent",
-                  }}
-                >
-                  {ay.year}
-                  {ay.is_current && <span className="ms-1" style={{ color: "var(--gold-500)" }}>•</span>}
-                </button>
-              </li>
-            ))}
+          <ul className="nav nav-pills academic-year-tabs" style={{ marginBottom: 0 }}>
+            {data.academic_years.map((ay) => {
+              const isActive = selectedYear === ay.id;
+              // Show the "Current" chip if the API marks it, OR (fallback)
+              // if no year is marked current and this is the newest entry.
+              const isCurrent =
+                ay.is_current ||
+                (!data.academic_years.some((y) => y.is_current) &&
+                  ay.id === data.academic_years[0]?.id);
+              return (
+                <li className="nav-item" key={ay.id}>
+                  <button
+                    type="button"
+                    className={`nav-link ${isActive ? "active" : ""}`}
+                    onClick={() => handleTabClick(ay.id)}
+                    style={{
+                      cursor: "pointer",
+                      border: "none",
+                      background: "transparent",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "0.35rem",
+                    }}
+                  >
+                    {ay.year}
+                    {isCurrent && (
+                      <span
+                        className={`badge badge-gold ${isActive ? "badge-on-active" : ""}`}
+                        style={{ fontSize: "0.65rem", padding: "0.15rem 0.45rem" }}
+                      >
+                        Current
+                      </span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
@@ -342,42 +375,42 @@ export default function AdminFinanceClassAnalysis() {
                     wrapperStyle={{ fontSize: "var(--fs-xs)" }}
                     formatter={(value) => <span style={{ color: "var(--ink-700)" }}>{value}</span>}
                   />
-                  <Line 
-                    yAxisId="money" 
-                    type="monotone" 
-                    dataKey="total_due" 
-                    name="Invoiced" 
-                    stroke="var(--blue-700)" 
-                    strokeWidth={2.5} 
-                    dot={{ r: 3, fill: "var(--blue-700)" }} 
+                  <Line
+                    yAxisId="money"
+                    type="monotone"
+                    dataKey="total_due"
+                    name="Invoiced"
+                    stroke="var(--blue-700)"
+                    strokeWidth={2.5}
+                    dot={{ r: 3, fill: "var(--blue-700)" }}
                   />
-                  <Line 
-                    yAxisId="money" 
-                    type="monotone" 
-                    dataKey="total_paid" 
-                    name="Collected" 
-                    stroke="var(--success-600)" 
-                    strokeWidth={2.5} 
-                    dot={{ r: 3, fill: "var(--success-600)" }} 
+                  <Line
+                    yAxisId="money"
+                    type="monotone"
+                    dataKey="total_paid"
+                    name="Collected"
+                    stroke="var(--success-600)"
+                    strokeWidth={2.5}
+                    dot={{ r: 3, fill: "var(--success-600)" }}
                   />
-                  <Line 
-                    yAxisId="money" 
-                    type="monotone" 
-                    dataKey="outstanding" 
-                    name="Outstanding" 
-                    stroke="var(--danger-600)" 
-                    strokeWidth={2.5} 
-                    dot={{ r: 3, fill: "var(--danger-600)" }} 
+                  <Line
+                    yAxisId="money"
+                    type="monotone"
+                    dataKey="outstanding"
+                    name="Outstanding"
+                    stroke="var(--danger-600)"
+                    strokeWidth={2.5}
+                    dot={{ r: 3, fill: "var(--danger-600)" }}
                   />
-                  <Line 
-                    yAxisId="count" 
-                    type="monotone" 
-                    dataKey="invoice_count" 
-                    name="Invoices issued" 
-                    stroke="var(--gold-500)" 
-                    strokeWidth={2} 
-                    strokeDasharray="4 3" 
-                    dot={{ r: 3, fill: "var(--gold-500)" }} 
+                  <Line
+                    yAxisId="count"
+                    type="monotone"
+                    dataKey="invoice_count"
+                    name="Invoices issued"
+                    stroke="var(--gold-500)"
+                    strokeWidth={2}
+                    strokeDasharray="4 3"
+                    dot={{ r: 3, fill: "var(--gold-500)" }}
                   />
                 </LineChart>
               </ResponsiveContainer>

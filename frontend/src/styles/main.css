@@ -1774,3 +1774,206 @@ textarea:focus-visible,
 .border-brand { border-color: var(--blue-600) !important; }
 .divider { height: 1px; background: var(--border-color); margin: 1.25rem 0; border: none; }
 .gap-xs { gap: var(--space-2); }
+
+
+.verify-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 2rem 1rem;
+  background: var(--surface-2, #f8fafc);
+}
+
+.verify-card {
+  width: 100%;
+  max-width: 620px;
+  background: #fff;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 12px;
+  padding: 1.75rem;
+  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.06);
+}
+
+.verify-card--loading,
+.verify-card--error,
+.verify-card--invalid {
+  text-align: center;
+  padding: 3rem 1.75rem;
+}
+
+.verify-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+  margin-bottom: 1.25rem;
+}
+
+.verify-logo {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+}
+
+.verify-school {
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--ink-900, #0f172a);
+}
+
+.verify-subtitle {
+  font-size: 0.8rem;
+  color: var(--ink-500, #64748b);
+}
+
+.verify-success-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+  padding: 0.85rem 1rem;
+  border-radius: 8px;
+  margin-bottom: 1.5rem;
+}
+
+.verify-success-banner i {
+  font-size: 1.6rem;
+}
+
+.verify-success-note {
+  font-size: 0.8rem;
+  color: #047857;
+}
+
+.verify-section {
+  margin-bottom: 1.5rem;
+}
+
+.verify-section-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink-500, #64748b);
+  margin-bottom: 0.75rem;
+}
+
+.verify-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.75rem 1.25rem;
+}
+
+.verify-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.verify-label {
+  font-size: 0.72rem;
+  color: var(--ink-500, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.verify-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ink-900, #0f172a);
+}
+
+.verify-footer {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color, #e2e8f0);
+  font-size: 0.75rem;
+  color: var(--ink-500, #64748b);
+  text-align: center;
+}
+
+.verify-icon {
+  font-size: 2.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.verify-icon--error { color: #dc2626; }
+.verify-icon--invalid { color: #dc2626; }
+
+.verify-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+  color: var(--ink-900, #0f172a);
+}
+
+.verify-message {
+  color: var(--ink-600, #475569);
+  margin-bottom: 0.5rem;
+}
+
+.verify-hint {
+  font-size: 0.85rem;
+  color: var(--ink-500, #64748b);
+}
+
+/* ==========================================================================
+   19b. ACADEMIC-YEAR TAB STRIP
+   Used by finance report pages (Class Analysis, Collections). Inactive
+   years render as plain clickable text: no pill fill, no underline, no
+   hover background. Only the active year gets the blue pill treatment.
+   ========================================================================== */
+.academic-year-tabs {
+  gap: 0.15rem;
+}
+
+.academic-year-tabs .nav-link {
+  background: transparent !important;
+  border: none !important;
+  text-decoration: none !important;
+  color: var(--ink-700) !important;
+  font-weight: 500;
+  padding: 0.35rem 0.7rem;
+  border-radius: var(--radius-pill);
+  box-shadow: none !important;
+  transition: color 0.15s ease;
+}
+
+/* Inactive hover/focus: color shift only — no fill, no underline */
+.academic-year-tabs .nav-link:hover,
+.academic-year-tabs .nav-link:focus,
+.academic-year-tabs .nav-link:focus-visible {
+  background: transparent !important;
+  color: var(--blue-700) !important;
+  text-decoration: none !important;
+  outline: none;
+  box-shadow: none !important;
+}
+
+/* Active year: the ONLY element that carries the blue pill */
+.academic-year-tabs .nav-link.active {
+  background: var(--blue-700) !important;
+  color: #fff !important;
+  font-weight: 600;
+}
+
+.academic-year-tabs .nav-link.active:hover,
+.academic-year-tabs .nav-link.active:focus {
+  background: var(--blue-800) !important;
+  color: #fff !important;
+}
+
+/* "Current" chip inside the pill strip: gold on light, soft white on active */
+.academic-year-tabs .nav-link .badge-gold {
+  background: var(--gold-100);
+  color: var(--gold-600);
+}
+
+.academic-year-tabs .nav-link.active .badge-on-active {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}

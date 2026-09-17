@@ -127,29 +127,50 @@ export default function FinancePayments() {
   };
 
   // ---------------------------------------------------------------------
-  // STEP 2 - pay a specific invoice (overpayment allowed -> credit)
+  // STEP 2 - pay a specific invoice OR a student's whole outstanding
+  // balance in one go (overpayment allowed -> credit)
   // ---------------------------------------------------------------------
   const [payingInvoice, setPayingInvoice] = useState(null); // the Invoice object being paid
+  const [payingBalance, setPayingBalance] = useState(null); // { admission_no, student_name, totalOwed }
   const [paymentDraft, setPaymentDraft] = useState({ amount: "", method: "MPESA", reference: "" });
   const [recording, setRecording] = useState(false);
   const [paymentError, setPaymentError] = useState("");
 
   const openPaymentPanel = (invoice) => {
+    setPayingBalance(null);
     setPayingInvoice(invoice);
     setPaymentDraft({ amount: String(invoice.balance), method: "MPESA", reference: "" });
     setPaymentError("");
   };
 
+  // Pays EVERYTHING a student owes in one call - the backend
+  // (services.record_bulk_payment) splits the amount across their unpaid
+  // invoices oldest-first, which is what keeps the arrears/brought_forward
+  // math correct instead of Finance settling one invoice at a time.
+  const openBalancePaymentPanel = (student, totalOwed) => {
+    setPayingInvoice(null);
+    setPayingBalance({
+      admission_no: student.admission_no,
+      student_name: student.student_name,
+      totalOwed,
+    });
+    setPaymentDraft({ amount: String(totalOwed), method: "MPESA", reference: "" });
+    setPaymentError("");
+  };
+
   const closePaymentPanel = () => {
     setPayingInvoice(null);
+    setPayingBalance(null);
     setPaymentError("");
   };
 
   const amountNumber = Number(paymentDraft.amount || 0);
-  const excessOverBalance =
-    payingInvoice && amountNumber > Number(payingInvoice.balance)
-      ? amountNumber - Number(payingInvoice.balance)
-      : 0;
+  const activeBalanceDue = payingBalance
+    ? payingBalance.totalOwed
+    : payingInvoice
+    ? Number(payingInvoice.balance)
+    : 0;
+  const excessOverBalance = amountNumber > activeBalanceDue ? amountNumber - activeBalanceDue : 0;
 
   // ---------------------------------------------------------------------
   // STEP 3 - receipt (fetched from the backend, includes the QR code)
@@ -162,16 +183,31 @@ export default function FinancePayments() {
 
   const submitPayment = async (e) => {
     e.preventDefault();
-    if (!payingInvoice) return;
+    if (!payingInvoice && !payingBalance) return;
     setRecording(true);
     setPaymentError("");
     try {
-      const { data: payment } = await financeApi.recordPayment({
-        invoice: payingInvoice.id,
-        amount: paymentDraft.amount,
-        method: paymentDraft.method,
-        reference: paymentDraft.reference,
-      });
+      let payment;
+
+      if (payingBalance) {
+        // Bulk pay: one amount, split across every unpaid invoice for
+        // this student, oldest term first.
+        const { data } = await financeApi.recordBulkPayment({
+          admission_no: payingBalance.admission_no,
+          amount: paymentDraft.amount,
+          method: paymentDraft.method,
+          reference: paymentDraft.reference,
+        });
+        payment = { id: data.last_payment_id };
+      } else {
+        const { data } = await financeApi.recordPayment({
+          invoice: payingInvoice.id,
+          amount: paymentDraft.amount,
+          method: paymentDraft.method,
+          reference: paymentDraft.reference,
+        });
+        payment = data;
+      }
 
       setReceiptLoading(true);
       const { data: receiptData } = await paymentsApi.receipt(payment.id);
@@ -181,7 +217,12 @@ export default function FinancePayments() {
       });
 
       setPayingInvoice(null);
-      setMessage("Payment recorded. The receipt is ready below.");
+      setPayingBalance(null);
+      setMessage(
+        payingBalance
+          ? "Payment recorded against the student's outstanding balance. The receipt is ready below."
+          : "Payment recorded. The receipt is ready below."
+      );
       setMessageType("success");
 
       // refresh this student's outstanding invoices and the history table
@@ -198,6 +239,9 @@ export default function FinancePayments() {
   };
 
   // ---- Download a professional A5 receipt PDF with logo, QR and signature/stamp blocks ----
+  // Restructured: QR code is now LARGER and positioned near the BOTTOM,
+  // signature/stamp blocks are pinned at the very bottom, and a copyright
+  // footer is included at the end of the document.
   const downloadReceiptPdf = async (r) => {
     const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a5" });
     const pageWidth = doc.internal.pageSize.getWidth();
@@ -296,34 +340,94 @@ export default function FinancePayments() {
       cursorY += note.length * 4 + 4;
     }
 
-    // --- QR code ---
+    // ================================================================
+    // BOTTOM SECTION (restructured):
+    //   Larger QR code (left) + Official stamp box (right) on one row,
+    //   then Finance Officer & Principal signature lines below them,
+    //   then the copyright / anti-duplication footer at the very bottom.
+    // ================================================================
+
+    // Reserve space for the bottom block so it doesn't overlap content above
+    const qrSize = 34;                        // larger QR (was 28)
+    const qrRowHeight = qrSize + 6;           // QR + caption
+    const sigRowHeight = 12;                  // signature line + label
+    const footerReserve = 16;                 // space for the copyright footer
+    const bottomBlockHeight = qrRowHeight + sigRowHeight + footerReserve + 10;
+
+    let bottomTop = pageHeight - bottomBlockHeight - 6;
+
+    // Never let the bottom block overlap the content above it
+    if (bottomTop < cursorY + 4) {
+      doc.addPage();
+      bottomTop = 24;
+    }
+
+    // ---- Row 1: Large QR (left) + Official Stamp box (right) ----
+    const qrX = 12;
+    const qrY = bottomTop;
+
     if (r.qr_code_base64) {
-      const qrSize = 28;
-      const qrX = (pageWidth - qrSize) / 2;
-      // If we're running out of vertical room, move to a fresh area
-      if (cursorY + qrSize + 24 > pageHeight - 24) {
-        doc.addPage();
-        cursorY = 24;
-      }
       doc.addImage(
         `data:image/png;base64,${r.qr_code_base64}`,
         "PNG",
         qrX,
-        cursorY,
+        qrY,
         qrSize,
         qrSize
       );
-      doc.setFontSize(7.5);
-      doc.setTextColor(108, 117, 125);
-      doc.text("Scan to verify this receipt", pageWidth / 2, cursorY + qrSize + 4, {
-        align: "center",
-      });
-      cursorY += qrSize + 10;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text(
+        "Scan to verify this receipt",
+        qrX + qrSize / 2,
+        qrY + qrSize + 4,
+        { align: "center" }
+      );
+    } else {
+      // Placeholder box when the QR can't be generated
+      doc.setDrawColor(148, 163, 184);
+      doc.setLineWidth(0.2);
+      doc.rect(qrX, qrY, qrSize, qrSize);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Verification QR", qrX + qrSize / 2, qrY + qrSize / 2 - 1, { align: "center" });
+      doc.text("unavailable", qrX + qrSize / 2, qrY + qrSize / 2 + 4, { align: "center" });
     }
 
-    // --- Signature / stamp blocks: Finance Officer + Principal ---
-    const signY = Math.max(cursorY + 10, pageHeight - 34);
-    const lineY = signY + 12;
+    // Official stamp box on the same row, to the right of the QR
+    const stampGap = 6;
+    const stampX = qrX + qrSize + stampGap;
+    const stampY = qrY;
+    const stampWidth = pageWidth - stampX - 12;
+    const stampHeight = qrSize;
+
+    doc.setDrawColor(148, 163, 184);
+    doc.setLineWidth(0.2);
+    doc.rect(stampX, stampY, stampWidth, stampHeight);
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(15, 23, 42);
+    doc.text(
+      "Official School Stamp",
+      stampX + stampWidth / 2,
+      stampY + 6,
+      { align: "center" }
+    );
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text(
+      "(Stamp here)",
+      stampX + stampWidth / 2,
+      stampY + stampHeight / 2 + 3,
+      { align: "center" }
+    );
+
+    // ---- Row 2: Signature lines (Finance Officer | Principal) ----
+    const signY = qrY + qrRowHeight + 2;
 
     doc.setDrawColor(148, 163, 184);
     doc.setLineWidth(0.2);
@@ -332,30 +436,39 @@ export default function FinancePayments() {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(8.5);
     doc.setTextColor(15, 23, 42);
-    doc.text("Finance Officer:", 12, signY);
-    doc.line(12, lineY, 12 + 62, lineY);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.setTextColor(100, 116, 139);
-    doc.text("Signature & Official Stamp", 12, lineY + 4);
+    doc.text("Finance Officer's Signature:", 12, signY);
+    doc.line(12, signY + 7, pageWidth / 2 - 4, signY + 7);
 
     // Principal (right)
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8.5);
-    doc.setTextColor(15, 23, 42);
-    doc.text("Principal:", pageWidth - 74, signY);
-    doc.line(pageWidth - 74, lineY, pageWidth - 12, lineY);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.setTextColor(100, 116, 139);
-    doc.text("Signature & Official Stamp", pageWidth - 74, lineY + 4);
+    doc.text("Principal's Signature:", pageWidth / 2 + 4, signY);
+    doc.line(pageWidth / 2 + 4, signY + 7, pageWidth - 12, signY + 7);
 
-    // --- Footer ---
+    // ---- Row 3: Copyright / anti-duplication footer ----
+    const footerLineY = pageHeight - 12;
+    const footerTextY = pageHeight - 8;
+
+    doc.setDrawColor(203, 213, 225);
+    doc.setLineWidth(0.15);
+    doc.line(12, footerLineY - 2.5, pageWidth - 12, footerLineY - 2.5);
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(6.5);
+    doc.setTextColor(51, 65, 85);
+    doc.text("© Masomo School. All rights reserved.", 12, footerTextY);
+
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.setTextColor(148, 163, 184);
-    doc.text("Masomo School — Finance Department", 12, pageHeight - 6);
-    doc.text("Official payment receipt", pageWidth - 12, pageHeight - 6, { align: "right" });
+    doc.setFontSize(5.8);
+    doc.setTextColor(100, 116, 139);
+    doc.text(
+      "This is an official payment receipt. Duplication or unauthorized reproduction is prohibited.",
+      12,
+      footerTextY + 3.2
+    );
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Finance Department", pageWidth - 12, footerTextY, { align: "right" });
 
     doc.save(`receipt_${r.receipt_no}.pdf`);
   };
@@ -445,15 +558,49 @@ export default function FinancePayments() {
                 border-radius: 4px;
               }
 
-              .qr-block { text-align: center; margin-top: 12px; }
-              .qr-block img { width: 90px; height: 90px; }
+              /* Bottom block: QR + stamp on one row, signatures below */
+              .bottom-block {
+                margin-top: 18px;
+              }
+              .qr-stamp-row {
+                display: flex;
+                align-items: stretch;
+                gap: 10px;
+              }
+              .qr-block {
+                flex: 0 0 auto;
+                text-align: center;
+              }
+              .qr-block img { width: 110px; height: 110px; }
               .qr-block .qr-caption { font-size: 9px; color: #64748b; margin-top: 3px; }
+              .stamp-block {
+                flex: 1;
+                border: 1px solid #94a3b8;
+                border-radius: 4px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                padding: 8px;
+                min-height: 110px;
+              }
+              .stamp-block .stamp-title {
+                font-size: 11px;
+                font-weight: bold;
+                color: #0f172a;
+                margin: 0 0 4px;
+              }
+              .stamp-block .stamp-hint {
+                font-size: 9px;
+                color: #64748b;
+                margin: 0;
+              }
 
               .sign-block {
                 display: flex;
                 justify-content: space-between;
                 gap: 14px;
-                margin-top: 34px;
+                margin-top: 22px;
               }
               .sign-line {
                 flex: 1;
@@ -465,15 +612,16 @@ export default function FinancePayments() {
               }
               .sign-role { font-weight: 700; color: #334155; font-size: 10px; }
 
-              .footer {
-                margin-top: 20px;
+              .copyright {
+                margin-top: 18px;
                 padding-top: 6px;
                 border-top: 1px solid #e2e8f0;
-                font-size: 8.5px;
-                color: #94a3b8;
-                display: flex;
-                justify-content: space-between;
+                font-size: 8px;
+                color: #64748b;
+                line-height: 1.4;
+                text-align: center;
               }
+              .copyright strong { color: #334155; }
             </style>
           </head>
           <body>
@@ -517,29 +665,38 @@ export default function FinancePayments() {
                 : ""
             }
 
-            ${
-              r.qr_code_base64
-                ? `<div class="qr-block">
-                     <img src="data:image/png;base64,${r.qr_code_base64}" alt="Receipt verification QR code" />
-                     <div class="qr-caption">Scan to verify this receipt</div>
-                   </div>`
-                : ""
-            }
-
-            <div class="sign-block">
-              <div class="sign-line">
-                <div class="sign-role">Finance Officer</div>
-                <div>Signature &amp; Official Stamp</div>
+            <!-- Bottom block: QR (larger) + stamp on one row, signatures below -->
+            <div class="bottom-block">
+              <div class="qr-stamp-row">
+                <div class="qr-block">
+                  ${
+                    r.qr_code_base64
+                      ? `<img src="data:image/png;base64,${r.qr_code_base64}" alt="Receipt verification QR code" />
+                         <div class="qr-caption">Scan to verify this receipt</div>`
+                      : `<div style="width:110px;height:110px;border:1px solid #94a3b8;display:flex;align-items:center;justify-content:center;font-size:9px;color:#64748b;">QR unavailable</div>`
+                  }
+                </div>
+                <div class="stamp-block">
+                  <p class="stamp-title">Official School Stamp</p>
+                  <p class="stamp-hint">(Stamp here)</p>
+                </div>
               </div>
-              <div class="sign-line">
-                <div class="sign-role">Principal</div>
-                <div>Signature &amp; Official Stamp</div>
+
+              <div class="sign-block">
+                <div class="sign-line">
+                  <div class="sign-role">Finance Officer</div>
+                  <div>Signature &amp; Official Stamp</div>
+                </div>
+                <div class="sign-line">
+                  <div class="sign-role">Principal</div>
+                  <div>Signature &amp; Official Stamp</div>
+                </div>
               </div>
             </div>
 
-            <div class="footer">
-              <span>Masomo School — Finance Department</span>
-              <span>Official payment receipt</span>
+            <div class="copyright">
+              <strong>© Masomo School. All rights reserved.</strong><br />
+              This is an official payment receipt. Duplication or unauthorized reproduction is prohibited.
             </div>
           </body>
         </html>
@@ -806,6 +963,8 @@ export default function FinancePayments() {
         </h6>
         <p className="text-muted-soft mb-3" style={{ fontSize: "var(--fs-sm)" }}>
           Search for the student by admission number or name to see their outstanding invoices.
+          Use <strong>Pay Balance</strong> to settle everything they owe in one payment - it's
+          applied to their oldest unpaid term first, so arrears are always cleared correctly.
         </p>
 
         <div className="row g-2 align-items-end">
@@ -858,30 +1017,59 @@ export default function FinancePayments() {
             <div className="d-flex flex-column gap-2">
               {studentResults.map((s) => {
                 const isOpen = expandedAdmission === s.admission_no;
-                const totalOwed = s.invoices.reduce((sum, inv) => sum + Number(inv.balance), 0);
+                // Trust the MOST RECENTLY ISSUED unpaid invoice's own balance,
+                // not a sum of term_charge across invoices. Under normal
+                // oldest-first payment flow, each invoice's amount_due already
+                // folds in everything owed before it via brought_forward, so
+                // the latest invoice's balance alone equals the true total
+                // owed. Summing (term_charge - amount_paid) breaks if an
+                // older invoice was ever paid directly instead of through the
+                // newer one holding its arrears - brought_forward is a
+                // one-time snapshot taken when the invoice was generated, not
+                // a live link back to earlier invoices (see the
+                // Invoice.brought_forward docstring), so a later direct
+                // payment on an old invoice never gets reflected there.
+                const latestInvoice = [...s.invoices]
+                  .sort((a, b) => new Date(a.issued_at) - new Date(b.issued_at))
+                  .at(-1);
+                const totalOwed = latestInvoice ? Number(latestInvoice.balance) : 0;
                 return (
                   <div key={s.admission_no} className="border rounded-3 overflow-hidden">
-                    <button
-                      type="button"
-                      className="w-100 border-0 bg-white d-flex justify-content-between align-items-center px-3 py-2"
-                      onClick={() => setExpandedAdmission(isOpen ? null : s.admission_no)}
-                      style={{ cursor: "pointer" }}
-                    >
-                      <span>
+                    <div className="w-100 bg-white d-flex justify-content-between align-items-center px-3 py-2">
+                      <button
+                        type="button"
+                        className="btn btn-link p-0 text-start border-0 flex-grow-1"
+                        style={{ textDecoration: "none" }}
+                        onClick={() => setExpandedAdmission(isOpen ? null : s.admission_no)}
+                      >
                         <span style={{ fontWeight: 600, color: "var(--blue-700)" }}>{s.admission_no}</span>
                         {"  "}
                         <span style={{ color: "var(--ink-900)" }}>{s.student_name}</span>
                         <span className="badge badge-neutral ms-2">
                           {s.invoices.length} unpaid invoice{s.invoices.length !== 1 ? "s" : ""}
                         </span>
-                      </span>
+                      </button>
                       <span className="d-flex align-items-center gap-2">
                         <span className="fw-bold" style={{ color: "var(--danger-600, #dc3545)" }}>
                           KES {currency(totalOwed)}
                         </span>
-                        <i className={`bi ${isOpen ? "bi-chevron-up" : "bi-chevron-down"}`}></i>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-success"
+                          onClick={() => openBalancePaymentPanel(s, totalOwed)}
+                        >
+                          <i className="bi bi-cash-coin me-1"></i>
+                          Pay Balance
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-secondary"
+                          onClick={() => setExpandedAdmission(isOpen ? null : s.admission_no)}
+                        >
+                          <i className={`bi ${isOpen ? "bi-chevron-up" : "bi-chevron-down"}`}></i>
+                        </button>
                       </span>
-                    </button>
+                    </div>
 
                     {isOpen && (
                       <div className="table-responsive border-top">
@@ -929,14 +1117,14 @@ export default function FinancePayments() {
       </div>
 
       {/* ================= STEP 2: PAYMENT PANEL (MODAL) ================= */}
-      {payingInvoice && (
+      {(payingInvoice || payingBalance) && (
         <div className="modal fade show d-block" tabIndex="-1" style={{ backgroundColor: "rgba(15,23,42,0.5)" }}>
           <div className="modal-dialog modal-dialog-centered">
             <div className="modal-content">
               <div className="modal-header">
                 <h6 className="modal-title mb-0" style={{ fontWeight: 700 }}>
                   <i className="bi bi-cash-coin me-2" style={{ color: "var(--blue-700)" }}></i>
-                  Record Payment
+                  {payingBalance ? "Pay Outstanding Balance" : "Record Payment"}
                 </h6>
                 <button type="button" className="btn-close" onClick={closePaymentPanel}></button>
               </div>
@@ -944,18 +1132,30 @@ export default function FinancePayments() {
                 <div className="modal-body">
                   <div className="d-flex justify-content-between mb-3 p-2 rounded-2" style={{ background: "var(--surface-100, #f8f9fa)" }}>
                     <div>
-                      <div style={{ fontWeight: 600 }}>{payingInvoice.student_name}</div>
+                      <div style={{ fontWeight: 600 }}>
+                        {payingInvoice ? payingInvoice.student_name : payingBalance.student_name}
+                      </div>
                       <div className="text-muted-soft" style={{ fontSize: "var(--fs-sm)" }}>
-                        {payingInvoice.admission_no} · {payingInvoice.term_label}
+                        {payingInvoice
+                          ? `${payingInvoice.admission_no} · ${payingInvoice.term_label}`
+                          : `${payingBalance.admission_no} · All outstanding terms`}
                       </div>
                     </div>
                     <div className="text-end">
                       <div className="text-muted-soft" style={{ fontSize: "var(--fs-xs)" }}>Balance due</div>
                       <div className="fw-bold" style={{ color: "var(--danger-600, #dc3545)" }}>
-                        KES {currency(payingInvoice.balance)}
+                        KES {currency(activeBalanceDue)}
                       </div>
                     </div>
                   </div>
+
+                  {payingBalance && (
+                    <div className="alert alert-info py-2 mb-3" style={{ fontSize: "var(--fs-sm)" }}>
+                      <i className="bi bi-info-circle me-1"></i>
+                      This payment is applied across every unpaid term for this student,
+                      oldest term first, so arrears are always settled before newer charges.
+                    </div>
+                  )}
 
                   {paymentError && (
                     <div className="alert alert-danger py-2" style={{ fontSize: "var(--fs-sm)" }}>{paymentError}</div>
@@ -979,7 +1179,11 @@ export default function FinancePayments() {
                         automatically applied to this student's next term invoice.
                       </div>
                     ) : (
-                      <div className="form-text-hint">Leave as-is for a full settlement, or edit for a partial payment.</div>
+                      <div className="form-text-hint">
+                        {payingBalance
+                          ? "Leave as-is to clear everything owed, or edit for a partial payment."
+                          : "Leave as-is for a full settlement, or edit for a partial payment."}
+                      </div>
                     )}
                   </div>
 

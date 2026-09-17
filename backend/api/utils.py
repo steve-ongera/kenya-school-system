@@ -168,3 +168,36 @@ def mask_contact(user):
 class IsAdminOnly(BasePermission):
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated and request.user.role == "ADMIN")
+    
+    
+class IsSuperAdmin(BasePermission):
+    """
+    Extra gate for destructive actions. Being authenticated as role=ADMIN
+    (or even Django's is_superuser) is NOT enough on its own — the user's
+    is_super_admin flag must also be True. This flag is only ever set via
+    Django Admin/shell, never through the app's own API, so an ordinary
+    Admin can't grant it to themselves or anyone else.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated and request.user.is_super_admin
+        )
+
+
+class BlockDestructiveDeleteMixin:
+    """
+    Mix into any ViewSet whose destroy() cascades into fee, exam, or
+    enrollment history - deleting a StudentProfile, ClassRoom, Term,
+    AcademicYear, GradeLevel, or Subject can silently wipe invoices,
+    payments, exam results, or a student's whole record. This adds
+    IsSuperAdmin ON TOP of whatever permission the ViewSet already
+    enforces, and ONLY for the destroy action - list/create/update are
+    untouched.
+    """
+
+    def get_permissions(self):
+        perms = super().get_permissions()
+        if self.action == "destroy":
+            perms.append(IsSuperAdmin())
+        return perms

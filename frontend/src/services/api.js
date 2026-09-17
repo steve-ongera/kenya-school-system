@@ -210,8 +210,39 @@ export const studentsApi = {
   promote: (enrollmentId, payload) => api.post(`/enrollments/${enrollmentId}/promote/`, payload),
   bulkPromote: (payload) => api.post("/enrollments/bulk_promote/", payload),
   getSubjects: (enrollmentId) => api.get(`/enrollments/${enrollmentId}/subjects/`),
-  setSubjects: (enrollmentId, subjectIds) =>
-    api.post(`/enrollments/${enrollmentId}/subjects/`, { subject_ids: subjectIds }),
+  unlockSubjects: (enrollmentId) => api.post(`/enrollments/${enrollmentId}/unlock_subjects/`),
+  setSubjects: (enrollmentId, subjectIds, pathwayId, trackId) =>
+  api.post(`/enrollments/${enrollmentId}/subjects/`, {
+    subject_ids: subjectIds, pathway_id: pathwayId ?? null, track_id: trackId ?? null,
+  }),
+};
+
+export const subjectGroupsApi = {
+  list: (params) => api.get("/subject-groups/", { params }),
+  create: (payload) => api.post("/subject-groups/", payload),
+  update: (id, payload) => api.patch(`/subject-groups/${id}/`, payload),
+  delete: (id) => api.delete(`/subject-groups/${id}/`),
+};
+
+export const selectionTracksApi = {
+  list: (params) => api.get("/selection-tracks/", { params }),
+  create: (payload) => api.post("/selection-tracks/", payload),
+  update: (id, payload) => api.patch(`/selection-tracks/${id}/`, payload),
+  delete: (id) => api.delete(`/selection-tracks/${id}/`),
+};
+
+export const trackRulesApi = {
+  list: (params) => api.get("/track-group-rules/", { params }),
+  create: (payload) => api.post("/track-group-rules/", payload),
+  update: (id, payload) => api.patch(`/track-group-rules/${id}/`, payload),
+  delete: (id) => api.delete(`/track-group-rules/${id}/`),
+};
+
+export const pathwaysApi = {
+  list: (params) => api.get("/pathways/", { params }),
+  create: (payload) => api.post("/pathways/", payload),
+  update: (id, payload) => api.patch(`/pathways/${id}/`, payload),
+  delete: (id) => api.delete(`/pathways/${id}/`),
 };
 
 
@@ -252,10 +283,13 @@ export const examsApi = {
 export const financeApi = {
   feeStructures: (params) => api.get("/fee-structures/", { params }),
   createFeeStructure: (payload) => api.post("/fee-structures/", payload),
+  updateFeeStructure: (id, payload) => api.patch(`/fee-structures/${id}/`, payload), // NEW
+  deleteFeeStructure: (id) => api.delete(`/fee-structures/${id}/`),                  // NEW
   invoices: (params) => api.get("/invoices/", { params }),
   generateInvoice: (payload) => api.post("/invoices/generate/", payload),
   recordPayment: (payload) => api.post("/payments/", payload),
-  status: () => api.get("/fees/status/"),   // <-- ADD THIS LINE
+  recordBulkPayment: (payload) => api.post("/payments/pay_balance/", payload),
+  status: () => api.get("/fees/status/"),
   payments: (params) => api.get("/payments/", { params }),
 };
 
@@ -304,6 +338,27 @@ export const licenseApi = {
 
 export const packagesApi = {
   list: () => api.get("/subscription-packages/"),
+};
+
+export const expensesApi = {
+  categories: (params) => api.get("/expense-categories/", { params }),
+  createCategory: (payload) => api.post("/expense-categories/", payload),
+  updateCategory: (id, payload) => api.patch(`/expense-categories/${id}/`, payload),
+  deleteCategory: (id) => api.delete(`/expense-categories/${id}/`),
+
+  list: (params) => api.get("/expenses/", { params }),
+  create: (payload) => api.post("/expenses/", payload),
+  update: (id, payload) => api.patch(`/expenses/${id}/`, payload),
+  delete: (id) => api.delete(`/expenses/${id}/`),
+  summary: (params) => api.get("/expenses/summary/", { params }),
+};
+
+// ---------------------------------------------------------------------------
+// REPORT CARD VERIFICATION (QR code generation + public verify lookup)
+// ---------------------------------------------------------------------------
+export const reportCardsApi = {
+  qrCode: (token) => api.get(`/report-cards/${token}/qr/`),
+  verify: (token) => api.get(`/report-cards/verify/${token}/`), // public, no auth needed
 };
 
 // ---------------------------------------------------------------------------

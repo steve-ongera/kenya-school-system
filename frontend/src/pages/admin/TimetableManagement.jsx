@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import { academicsApi, calendarApi, timetableApi } from "../../services/api";
 import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
+import logoImage from "../../assets/masomo_logo.png";
 
 const DAYS = [
   { value: "MON", label: "Monday" }, { value: "TUE", label: "Tuesday" },
@@ -26,6 +29,40 @@ const TYPE_STYLE = {
   GAMES:    { bg: "#f3ecff", border: "#d9c4fb", text: "#6f36c9" },
   PREP:     { bg: "#eef1ff", border: "#c8d0ff", text: "#39449e" },
 };
+
+// Abbreviate a teacher's name to "A. Omondi" style — first initial(s)
+// followed by the surname. Handles 1, 2, or 3+ word names:
+//   "Alex Omondi"        -> "A. Omondi"
+//   "Alex Juma Omondi"   -> "A. J. Omondi"
+//   "Omondi"             -> "Omondi"
+//   "" / null / "—"      -> "—"
+const shortTeacherName = (fullName) => {
+  if (!fullName) return "—";
+  const trimmed = String(fullName).trim();
+  if (!trimmed || trimmed === "—" || trimmed === "-") return "—";
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0];
+  const surname = parts[parts.length - 1];
+  const initials = parts.slice(0, -1).map((p) => `${p[0].toUpperCase()}.`).join(" ");
+  return `${initials} ${surname}`;
+};
+
+// Shared helper: load an image URL as a base64 data URL (for the PDF logo)
+const getImageBase64 = (url) =>
+  new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.src = url;
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = () => resolve(null);
+  });
 
 export default function AdminTimetableManagement() {
   const [activeTab, setActiveTab] = useState("grid"); // "structure" | "grid"
@@ -91,9 +128,6 @@ function StructureSetup() {
   }, []);
 
   function defaultTemplate() {
-    // Weekday pattern (Mon–Fri): 7:00 start, 35-min sessions, 15-min short
-    // break, 30-min long break, lunch, 3 more sessions, 1hr games, one more
-    // session, then evening prep so students head home around 6–7pm.
     const weekday = [
       { order: 1,  slot_type: "LESSON",  label: "Period 1",     start_time: "07:00", end_time: "07:35" },
       { order: 2,  slot_type: "LESSON",  label: "Period 2",     start_time: "07:35", end_time: "08:10" },
@@ -111,7 +145,6 @@ function StructureSetup() {
       { order: 14, slot_type: "LESSON",  label: "Period 10",    start_time: "15:00", end_time: "15:35" },
       { order: 15, slot_type: "PREP",    label: "Evening Prep", start_time: "15:35", end_time: "18:00" },
     ];
-    // Saturday: shorter day - morning lessons + games, home by midday.
     const saturday = [
       { order: 1, slot_type: "LESSON", label: "Period 1",       start_time: "07:00", end_time: "07:35" },
       { order: 2, slot_type: "LESSON", label: "Period 2",       start_time: "07:35", end_time: "08:10" },
@@ -134,9 +167,6 @@ function StructureSetup() {
 
   const getCell = (day, order) => rows.find((r) => r.day === day && r.order === order);
 
-  // The time HEADER is shared across the week: it shows whichever day
-  // (Mon first) already has this order, so editing it updates every day
-  // at once - exactly how a printed school timetable's column times work.
   const getColumnTime = (order) => {
     for (const d of DAYS.map((x) => x.value)) {
       const r = rows.find((row) => row.day === d && row.order === order);
@@ -395,8 +425,9 @@ function TimetableGrid() {
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("info");
   const [allocations, setAllocations] = useState([]);
-  const [editingCell, setEditingCell] = useState(null); // period_slot_id
+  const [editingCell, setEditingCell] = useState(null);
   const [pickAlloc, setPickAlloc] = useState("");
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -430,7 +461,6 @@ function TimetableGrid() {
     }
   };
 
-  // small inline helper avoids importing another api module just for this
   const api_teacherAllocations = async (classroomId) => {
     const mod = await import("../../services/api");
     const res = await mod.default.get("/teacher-allocations/", { params: { classroom: classroomId } });
@@ -493,15 +523,228 @@ function TimetableGrid() {
     setSelectedTerm(termList[0]?.id || "");
   };
 
-  // gridDays comes back as [{ day, day_label, periods: [...] }, ...] from
-  // the /timetable-entries/grid/ endpoint - already one entry per day, so
-  // rendering DAY as the table row is just iterating gridDays directly.
-  // The column header row instead needs the periods list from whichever
-  // day has the most columns (in case some days have fewer configured slots).
   const columnPeriods = useMemo(() => {
     if (!gridDays.length) return [];
     return gridDays.reduce((longest, d) => (d.periods.length > longest.length ? d.periods : longest), gridDays[0].periods);
   }, [gridDays]);
+
+  // ---- metadata used by the PDF header ----
+  const selectedClassroomObj = useMemo(
+    () => classrooms.find((c) => String(c.id) === String(selectedClassroom)),
+    [classrooms, selectedClassroom]
+  );
+  const selectedTermObj = useMemo(
+    () => terms.find((t) => String(t.id) === String(selectedTerm)),
+    [terms, selectedTerm]
+  );
+  const selectedYearObj = useMemo(() => {
+    if (!selectedTermObj) return null;
+    return (
+      years.find((y) => y.id === selectedTermObj.academic_year) ||
+      years.find((y) => y.is_current) ||
+      null
+    );
+  }, [years, selectedTermObj]);
+
+  // ---- Landscape A4 PDF of the timetable for the selected class ----
+  const downloadTimetablePdf = async () => {
+    if (!gridDays.length || !selectedClassroomObj) return;
+    setDownloadingPdf(true);
+    try {
+      const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+
+      const base64Logo = await getImageBase64(logoImage);
+      const generatedOn = new Date().toLocaleDateString("en-KE", {
+        year: "numeric", month: "long", day: "numeric",
+      });
+
+      // --- Header ---
+      if (base64Logo) {
+        doc.addImage(base64Logo, "PNG", 12, 10, 14, 14);
+      }
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(15);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Masomo School", base64Logo ? 30 : 12, 17);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(71, 85, 105);
+      doc.text("Class Weekly Timetable", base64Logo ? 30 : 12, 23);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Generated ${generatedOn}`, pageWidth - 12, 15, { align: "right" });
+
+      doc.setDrawColor(203, 213, 225);
+      doc.setLineWidth(0.3);
+      doc.line(12, 28, pageWidth - 12, 28);
+
+      // --- Class meta strip (teacher name abbreviated) ---
+      const classLabel = `${selectedClassroomObj.grade_level_name} ${selectedClassroomObj.stream_name}`;
+      const yearLabel = selectedYearObj?.year || selectedClassroomObj.academic_year_year || "—";
+      const termLabel = selectedTermObj
+        ? selectedTermObj.get_term_number_display || `Term ${selectedTermObj.term_number}`
+        : "—";
+
+      const metaParts = [
+        `Class: ${classLabel}`,
+        `Academic Year: ${yearLabel}${selectedYearObj?.is_current ? " (current)" : ""}`,
+        `Term: ${termLabel}${selectedTermObj?.is_current ? " (current)" : ""}`,
+        `Class Teacher: ${shortTeacherName(selectedClassroomObj.class_teacher_name)}`,
+      ];
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(51, 65, 85);
+      doc.text(metaParts.join("   |   "), 12, 34);
+
+      // --- Table: DAY rows × time columns (teacher names abbreviated) ---
+      const tableHead = [
+        "Day",
+        ...columnPeriods.map((p) => `${(p.start_time || "").slice(0, 5)}\n${(p.end_time || "").slice(0, 5)}`),
+      ];
+
+      const tableBody = gridDays.map((d) => {
+        const row = [d.day_label];
+        columnPeriods.forEach((colPeriod, idx) => {
+          const cell = d.periods[idx];
+          if (!cell) { row.push(""); return; }
+          if (cell.slot_type !== "LESSON") {
+            row.push(cell.label || cell.slot_type);
+            return;
+          }
+          if (cell.entry) {
+            const subject = cell.entry.subject_code || cell.entry.subject_name || "";
+            const teacher = shortTeacherName(cell.entry.teacher_name);
+            row.push(teacher && teacher !== "—" ? `${subject}\n${teacher}` : subject);
+          } else {
+            row.push("—");
+          }
+        });
+        return row;
+      });
+
+      autoTable(doc, {
+        startY: 39,
+        head: [tableHead],
+        body: tableBody,
+        theme: "grid",
+        styles: {
+          fontSize: 8,
+          cellPadding: 1.8,
+          lineColor: [203, 213, 225],
+          lineWidth: 0.15,
+          textColor: [30, 41, 59],
+          valign: "middle",
+          halign: "center",
+          overflow: "linebreak",
+        },
+        headStyles: {
+          fillColor: [15, 23, 42],
+          textColor: [255, 255, 255],
+          fontStyle: "bold",
+          fontSize: 7.5,
+          halign: "center",
+          cellPadding: 2,
+        },
+        bodyStyles: {
+          fontSize: 7.5,
+          minCellHeight: 12,
+        },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles: {
+          0: { cellWidth: 20, halign: "left", fontStyle: "bold" },
+        },
+        margin: { left: 12, right: 12 },
+        didParseCell: (data) => {
+          if (data.section === "body" && data.column.index > 0) {
+            const day = gridDays[data.row.index];
+            if (!day) return;
+            const cell = day.periods[data.column.index - 1];
+            if (!cell) return;
+            if (cell.slot_type !== "LESSON") {
+              data.cell.styles.fillColor = [244, 244, 245];
+              data.cell.styles.textColor = [100, 116, 139];
+              data.cell.styles.fontStyle = "italic";
+            } else if (cell.entry) {
+              data.cell.styles.fontStyle = "bold";
+            }
+          }
+        },
+        didDrawPage: () => {
+          const footerY = pageHeight - 6;
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(7);
+          doc.setTextColor(148, 163, 184);
+          doc.text("Masomo School — Timetable Office", 12, footerY);
+          doc.text(
+            `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
+            pageWidth - 12,
+            footerY,
+            { align: "right" }
+          );
+        },
+      });
+
+      // --- Signature / stamp blocks ---
+      let finalY = doc.lastAutoTable.finalY + 14;
+      if (finalY > pageHeight - 30) {
+        doc.addPage();
+        finalY = 26;
+      }
+
+      doc.setDrawColor(148, 163, 184);
+      doc.setLineWidth(0.2);
+
+      // Class Teacher (left)
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Class Teacher's Signature:", 12, finalY);
+      doc.line(12, finalY + 10, 90, finalY + 10);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Sign & Official Stamp", 12, finalY + 14);
+
+      // Principal (right)
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Principal's Signature:", pageWidth - 90, finalY);
+      doc.line(pageWidth - 90, finalY + 10, pageWidth - 12, finalY + 10);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Sign & Official Stamp", pageWidth - 90, finalY + 14);
+
+      // --- Copyright footer ---
+      const copyrightY = pageHeight - 8;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(6.5);
+      doc.setTextColor(148, 163, 184);
+      doc.text(
+        "© Masomo School. All rights reserved. Duplication or unauthorized printing is prohibited.",
+        12,
+        copyrightY
+      );
+
+      const safeClass = `${selectedClassroomObj.grade_level_name}_${selectedClassroomObj.stream_name}`.replace(/\s+/g, "_");
+      const safeYear = String(yearLabel).replace(/\s+/g, "_");
+      doc.save(`timetable_${safeClass}_${safeYear}.pdf`);
+    } catch (err) {
+      console.error("Failed to generate timetable PDF:", err);
+      setMessage("Could not generate the timetable PDF.");
+      setMessageType("danger");
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
 
   return (
     <div>
@@ -525,6 +768,26 @@ function TimetableGrid() {
           <option value="">Select class...</option>
           {classrooms.map((c) => <option key={c.id} value={c.id}>{c.grade_level_name} {c.stream_name} ({c.academic_year_year})</option>)}
         </select>
+
+        <button
+          className="btn btn-outline-primary"
+          onClick={downloadTimetablePdf}
+          disabled={!selectedClassroom || !gridDays.length || downloadingPdf}
+          title="Download this class's timetable as a landscape PDF"
+        >
+          {downloadingPdf ? (
+            <>
+              <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+              Preparing...
+            </>
+          ) : (
+            <>
+              <i className="bi bi-file-earmark-pdf me-1"></i>
+              Download PDF
+            </>
+          )}
+        </button>
+
         <button className="btn btn-primary ms-auto" onClick={runAutoGenerate} disabled={!selectedTerm || generating}>
           <i className="bi bi-magic me-1"></i>{generating ? "Generating..." : "Auto-Generate Timetable"}
         </button>
@@ -570,7 +833,10 @@ function TimetableGrid() {
                           {cell.entry ? (
                             <div className="d-flex flex-column">
                               <span className="badge badge-blue">{cell.entry.subject_code || cell.entry.subject_name}</span>
-                              <small className="text-muted-soft">{cell.entry.teacher_name}{cell.entry.is_double ? " (double)" : ""}</small>
+                              <small className="text-muted-soft">
+                                {shortTeacherName(cell.entry.teacher_name)}
+                                {cell.entry.is_double ? " (double)" : ""}
+                              </small>
                               <button className="btn btn-sm btn-link text-danger p-0" onClick={() => clearCell(cell.entry.id)}>
                                 <i className="bi bi-x"></i> clear
                               </button>
@@ -580,7 +846,9 @@ function TimetableGrid() {
                               <select className="form-select form-select-sm" value={pickAlloc} onChange={(e) => setPickAlloc(e.target.value)}>
                                 <option value="">Subject / Teacher...</option>
                                 {allocations.map((a) => (
-                                  <option key={a.id} value={a.id}>{a.subject_name} — {a.teacher_name}</option>
+                                  <option key={a.id} value={a.id}>
+                                    {a.subject_name} — {shortTeacherName(a.teacher_name)}
+                                  </option>
                                 ))}
                               </select>
                               <div className="d-flex gap-1">

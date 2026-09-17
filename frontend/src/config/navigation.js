@@ -37,6 +37,7 @@ export const NAV_BY_ROLE = {
       label: "Finance",
       items: [
         { to: "/admin/fees", icon: "bi-cash-coin", label: "Fee Structures" },
+        { to: "/admin/expenses", icon: "bi-wallet2", label: "Expenses" },
         { to: "/admin/finance-reports/collections", icon: "bi-graph-up-arrow", label: "Collections Report" },
         { to: "/admin/finance-reports/class-analysis", icon: "bi-bar-chart-steps", label: "Class Analysis" },
         { to: "/admin/finance-reports/detailed", icon: "bi-table", label: "Detailed Report" },
@@ -184,6 +185,7 @@ export const NAV_BY_ROLE = {
         { to: "/finance/structures", icon: "bi-receipt", label: "Fee Structures" },
         { to: "/finance/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
         { to: "/finance/payments", icon: "bi-cash-coin", label: "Payments" },
+        { to: "/finance/expenses", icon: "bi-wallet2", label: "Expenses" },
       ],
     },
     {
