@@ -26,6 +26,10 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.db.models import Sum
 from django.utils.html import format_html
+from django.contrib import admin
+from django.urls import path
+from django.shortcuts import get_object_or_404, redirect
+from django.contrib import messages
 
 from api.models import (
     AcademicYear, ClassRoom, ClassroomPromotion, Communication,
@@ -74,29 +78,109 @@ LOGIN_RESULT_COLORS = {
 # ---------------------------------------------------------------------------
 # 1. IDENTITY & RBAC
 # ---------------------------------------------------------------------------
+
+from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
+from django.contrib.auth.signals import user_logged_in
+from django.urls import path, reverse
+from django.shortcuts import get_object_or_404, redirect
+from django.contrib import messages
+from django.utils.html import format_html
+
+from api.models import User
+
+
+def _badge(text, color):
+    return format_html(
+        '<span style="padding:2px 8px;border-radius:10px;font-size:11px;'
+        'font-weight:600;color:#fff;background:{}">{}</span>', color, text,
+    )
+
+
+def _clear_lockout_on_login(sender, request, user, **kwargs):
+    if user.locked_until or user.failed_login_attempts:
+        user.locked_until = None
+        user.failed_login_attempts = 0
+        user.save(update_fields=["locked_until", "failed_login_attempts"])
+
+user_logged_in.connect(_clear_lockout_on_login)
+
+
 @admin.register(User)
 class UserAdmin(DjangoUserAdmin):
     model = User
     ordering = ["-date_joined"]
-    list_display = ("username", "full_name","is_super_admin", "role_badge", "email", "phone_number", "is_active", "is_staff")
+    list_display = (
+        "username", "full_name", "is_super_admin", "role_badge", "email",
+        "phone_number", "lockout_status", "unlock_action_button", "is_active", "is_staff",
+    )
     list_filter = ("role", "is_active", "is_staff", "is_active_staff")
     search_fields = ("username", "first_name", "last_name", "email", "national_id", "phone_number")
     list_per_page = 50
 
-
     fieldsets = (
         (None, {"fields": ("username", "password")}),
-        ("Personal info", {"fields": ("first_name", "last_name", "email", "phone_number", "national_id")}),
-        ("Role & status", {"fields": ("role", "is_active_staff", "is_active", "is_staff", "is_superuser","is_super_admin")}),
+        ("Personal info", {"fields": ("first_name", "last_name", "email", "phone_number", "national_id", "otp_code")}),
+        ("Security & Lockout", {"fields": ("locked_until", "failed_login_attempts", "last_failed_login_at")}),
+        ("Role & status", {"fields": ("role", "is_active_staff", "is_active", "is_staff", "is_superuser", "is_super_admin")}),
         ("Permissions", {"fields": ("groups", "user_permissions")}),
         ("Important dates", {"fields": ("last_login", "date_joined")}),
     )
+
+    readonly_fields = ("last_login", "date_joined", "last_failed_login_at", "locked_until", "failed_login_attempts")
+
     add_fieldsets = (
         (None, {
             "classes": ("wide",),
             "fields": ("username", "role", "email", "phone_number", "password1", "password2"),
         }),
     )
+
+    actions = ["unlock_users"]
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                "<uuid:user_id>/unlock/",
+                self.admin_site.admin_view(self.unlock_user_view),
+                name="api_user_unlock",
+            ),
+        ]
+        return custom_urls + urls
+
+    def unlock_user_view(self, request, user_id):
+        user = get_object_or_404(User, pk=user_id)
+        user.locked_until = None
+        user.failed_login_attempts = 0
+        user.save(update_fields=["locked_until", "failed_login_attempts"])
+        messages.success(request, f"User {user.username} has been successfully unlocked.")
+        return redirect(reverse("admin:api_user_changelist"))
+
+    @admin.action(description="Unlock selected users (Reset failed attempts)")
+    def unlock_users(self, request, queryset):
+        updated = queryset.update(locked_until=None, failed_login_attempts=0)
+        self.message_user(request, f"{updated} user(s) successfully unlocked.")
+
+    @admin.display(description="Lock Status")
+    def lockout_status(self, obj):
+        if obj.is_locked:
+            return format_html(
+                '<span style="color: white; background-color: #d32f2f; padding: 3px 8px; '
+                'border-radius: 4px; font-weight: bold;">Locked</span>'
+            )
+        return format_html('<span style="color: {};">Active</span>', "#2e7d32")
+
+    @admin.display(description="Quick Action")
+    def unlock_action_button(self, obj):
+        if obj.is_locked:
+            url = reverse("admin:api_user_unlock", args=[obj.pk])
+            return format_html(
+                '<a class="button" style="background-color: #d32f2f; color: white; '
+                'padding: 4px 10px; border-radius: 4px; text-decoration: none;" href="{}">Unlock</a>',
+                url,
+            )
+        return format_html('<span style="color: {};">—</span>', "#999")
 
     @admin.display(description="Name", ordering="first_name")
     def full_name(self, obj):
@@ -109,8 +193,7 @@ class UserAdmin(DjangoUserAdmin):
             "PARENT": "#ef6c00", "FINANCE": "#00838f",
         }
         return _badge(obj.get_role_display(), colors.get(obj.role, "#616161"))
-
-
+    
 @admin.register(LoginAttemptLog)
 class LoginAttemptLogAdmin(admin.ModelAdmin):
     """

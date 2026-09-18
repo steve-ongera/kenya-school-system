@@ -956,8 +956,10 @@ class ReceiptSerializer(serializers.Serializer):
     student_name = serializers.CharField()
     admission_no = serializers.CharField()
     term = serializers.CharField()
+    classroom = serializers.CharField(required=False)
+    recorded_by_name = serializers.CharField(required=False)
     qr_code_base64 = serializers.CharField(required=False)
-
+    
 
 class PaymentListSerializer(serializers.ModelSerializer):
     """

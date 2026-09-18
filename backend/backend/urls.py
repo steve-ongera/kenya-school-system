@@ -10,5 +10,9 @@ urlpatterns = [
     path("api/v1/", include("api.urls")),
 ]
 
+# backend/urls.py
+handler404 = "api.views.custom_404"
+handler500 = "api.views.custom_500"
+
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

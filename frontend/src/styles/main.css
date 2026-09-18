@@ -1977,3 +1977,239 @@ textarea:focus-visible,
   background: rgba(255, 255, 255, 0.18);
   color: #fff;
 }
+
+
+
+/* ==========================================================================
+   ADDITIONS — User Manual & Contact Developer pages
+   Paste this block into main.css (e.g. right after section 25, UTILITIES).
+   Uses the same design tokens already defined in :root — no new variables.
+   ========================================================================== */
+
+/* ---- User Manual: video grid & cards ---- */
+.manual-video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-5);
+}
+
+.video-card {
+  background: var(--surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+}
+
+.video-card:hover {
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-2px);
+  border-color: var(--border-color-strong);
+}
+
+.video-card__thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--blue-900);
+  overflow: hidden;
+}
+
+.video-card__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.video-card__play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.4rem;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.video-card:hover .video-card__play {
+  background: var(--blue-700);
+  transform: translate(-50%, -50%) scale(1.08);
+}
+
+.video-card__duration {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  background: rgba(15, 23, 42, 0.75);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-sm);
+}
+
+.video-card__body {
+  padding: 1rem 1.1rem 1.15rem;
+}
+
+.video-card__title {
+  font-weight: 700;
+  font-size: var(--fs-md);
+  color: var(--ink-900);
+  margin-bottom: 0.35rem;
+  line-height: 1.3;
+}
+
+.video-card__desc {
+  font-size: var(--fs-sm);
+  color: var(--ink-600);
+  margin: 0;
+  line-height: 1.45;
+}
+
+/* ---- User Manual: video modal (custom, no JS framework dependency) ---- */
+.video-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(11, 37, 69, 0.65);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1400;
+  padding: 1.5rem;
+  animation: dropdown-in 0.15s ease;
+}
+
+.video-modal {
+  background: var(--ink-900);
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-width: 860px;
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+}
+
+.video-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.85rem 1.1rem;
+  background: var(--blue-900);
+}
+
+.video-modal__header h6 {
+  color: #fff;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  margin: 0;
+  padding-right: 1rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-modal__close {
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 1rem;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.video-modal__close:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
+
+.video-modal__body {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+}
+
+.video-modal__body iframe,
+.video-modal__body video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* ---- Contact Developer page ---- */
+.contact-page-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: var(--space-5);
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .contact-page-grid { grid-template-columns: 1fr; }
+}
+
+.contact-detail-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.contact-detail-row:last-child { border-bottom: none; }
+
+.contact-detail-row i {
+  font-size: 1.1rem;
+  color: var(--blue-700);
+  background: var(--blue-100);
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.contact-detail-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.contact-detail-label {
+  font-size: var(--fs-xs);
+  color: var(--ink-400);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.contact-detail-value {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--ink-900);
+  word-break: break-word;
+}
+
+a.contact-detail-value:hover { color: var(--blue-700); }
+
+/* Responsive: stack video grid tighter on small screens */
+@media (max-width: 575px) {
+  .manual-video-grid { grid-template-columns: 1fr; }
+  .video-modal { border-radius: var(--radius-md); }
+}
+
+

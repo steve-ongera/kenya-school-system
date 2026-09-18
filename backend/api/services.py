@@ -2073,3 +2073,29 @@ def get_license_usage(school):
 
 def list_active_packages():
     return models.SubscriptionPackage.objects.filter(is_active=True).order_by("display_order", "monthly_price")
+
+
+def get_student_status_label(student: models.StudentProfile) -> str:
+    """
+    Resolves what to print as a student's "class" on receipts/report views:
+    their current classroom, or a terminal status label (Graduated,
+    Transferred Out, Dropped) once they're no longer active. Looks at the
+    student's MOST RECENT enrollment overall (by academic year), not just
+    the one flagged is_current, so a freshly-promoted or freshly-graduated
+    student resolves correctly even before the academic year flag rolls over.
+    """
+    enrollment = (
+        models.Enrollment.objects.filter(student=student)
+        .select_related("classroom__grade_level", "classroom__stream", "classroom__academic_year")
+        .order_by("-academic_year__year", "-id")
+        .first()
+    )
+    if not enrollment:
+        return "Not yet enrolled"
+
+    terminal_labels = {
+        models.Enrollment.Status.GRADUATED: "Graduated",
+        models.Enrollment.Status.TRANSFERRED_OUT: "Transferred Out",
+        models.Enrollment.Status.DROPPED: "Dropped",
+    }
+    return terminal_labels.get(enrollment.status, str(enrollment.classroom))

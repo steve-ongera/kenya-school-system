@@ -56,7 +56,7 @@ class User(AbstractUser):
     locked_until = models.DateTimeField(null=True, blank=True)
     last_failed_login_at = models.DateTimeField(null=True, blank=True)
 
-    # --- 2FA (OTP) ---
+    # --- 2FA (OTP) --- 
     otp_code = models.CharField(max_length=6, blank=True, null=True)
     otp_expires_at = models.DateTimeField(null=True, blank=True)
 

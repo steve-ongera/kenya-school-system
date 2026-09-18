@@ -291,10 +291,14 @@ export default function FinancePayments() {
     );
 
     // --- Info table ---
+    // "Current Class" reflects the student's CURRENT enrollment (or
+    // "Graduated" / "Transferred Out" / "Dropped" once they're no longer
+    // active) - resolved server-side by services.get_student_status_label,
+    // not just whatever classroom this particular invoice was raised for.
     const rows = [
       ["Student", r.student_name],
       ["Admission No", r.admission_no],
-      ["Class", r.classroom || "-"],
+      ["Current Class", r.classroom || "-"],
       ["Term", r.term || "-"],
       ["Amount Paid", `KES ${currency(r.amount)}`],
       ["Method", METHOD_LABEL[r.method] || r.method],
@@ -647,7 +651,7 @@ export default function FinancePayments() {
             <table class="info">
               <tr><th>Student</th><td>${r.student_name}</td></tr>
               <tr><th>Admission No</th><td>${r.admission_no}</td></tr>
-              <tr><th>Class</th><td>${r.classroom || "-"}</td></tr>
+              <tr><th>Current Class</th><td>${r.classroom || "-"}</td></tr>
               <tr><th>Term</th><td>${r.term || "-"}</td></tr>
               <tr class="amount-row"><th>Amount Paid</th><td>KES ${currency(r.amount)}</td></tr>
               <tr><th>Method</th><td>${methodLabel}</td></tr>
@@ -1261,6 +1265,9 @@ export default function FinancePayments() {
                   <div className="col-6"><span className="text-muted-soft">Student</span></div>
                   <div className="col-6">{receipt.student_name} ({receipt.admission_no})</div>
 
+                  <div className="col-6"><span className="text-muted-soft">Current Class</span></div>
+                  <div className="col-6">{receipt.classroom || "-"}</div>
+
                   <div className="col-6"><span className="text-muted-soft">Term</span></div>
                   <div className="col-6">{receipt.term}</div>
 
@@ -1279,6 +1286,9 @@ export default function FinancePayments() {
 
                   <div className="col-6"><span className="text-muted-soft">Reference</span></div>
                   <div className="col-6">{receipt.reference || "-"}</div>
+
+                  <div className="col-6"><span className="text-muted-soft">Recorded By</span></div>
+                  <div className="col-6">{receipt.recorded_by_name || "-"}</div>
 
                   <div className="col-6"><span className="text-muted-soft">Date</span></div>
                   <div className="col-6">{new Date(receipt.paid_at).toLocaleString("en-KE")}</div>

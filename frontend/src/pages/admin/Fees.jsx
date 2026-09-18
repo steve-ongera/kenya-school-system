@@ -78,35 +78,50 @@ export default function AdminFees() {
   };
 
   // Filter and Search Logic
+  // NOTE: the API sends grade_level_id / term_id — we compare them as
+  // strings so filter values ("3") match regardless of whether the
+  // backend serializes ids as numbers or strings.
   const filteredStructures = useMemo(() => {
     let result = structures;
 
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase().trim();
-      result = result.filter(f =>
-        f.grade_level_name?.toLowerCase().includes(query) ||
-        f.term_label?.toLowerCase().includes(query)
+      result = result.filter((f) =>
+        (f.grade_level_name || "").toLowerCase().includes(query) ||
+        (f.term_label || "").toLowerCase().includes(query)
       );
     }
 
     if (filters.grade) {
-      result = result.filter(f => f.grade_level_id === parseInt(filters.grade));
+      result = result.filter(
+        (f) => String(f.grade_level_id) === String(filters.grade)
+      );
     }
 
     if (filters.term) {
-      result = result.filter(f => f.term_id === parseInt(filters.term));
+      result = result.filter(
+        (f) => String(f.term_id) === String(filters.term)
+      );
     }
 
     return result;
   }, [structures, searchQuery, filters]);
 
   const totalItems = filteredStructures.length;
-  const totalPages = Math.ceil(totalItems / itemsPerPage);
+  const totalPages = Math.max(1, Math.ceil(totalItems / itemsPerPage));
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
   const currentItems = filteredStructures.slice(startIndex, endIndex);
 
-  useEffect(() => setCurrentPage(1), [searchQuery, filters]);
+  // Reset to page 1 whenever the filter inputs change, and clamp the page
+  // if the current page falls out of range after filtering.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, filters.grade, filters.term]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
 
   const handlePageChange = (page) => {
     if (page < 1 || page > totalPages) return;
@@ -119,21 +134,20 @@ export default function AdminFees() {
     setCurrentPage(1);
   };
 
-  // Calculate total from items
   const calculateTotal = () => {
     return items.reduce((sum, i) => sum + Number(i.amount || 0), 0);
   };
 
+  const hasActiveFilters = !!(searchQuery || filters.grade || filters.term);
+
   return (
     <div>
-      {/* Breadcrumb */}
       <Breadcrumb items={[
         { label: "Dashboard", href: "/admin" },
         { label: "Finance", href: "/admin/fees" },
         { label: "Fee Structures", href: "#" },
       ]} />
 
-      {/* Page Header */}
       <div className="page-header">
         <div>
           <h1 className="page-title">Fee Structures</h1>
@@ -143,7 +157,6 @@ export default function AdminFees() {
         </div>
       </div>
 
-      {/* Message Alerts */}
       {message && (
         <div className={`alert alert-${messageType} alert-dismissible fade show`} role="alert">
           {message}
@@ -195,9 +208,9 @@ export default function AdminFees() {
                 value={item.amount} onChange={(e) => updateItem(idx, "amount", e.target.value)} />
             </div>
             <div className="col-2">
-              <button 
-                type="button" 
-                className="btn btn-sm btn-outline-danger w-100" 
+              <button
+                type="button"
+                className="btn btn-sm btn-outline-danger w-100"
                 onClick={() => removeItemRow(idx)}
                 disabled={items.length <= 1}
               >
@@ -221,7 +234,7 @@ export default function AdminFees() {
         <div className="col-md-4">
           <label className="form-label">Total Amount (KES) — auto-sums items if left blank</label>
           <input type="number" className="form-control" value={form.total_amount}
-            onChange={(e) => setForm({ ...form, total_amount: e.target.value })} 
+            onChange={(e) => setForm({ ...form, total_amount: e.target.value })}
             placeholder="Leave blank to auto-calculate" />
         </div>
 
@@ -232,27 +245,27 @@ export default function AdminFees() {
         </div>
       </form>
 
-      {/* Table with Search & Filters inside */}
+      {/* Table with Search & Filters */}
       {loading ? (
         <TableSkeleton rows={5} columns={4} />
-      ) : currentItems.length === 0 ? (
+      ) : (
         <div className="table-wrap">
           <div className="table-wrap__header" style={{ flexDirection: "column", alignItems: "stretch", gap: "0.75rem" }}>
             <div className="d-flex flex-wrap gap-2" style={{ width: "100%" }}>
               <div style={{ flex: 1, minWidth: "200px", position: "relative" }}>
                 <i className="bi bi-search" style={{ position: "absolute", left: "0.85rem", top: "50%", transform: "translateY(-50%)", color: "var(--ink-400)" }}></i>
-                <input 
-                  type="text" 
-                  className="form-control" 
+                <input
+                  type="text"
+                  className="form-control"
                   placeholder="Search by grade or term..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   style={{ paddingLeft: "2.4rem" }}
                 />
               </div>
-              <select 
-                className="form-select" 
-                value={filters.grade} 
+              <select
+                className="form-select"
+                value={filters.grade}
                 onChange={(e) => setFilters({ ...filters, grade: e.target.value })}
                 style={{ width: "auto", minWidth: "140px" }}
               >
@@ -261,9 +274,9 @@ export default function AdminFees() {
                   <option key={g.id} value={g.id}>{g.name}</option>
                 ))}
               </select>
-              <select 
-                className="form-select" 
-                value={filters.term} 
+              <select
+                className="form-select"
+                value={filters.term}
                 onChange={(e) => setFilters({ ...filters, term: e.target.value })}
                 style={{ width: "auto", minWidth: "140px" }}
               >
@@ -272,13 +285,14 @@ export default function AdminFees() {
                   <option key={t.id} value={t.id}>Term {t.term_number}</option>
                 ))}
               </select>
-              {(searchQuery || filters.grade || filters.term) && (
-                <button className="btn btn-sm btn-light" onClick={clearFilters}>
+              {hasActiveFilters && (
+                <button type="button" className="btn btn-sm btn-light" onClick={clearFilters}>
                   <i className="bi bi-x-lg"></i> Clear
                 </button>
               )}
             </div>
-            {(searchQuery || filters.grade || filters.term) && (
+
+            {hasActiveFilters && (
               <div className="d-flex flex-wrap gap-1">
                 {searchQuery && (
                   <span className="filter-chip">
@@ -288,118 +302,47 @@ export default function AdminFees() {
                 )}
                 {filters.grade && (
                   <span className="filter-chip">
-                    Grade: {gradeLevels.find(g => g.id === parseInt(filters.grade))?.name}
+                    Grade: {gradeLevels.find(g => String(g.id) === String(filters.grade))?.name}
                     <button onClick={() => setFilters({ ...filters, grade: "" })}><i className="bi bi-x"></i></button>
                   </span>
                 )}
                 {filters.term && (
                   <span className="filter-chip">
-                    Term: {terms.find(t => t.id === parseInt(filters.term))?.term_number}
+                    Term: {terms.find(t => String(t.id) === String(filters.term))?.term_number}
                     <button onClick={() => setFilters({ ...filters, term: "" })}><i className="bi bi-x"></i></button>
                   </span>
                 )}
               </div>
             )}
+
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" }}>
               <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
                 <i className="bi bi-cash-stack me-2"></i>
                 All Fee Structures
               </span>
               <span style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>
-                {totalItems} structure{totalItems !== 1 ? "s" : ""}
+                {totalItems === 0
+                  ? "0 structures"
+                  : `Showing ${startIndex + 1}-${Math.min(endIndex, totalItems)} of ${totalItems}`}
               </span>
             </div>
           </div>
-          <div className="empty-state">
-            <i className="bi bi-cash-stack"></i>
-            <h6>
-              {searchQuery || filters.grade || filters.term 
-                ? "No fee structures match your search" 
-                : "No fee structures created yet"}
-            </h6>
-            <p className="text-muted-soft">
-              {searchQuery || filters.grade || filters.term
-                ? "Try adjusting your search or filters"
-                : "Use the form above to create your first fee structure"}
-            </p>
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="table-wrap">
-            <div className="table-wrap__header" style={{ flexDirection: "column", alignItems: "stretch", gap: "0.75rem" }}>
-              <div className="d-flex flex-wrap gap-2" style={{ width: "100%" }}>
-                <div style={{ flex: 1, minWidth: "200px", position: "relative" }}>
-                  <i className="bi bi-search" style={{ position: "absolute", left: "0.85rem", top: "50%", transform: "translateY(-50%)", color: "var(--ink-400)" }}></i>
-                  <input 
-                    type="text" 
-                    className="form-control" 
-                    placeholder="Search by grade or term..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    style={{ paddingLeft: "2.4rem" }}
-                  />
-                </div>
-                <select 
-                  className="form-select" 
-                  value={filters.grade} 
-                  onChange={(e) => setFilters({ ...filters, grade: e.target.value })}
-                  style={{ width: "auto", minWidth: "140px" }}
-                >
-                  <option value="">All Grades</option>
-                  {gradeLevels.map((g) => (
-                    <option key={g.id} value={g.id}>{g.name}</option>
-                  ))}
-                </select>
-                <select 
-                  className="form-select" 
-                  value={filters.term} 
-                  onChange={(e) => setFilters({ ...filters, term: e.target.value })}
-                  style={{ width: "auto", minWidth: "140px" }}
-                >
-                  <option value="">All Terms</option>
-                  {terms.map((t) => (
-                    <option key={t.id} value={t.id}>Term {t.term_number}</option>
-                  ))}
-                </select>
-                {(searchQuery || filters.grade || filters.term) && (
-                  <button className="btn btn-sm btn-light" onClick={clearFilters}>
-                    <i className="bi bi-x-lg"></i> Clear
-                  </button>
-                )}
-              </div>
-              {(searchQuery || filters.grade || filters.term) && (
-                <div className="d-flex flex-wrap gap-1">
-                  {searchQuery && (
-                    <span className="filter-chip">
-                      Search: "{searchQuery}"
-                      <button onClick={() => setSearchQuery("")}><i className="bi bi-x"></i></button>
-                    </span>
-                  )}
-                  {filters.grade && (
-                    <span className="filter-chip">
-                      Grade: {gradeLevels.find(g => g.id === parseInt(filters.grade))?.name}
-                      <button onClick={() => setFilters({ ...filters, grade: "" })}><i className="bi bi-x"></i></button>
-                    </span>
-                  )}
-                  {filters.term && (
-                    <span className="filter-chip">
-                      Term: {terms.find(t => t.id === parseInt(filters.term))?.term_number}
-                      <button onClick={() => setFilters({ ...filters, term: "" })}><i className="bi bi-x"></i></button>
-                    </span>
-                  )}
-                </div>
-              )}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" }}>
-                <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
-                  <i className="bi bi-cash-stack me-2"></i>
-                  All Fee Structures
-                </span>
-                <span style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>
-                  Showing {startIndex + 1}-{Math.min(endIndex, totalItems)} of {totalItems}
-                </span>
-              </div>
+
+          {currentItems.length === 0 ? (
+            <div className="empty-state">
+              <i className="bi bi-cash-stack"></i>
+              <h6>
+                {hasActiveFilters
+                  ? "No fee structures match your search"
+                  : "No fee structures created yet"}
+              </h6>
+              <p className="text-muted-soft">
+                {hasActiveFilters
+                  ? "Try adjusting your search or filters"
+                  : "Use the form above to create your first fee structure"}
+              </p>
             </div>
+          ) : (
             <div className="table-responsive">
               <table className="table table-hover mb-0">
                 <thead>
@@ -408,7 +351,6 @@ export default function AdminFees() {
                     <th>Term</th>
                     <th>Total (KES)</th>
                     <th>Breakdown</th>
-                    <th style={{ width: "80px" }}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -438,35 +380,27 @@ export default function AdminFees() {
                           <span className="text-muted-soft">-</span>
                         )}
                       </td>
-                      <td>
-                        <div className="table-actions">
-                          <button className="btn btn-sm btn-outline-primary btn-icon" title="Edit">
-                            <i className="bi bi-pencil"></i>
-                          </button>
-                          <button className="btn btn-sm btn-outline-danger btn-icon" title="Delete">
-                            <i className="bi bi-trash"></i>
-                          </button>
-                        </div>
-                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          </div>
+          )}
+        </div>
+      )}
 
-          {/* Pagination */}
-          <Pagination
-            currentPage={currentPage}
-            totalPages={totalPages}
-            onPageChange={handlePageChange}
-            itemsPerPage={itemsPerPage}
-            setItemsPerPage={setItemsPerPage}
-            startIndex={startIndex}
-            endIndex={endIndex}
-            totalItems={totalItems}
-          />
-        </>
+      {/* Pagination */}
+      {!loading && currentItems.length > 0 && (
+        <Pagination
+          currentPage={currentPage}
+          totalPages={totalPages}
+          onPageChange={handlePageChange}
+          itemsPerPage={itemsPerPage}
+          setItemsPerPage={setItemsPerPage}
+          startIndex={startIndex}
+          endIndex={endIndex}
+          totalItems={totalItems}
+        />
       )}
     </div>
   );

@@ -63,7 +63,9 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
-       { to: "/admin/license", icon: "bi-key-fill", label: "License" },
+        { to: "/admin/license", icon: "bi-key-fill", label: "License" },
+        { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
+        { to: "/contact-developer", icon: "bi-headset", label: "Contact Developer" },
       ],
     },
   ],
@@ -94,6 +96,8 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
+        { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
+        { to: "/contact-developer", icon: "bi-headset", label: "Contact Developer" },
       ],
     },
   ],
@@ -129,6 +133,7 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
+       
       ],
     },
   ],
@@ -169,6 +174,8 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
+        { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
+        { to: "/contact-developer", icon: "bi-headset", label: "Contact Developer" },
       ],
     },
   ],
@@ -209,6 +216,8 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
+        { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
+        { to: "/contact-developer", icon: "bi-headset", label: "Contact Developer" },
       ],
     },
   ],

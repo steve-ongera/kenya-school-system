@@ -22,7 +22,7 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-secret-key-change-me-in-pr
 # Remember: with DEBUG=False, Django will refuse to serve requests at all
 # unless ALLOWED_HOSTS is set correctly, and error tracebacks no longer
 # appear in the HTTP response - check the server console/log for them.
-DEBUG = True
+DEBUG = False
 
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
@@ -116,6 +116,7 @@ PASSWORD_RESET_TOKEN_EXPIRY_MINUTES = 30
 # DRF / JWT / RBAC
 # ---------------------------------------------------------------------------
 REST_FRAMEWORK = {
+    # REMOVE "DEFAULT_RENDERER_CLASSES" from here so it doesn't break Django Admin views
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
@@ -126,8 +127,8 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 200,
     "DEFAULT_THROTTLE_RATES": {
-        "login": "10/min",          # per-IP attempts against /auth/login/
-        "otp_verify": "8/min",      # per-IP attempts against /auth/verify-otp/
+        "login": "10/min",
+        "otp_verify": "8/min",
         "forgot_password": "3/hour",
     },
 }

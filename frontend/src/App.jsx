@@ -10,6 +10,10 @@ import ChangePassword from "./pages/ChangePassword";
 import Notifications from "./pages/Notifications";
 import VerifyReportCard from "./pages/VerifyReportCard";
 
+// help & support - shared across ADMIN / TEACHER / FINANCE / STUDENT
+import UserManual from "./pages/UserManual";
+import ContactDeveloper from "./pages/ContactDeveloper";
+
 // admin
 import AdminDashboard from "./pages/admin/Dashboard";
 import AdminLicense from "./pages/admin/License";
@@ -97,6 +101,26 @@ export default function App() {
           <Route path="/change-password" element={<ProtectedRoute><ChangePassword /></ProtectedRoute>} />
           <Route path="/messages" element={<ProtectedRoute><Messages /></ProtectedRoute>} />
           <Route path="/notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
+
+          {/* HELP & SUPPORT - restricted to ADMIN / TEACHER / FINANCE / STUDENT.
+              Adjust the allowedRoles array below if you want PARENT included
+              too, or want to restrict it further. */}
+          <Route
+            path="/user-manual"
+            element={
+              <ProtectedRoute allowedRoles={["ADMIN", "TEACHER", "FINANCE", "STUDENT"]}>
+                <UserManual />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/contact-developer"
+            element={
+              <ProtectedRoute allowedRoles={["ADMIN", "TEACHER", "FINANCE", "STUDENT"]}>
+                <ContactDeveloper />
+              </ProtectedRoute>
+            }
+          />
 
           {/* ADMIN */}
           <Route path="/admin" element={<RoleSection role="ADMIN"><AdminDashboard /></RoleSection>} />

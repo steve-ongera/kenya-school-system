@@ -7,12 +7,14 @@ Response. Permission classes are defined in utils.py.
 import logging
 from datetime import date
 from decimal import Decimal
+from django.http import JsonResponse
 
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.db import transaction
 from django.db.models import Avg, Count, ExpressionWrapper, F, FloatField, Q, Sum
 from django.db.models.functions import TruncMonth, TruncYear
+from django.db.models.functions import TruncMonth, TruncYear, TruncDate
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, generics, status, viewsets
@@ -26,6 +28,14 @@ from rest_framework.views import APIView
 from . import models, serializers, services, utils
 
 logger = logging.getLogger(__name__)
+
+
+
+def custom_404(request, exception=None):
+    return JsonResponse({"detail": "Not found."}, status=404)
+
+def custom_500(request):
+    return JsonResponse({"detail": "Server error."}, status=500)
 
 
 # ---------------------------------------------------------------------------
@@ -1835,6 +1845,10 @@ class ReceiptView(APIView):
             "student_name": student.user.get_full_name(),
             "admission_no": student.admission_no,
             "term": str(payment.invoice.fee_structure.term),
+            "classroom": services.get_student_status_label(student),
+            "recorded_by_name": (
+                payment.recorded_by.get_full_name() if payment.recorded_by else "Self-service (STK push)"
+            ),
             "qr_code_base64": services.generate_receipt_qr_base64(payment),
         }
         return Response(serializers.ReceiptSerializer(data).data)

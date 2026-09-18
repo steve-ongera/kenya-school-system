@@ -139,7 +139,21 @@ export default function Login() {
               </div>
             </div>
 
-            <button className={`btn btn-primary w-100 ${submitting ? "btn--loading" : ""}`} type="submit" disabled={submitting} style={{ padding: "0.7rem", fontSize: "var(--fs-md)", fontWeight: 600, borderRadius: "var(--radius-md)" }}>
+            <button
+              className={`btn btn-primary w-100 ${submitting ? "btn--loading" : ""}`}
+              type="submit"
+              disabled={submitting}
+              style={{
+                padding: "0.7rem",
+                fontSize: "var(--fs-md)",
+                fontWeight: 600,
+                borderRadius: "var(--radius-md)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                textAlign: "center",
+              }}
+            >
               {submitting ? "Signing in..." : "Sign In"}
             </button>
           </form>
@@ -162,7 +176,21 @@ export default function Login() {
                 style={{ letterSpacing: "0.3em", fontSize: "1.2rem", textAlign: "center" }}
               />
             </div>
-            <button className={`btn btn-primary w-100 ${submitting ? "btn--loading" : ""}`} type="submit" disabled={submitting || otpCode.length !== 6} style={{ padding: "0.7rem", fontSize: "var(--fs-md)", fontWeight: 600, borderRadius: "var(--radius-md)" }}>
+            <button
+              className={`btn btn-primary w-100 ${submitting ? "btn--loading" : ""}`}
+              type="submit"
+              disabled={submitting || otpCode.length !== 6}
+              style={{
+                padding: "0.7rem",
+                fontSize: "var(--fs-md)",
+                fontWeight: 600,
+                borderRadius: "var(--radius-md)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                textAlign: "center",
+              }}
+            >
               {submitting ? "Verifying..." : "Verify & Sign In"}
             </button>
             <button type="button" className="btn btn-link w-100 mt-2" onClick={() => setStep("credentials")} style={{ fontSize: "var(--fs-sm)" }}>
