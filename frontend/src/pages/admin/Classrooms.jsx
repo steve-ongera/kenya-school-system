@@ -6,7 +6,7 @@ import Pagination from "../../components/Pagination";
 import Modal from "../../components/Modal";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import logoImage from "../../assets/masomo_logo.png";
+import logoImage from "../../assets/junda_high_logo.png";
 
 const emptyFilters = { grade_level: "", stream: "", academic_year: "" };
 
@@ -133,6 +133,10 @@ export default function AdminClassrooms() {
   const [viewStudents, setViewStudents] = useState([]);
   const [viewStudentsLoading, setViewStudentsLoading] = useState(false);
   const [downloadingRosterPdf, setDownloadingRosterPdf] = useState(false);
+  // Toggles the View modal between its normal "lg" size and a fullscreen
+  // size that fills the whole laptop window / mobile screen. Purely a
+  // display preference - resets to normal every time the modal is opened.
+  const [modalFullscreen, setModalFullscreen] = useState(false);
 
   // ---- View modal: term/exam selectors + ranking/results + report cards ----
   const [viewTerms, setViewTerms] = useState([]);
@@ -336,6 +340,7 @@ export default function AdminClassrooms() {
   const openView = async (classroom) => {
     setViewClassroom(classroom);
     setShowViewModal(true);
+    setModalFullscreen(false);
     setViewStudents([]);
     setViewStudentsLoading(true);
     setViewResults(null);
@@ -364,6 +369,11 @@ export default function AdminClassrooms() {
     } finally {
       setViewStudentsLoading(false);
     }
+  };
+
+  const closeViewModal = () => {
+    setShowViewModal(false);
+    setModalFullscreen(false);
   };
 
   const handleDownloadRoster = () => {
@@ -417,7 +427,7 @@ export default function AdminClassrooms() {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(14);
       doc.setTextColor(15, 23, 42);
-      doc.text("Masomo School", base64Logo ? 28 : 12, 16);
+      doc.text("Junda High School", base64Logo ? 28 : 12, 16);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(10);
@@ -530,7 +540,7 @@ export default function AdminClassrooms() {
             pageHeight - 6,
             { align: "right" }
           );
-          doc.text("Masomo School — Academics Office", 12, pageHeight - 6);
+          doc.text("Junda High School — Academics Office", 12, pageHeight - 6);
         },
       });
 
@@ -607,7 +617,7 @@ export default function AdminClassrooms() {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(12);
     doc.setTextColor(...black);
-    doc.text("Masomo School", logoBase64 ? 28 : 14, 15);
+    doc.text("Junda High School", logoBase64 ? 28 : 14, 15);
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7.5);
@@ -1535,40 +1545,56 @@ export default function AdminClassrooms() {
       )}
 
       {/* ---------------- VIEW MODAL (details + roster + ranking/results + report cards) ---------------- */}
-      <Modal show={showViewModal} onClose={() => setShowViewModal(false)} title="Classroom Details" size="lg">
+      <Modal
+        show={showViewModal}
+        onClose={closeViewModal}
+        title="Classroom Details"
+        size={modalFullscreen ? "fullscreen" : "lg"}
+      >
         {viewClassroom && (
           <div>
-            {/* Modal header strip with logo + class name */}
+            {/* Modal header strip with logo + class name + fullscreen toggle */}
             <div
-              className="d-flex align-items-center gap-3 mb-3 pb-3"
+              className="d-flex align-items-center justify-content-between gap-3 mb-3 pb-3"
               style={{ borderBottom: "1px solid var(--border-color)" }}
             >
-              <img
-                src={logoImage}
-                alt="Masomo School"
-                style={{ width: 44, height: 44, objectFit: "contain" }}
-              />
-              <div>
-                <div style={{ fontWeight: 700, fontSize: "var(--fs-md)", color: "var(--ink-900)" }}>
-                  {viewClassroom.grade_level_name} {viewClassroom.stream_name}
-                  {viewClassroom.is_promoted && (
-                    <span
-                      className="badge badge-neutral ms-2"
-                      style={{ fontSize: "10px", verticalAlign: "middle" }}
-                      title={viewClassroom.promoted_to_label ? `Promoted to ${viewClassroom.promoted_to_label}` : "Promoted"}
-                    >
-                      <i className="bi bi-arrow-up-right me-1"></i>
-                      {viewClassroom.promoted_to_label === "Graduated" ? "Graduated" : "Promoted"}
-                    </span>
-                  )}
-                </div>
-                <div style={{ fontSize: "var(--fs-xs)", color: "var(--ink-600)" }}>
-                  {viewClassroom.academic_year_year}
-                  {viewClassroom.academic_year_is_current ? " · current year" : ""}
-                  {" · "}
-                  {viewClassroom.student_count || 0} student{(viewClassroom.student_count || 0) !== 1 ? "s" : ""}
+              <div className="d-flex align-items-center gap-3">
+                <img
+                  src={logoImage}
+                  alt="Junda High School"
+                  style={{ width: 44, height: 44, objectFit: "contain" }}
+                />
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: "var(--fs-md)", color: "var(--ink-900)" }}>
+                    {viewClassroom.grade_level_name} {viewClassroom.stream_name}
+                    {viewClassroom.is_promoted && (
+                      <span
+                        className="badge badge-neutral ms-2"
+                        style={{ fontSize: "10px", verticalAlign: "middle" }}
+                        title={viewClassroom.promoted_to_label ? `Promoted to ${viewClassroom.promoted_to_label}` : "Promoted"}
+                      >
+                        <i className="bi bi-arrow-up-right me-1"></i>
+                        {viewClassroom.promoted_to_label === "Graduated" ? "Graduated" : "Promoted"}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: "var(--fs-xs)", color: "var(--ink-600)" }}>
+                    {viewClassroom.academic_year_year}
+                    {viewClassroom.academic_year_is_current ? " · current year" : ""}
+                    {" · "}
+                    {viewClassroom.student_count || 0} student{(viewClassroom.student_count || 0) !== 1 ? "s" : ""}
+                  </div>
                 </div>
               </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-outline-secondary btn-icon"
+                title={modalFullscreen ? "Exit fullscreen" : "Expand to fullscreen"}
+                onClick={() => setModalFullscreen((prev) => !prev)}
+                style={{ flexShrink: 0 }}
+              >
+                <i className={`bi ${modalFullscreen ? "bi-fullscreen-exit" : "bi-arrows-fullscreen"}`}></i>
+              </button>
             </div>
 
             <div className="row g-2 mb-3">

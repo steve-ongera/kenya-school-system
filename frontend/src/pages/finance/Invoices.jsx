@@ -124,76 +124,7 @@ export default function FinanceInvoices() {
         </div>
       )}
 
-      {/* Filters */}
-      <div className="card p-4 mb-4">
-        <h6 className="mb-3" style={{ fontWeight: 700, color: "var(--ink-900)" }}>
-          <i className="bi bi-funnel me-2" style={{ color: "var(--blue-700)" }}></i>
-          Filter Invoices
-        </h6>
-        <div className="row g-3 align-items-end">
-          <div className="col-md-3">
-            <label className="form-label">
-              <i className="bi bi-calendar3 me-1" style={{ color: "var(--blue-700)" }}></i>
-              Academic Year
-            </label>
-            <select 
-              className="form-select" 
-              value={academicYear} 
-              onChange={(e) => setAcademicYear(e.target.value)}
-            >
-              <option value="">All</option>
-              {academicYears.map((y) => (
-                <option key={y.id} value={y.id}>
-                  {y.year}
-                  {y.is_current ? " (current)" : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="col-md-6">
-            <label className="form-label">
-              <i className="bi bi-search me-1" style={{ color: "var(--blue-700)" }}></i>
-              Search Student
-            </label>
-            <input
-              className="form-control"
-              placeholder="Admission no. or student name..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-          <div className="col-md-3">
-            <button
-              className="btn btn-outline-secondary w-100"
-              type="button"
-              onClick={clearFilters}
-            >
-              <i className="bi bi-arrow-counterclockwise me-1"></i>
-              Clear Filters
-            </button>
-          </div>
-        </div>
-
-        {/* Active filter chips */}
-        {hasActiveFilters && (
-          <div className="d-flex flex-wrap gap-1 mt-3">
-            {academicYear && (
-              <span className="filter-chip">
-                Year: {academicYears.find(y => String(y.id) === String(academicYear))?.year}
-                <button onClick={() => setAcademicYear("")}><i className="bi bi-x"></i></button>
-              </span>
-            )}
-            {search && (
-              <span className="filter-chip">
-                Search: "{search}"
-                <button onClick={() => setSearch("")}><i className="bi bi-x"></i></button>
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Invoices Table */}
+      {/* Invoices Table (with filters integrated) */}
       <div className="table-wrap">
         <div className="table-wrap__header">
           <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
@@ -207,6 +138,72 @@ export default function FinanceInvoices() {
           )}
         </div>
 
+        {/* Filters inside the table card */}
+        <div className="p-3 border-bottom">
+          <div className="row g-2 align-items-end">
+            <div className="col-md-3">
+              <label className="form-label" style={{ fontSize: "var(--fs-xs)", fontWeight: 600, color: "var(--ink-600)" }}>
+                <i className="bi bi-calendar3 me-1" style={{ color: "var(--blue-700)" }}></i>
+                Academic Year
+              </label>
+              <select
+                className="form-select form-select-sm"
+                value={academicYear}
+                onChange={(e) => setAcademicYear(e.target.value)}
+              >
+                <option value="">All</option>
+                {academicYears.map((y) => (
+                  <option key={y.id} value={y.id}>
+                    {y.year}
+                    {y.is_current ? " (current)" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="col-md-6">
+              <label className="form-label" style={{ fontSize: "var(--fs-xs)", fontWeight: 600, color: "var(--ink-600)" }}>
+                <i className="bi bi-search me-1" style={{ color: "var(--blue-700)" }}></i>
+                Search Student
+              </label>
+              <input
+                className="form-control form-control-sm"
+                placeholder="Admission no. or student name..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <div className="col-md-3">
+              <button
+                className="btn btn-outline-secondary btn-sm w-100"
+                type="button"
+                onClick={clearFilters}
+                disabled={!hasActiveFilters}
+              >
+                <i className="bi bi-arrow-counterclockwise me-1"></i>
+                Clear Filters
+              </button>
+            </div>
+          </div>
+
+          {/* Active filter chips */}
+          {hasActiveFilters && (
+            <div className="d-flex flex-wrap gap-1 mt-2">
+              {academicYear && (
+                <span className="filter-chip">
+                  Year: {academicYears.find(y => String(y.id) === String(academicYear))?.year}
+                  <button onClick={() => setAcademicYear("")}><i className="bi bi-x"></i></button>
+                </span>
+              )}
+              {search && (
+                <span className="filter-chip">
+                  Search: "{search}"
+                  <button onClick={() => setSearch("")}><i className="bi bi-x"></i></button>
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
         {loading ? (
           <TableSkeleton rows={5} columns={8} />
         ) : invoices.length === 0 ? (
@@ -214,8 +211,8 @@ export default function FinanceInvoices() {
             <i className="bi bi-receipt"></i>
             <h6>No invoices found</h6>
             <p className="text-muted-soft">
-              {hasActiveFilters 
-                ? "No invoices match your filters. Try adjusting your search criteria." 
+              {hasActiveFilters
+                ? "No invoices match your filters. Try adjusting your search criteria."
                 : "No invoices have been generated yet."}
             </p>
           </div>

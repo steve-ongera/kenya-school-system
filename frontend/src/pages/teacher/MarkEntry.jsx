@@ -3,7 +3,7 @@ import api, { teacherApi, examsApi, studentsApi, calendarApi, academicsApi } fro
 import Breadcrumb from "../../components/Breadcrumb";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import logoImage from "../../assets/masomo_logo.png";
+import logoImage from "../../assets/junda_high_logo.png";
 
 // Load an image URL as a base64 data URL (for embedding the logo in PDFs)
 const getImageBase64 = (url) =>
@@ -382,7 +382,7 @@ export default function TeacherMarkEntry() {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(15);
       doc.setTextColor(15, 23, 42);
-      doc.text("Masomo School", base64Logo ? 30 : 12, 17);
+      doc.text("Junda High School", base64Logo ? 30 : 12, 17);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(10);
@@ -510,7 +510,7 @@ export default function TeacherMarkEntry() {
             pageHeight - 6,
             { align: "right" }
           );
-          doc.text("Masomo School — Academics Office", 12, pageHeight - 6);
+          doc.text("Junda High School — Academics Office", 12, pageHeight - 6);
         },
       });
 
@@ -570,7 +570,7 @@ export default function TeacherMarkEntry() {
         <div className="d-flex align-items-center gap-3">
           <img
             src={logoImage}
-            alt="Masomo School"
+            alt="Junda High School"
             style={{ width: 48, height: 48, objectFit: "contain" }}
           />
           <div>

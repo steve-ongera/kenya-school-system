@@ -1,7 +1,10 @@
 import axios from "axios";
 
-export const BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api/v1";
+export const BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://127.0.0.1:8000/api/v1";
 
+  
 const api = axios.create({
   baseURL: BASE_URL,
 });
@@ -263,6 +266,7 @@ export const teacherApi = {
   myAllocations: () => api.get("/my-allocations/"),
   allAllocations: (params) => api.get("/teacher-allocations/", { params }),
   unallocated: (params) => api.get("/teacher-allocations/unallocated/", { params }),
+  myClassTeacherClassrooms: () => api.get("/my-class-teacher-classrooms/"),
 };
 
 // ---------------------------------------------------------------------------
@@ -275,6 +279,7 @@ export const examsApi = {
   bulkEntry: (payload) => api.post("/exam-results/bulk_entry/", payload),
   rankings: (params) => api.get("/rankings/", { params }),
   rank: (payload) => api.post("/rank/", payload),
+  summary: (params) => api.get("/exam-summary/", { params }),
 };
 
 // ---------------------------------------------------------------------------
@@ -290,11 +295,27 @@ export const financeApi = {
   recordPayment: (payload) => api.post("/payments/", payload),
   recordBulkPayment: (payload) => api.post("/payments/pay_balance/", payload),
   status: () => api.get("/fees/status/"),
+  myStructures: (params) => api.get("/fees/my-structures/", { params }),
   payments: (params) => api.get("/payments/", { params }),
+  paymentReceipt: (paymentId) => api.get(`/payments/${paymentId}/finance_receipt/`),
+  verifyReceiptSecure: (receiptNo) => api.get(`/payments/verify/${encodeURIComponent(receiptNo)}/`),
 };
 
 export const performanceApi = {
   dashboard: (params) => api.get("/students/me/performance/", { params }),
+};
+
+export const clearanceApi = {
+  // student
+  me: () => api.get("/my-clearance/"),
+  apply: (payload) => api.post("/my-clearance/", payload),
+  // admin
+  list: (params) => api.get("/clearance/", { params }),
+  summary: () => api.get("/clearance/summary/"),
+  clear: (id, payload) => api.post(`/clearance/${id}/clear/`, payload),
+  reject: (id, payload) => api.post(`/clearance/${id}/reject/`, payload),
+  reopen: (id) => api.post(`/clearance/${id}/reopen/`),
+  markCollected: (id) => api.post(`/clearance/${id}/mark_collected/`),
 };
 
 

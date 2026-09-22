@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { academicsApi, calendarApi, examsApi } from "../../services/api";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import logoImage from "../../assets/masomo_logo.png";
+import logoImage from "../../assets/junda_high_logo.png";
 
 // Load an image URL as a base64 data URL (for embedding the logo in PDFs)
 const getImageBase64 = (url) =>
@@ -63,6 +63,14 @@ const SUBJECT_ABBREVIATIONS = {
   "pre technical studies": "PTS",
   "agriculture and nutrition": "Agri",
   "religious education": "RE",
+};
+
+// Edit these to match the real school's details - shown centered under the
+// school name in the PDF header.
+const SCHOOL_CONTACT = {
+  poBox: "P.O. Box 1234-00100, Nairobi, Kenya",
+  phone: "+254 712 345 678",
+  email: "info@masomoschool.ac.ke",
 };
 
 function abbreviateSubject(name) {
@@ -193,8 +201,9 @@ export default function AdminRankings() {
     : "All Exams (Combined)";
 
   // ---------------------------------------------------------------------
-  // Download the ranking as a compact landscape PDF — super tiny data so
-  // wide grade-level tables fit on one horizontal page.
+  // Download the ranking as a compact landscape PDF - super tiny data so
+  // wide grade-level tables (now including Total/Pts/Grade columns) fit
+  // on one horizontal page/row.
   // ---------------------------------------------------------------------
   const handleDownloadRankingPdf = async () => {
     if (!data || !data.results?.length) return;
@@ -219,7 +228,7 @@ export default function AdminRankings() {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(11);
       doc.setTextColor(15, 23, 42);
-      doc.text("Masomo School", base64Logo ? 21 : 8, 12);
+      doc.text("Junda High School", base64Logo ? 21 : 8, 12);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(8);
@@ -250,9 +259,10 @@ export default function AdminRankings() {
       // --- Table columns (PDF uses abbreviated subject headers) ---
       const showClassCol = scope === "grade";
       const subjectHeaders = (data.subjects || []).map((s) => abbreviateSubject(s));
-      const fixedHeaders = ["#", "Student Name", "Reg No"];
+      const fixedHeaders = ["#", "Name", "Reg No"];
       if (showClassCol) fixedHeaders.push("Class");
-      const tableColumn = [...fixedHeaders, ...subjectHeaders, "Avg %"];
+      // Total = sum of subject %, Pts = total points, Grd = overall grade
+      const tableColumn = [...fixedHeaders, ...subjectHeaders, "Tot", "Pts", "Grd", "Avg%"];
 
       const tableRows = data.results.map((r) => {
         const base = [
@@ -264,32 +274,44 @@ export default function AdminRankings() {
         const subjectCells = (data.subjects || []).map((s) => {
           const entry = r.subjects.find((sub) => sub.subject === s);
           const avg = entry?.average;
-          return avg === null || avg === undefined ? "N/A" : `${avg}`;
+          return avg === null || avg === undefined ? "-" : `${avg}`;
         });
+        const totalCell =
+          r.total_marks === null || r.total_marks === undefined ? "-" : `${r.total_marks}`;
+        const pointsCell =
+          r.total_points === null || r.total_points === undefined ? "-" : `${r.total_points}`;
+        const gradeCell = r.overall_grade || "-";
         const avgCell =
           r.average_marks === null || r.average_marks === undefined
-            ? "N/A"
+            ? "-"
             : `${r.average_marks}`;
-        return [...base, ...subjectCells, avgCell];
+        return [...base, ...subjectCells, totalCell, pointsCell, gradeCell, avgCell];
       });
 
-      // --- Column widths — super compact so wide tables fit on one line ---
+      // --- Column widths - as tight as possible so everything fits on
+      // one horizontal page even with the extra Total/Pts/Grade columns ---
       const columnStyles = {
-        0: { cellWidth: 7,  halign: "center" },                                        // #
-        1: { cellWidth: 38, halign: "left", overflow: "ellipsize" },                   // Student Name
-        2: { cellWidth: 20, halign: "left", overflow: "ellipsize" },                   // Reg No
+        0: { cellWidth: 6,  halign: "center" },                                        // #
+        1: { cellWidth: 30, halign: "left", overflow: "ellipsize" },                   // Name
+        2: { cellWidth: 16, halign: "left", overflow: "ellipsize" },                   // Reg No
       };
       let nextIdx = 3;
       if (showClassCol) {
-        columnStyles[nextIdx] = { cellWidth: 20, halign: "left", overflow: "ellipsize" };
+        columnStyles[nextIdx] = { cellWidth: 22, halign: "left", overflow: "ellipsize" };
         nextIdx += 1;
       }
-      const subjectColWidth = 11; // tight per-subject column
+      const subjectColWidth = 9; // shrunk further to make room for the 3 new columns
       (data.subjects || []).forEach(() => {
         columnStyles[nextIdx] = { cellWidth: subjectColWidth, halign: "center" };
         nextIdx += 1;
       });
-      columnStyles[nextIdx] = { cellWidth: 14, halign: "center" }; // Avg %
+      columnStyles[nextIdx] = { cellWidth: 11, halign: "center" }; // Tot
+      nextIdx += 1;
+      columnStyles[nextIdx] = { cellWidth: 9, halign: "center" };  // Pts
+      nextIdx += 1;
+      columnStyles[nextIdx] = { cellWidth: 9, halign: "center" };  // Grd
+      nextIdx += 1;
+      columnStyles[nextIdx] = { cellWidth: 12, halign: "center" }; // Avg%
 
       autoTable(doc, {
         startY: 28,
@@ -297,8 +319,8 @@ export default function AdminRankings() {
         body: tableRows,
         theme: "grid",
         styles: {
-          fontSize: 6,           // super tiny
-          cellPadding: 0.8,      // very tight
+          fontSize: 5.5,          // even tinier so the whole width fits one row
+          cellPadding: 0.6,       // ultra tight
           lineColor: [226, 232, 240],
           lineWidth: 0.1,
           textColor: [51, 65, 85],
@@ -309,33 +331,38 @@ export default function AdminRankings() {
           fillColor: [15, 23, 42],
           textColor: [255, 255, 255],
           fontStyle: "bold",
-          fontSize: 6,
-          cellPadding: 1,
+          fontSize: 5.5,
+          cellPadding: 0.8,
           halign: "center",
         },
         bodyStyles: {
-          fontSize: 6,
+          fontSize: 5.5,
           textColor: [51, 65, 85],
-          cellPadding: 0.8,
+          cellPadding: 0.6,
         },
         alternateRowStyles: { fillColor: [248, 250, 252] },
         columnStyles,
-        margin: { left: 8, right: 8 },
-        // horizontalPageBreak is still set as a safety net — but with
-        // abbreviations + 6pt font + 11mm subject columns, a 13-subject
-        // grade-wide ranking fits in one horizontal page.
+        margin: { left: 6, right: 6 },
+        // horizontalPageBreak is still set as a safety net - but with
+        // abbreviations + 5.5pt font + 9mm subject columns, a 13-subject
+        // grade-wide ranking (plus Total/Pts/Grade) fits in one horizontal
+        // page/row.
         horizontalPageBreak: true,
         horizontalPageBreakRepeat: showClassCol ? [0, 1, 2, 3] : [0, 1, 2],
         didParseCell: (dataCell) => {
           if (dataCell.section !== "body") return;
-          // Bold the Avg % column (last)
+          // Bold the Avg% column (last)
           const lastColIdx = tableColumn.length - 1;
           if (dataCell.column.index === lastColIdx) {
             dataCell.cell.styles.fontStyle = "bold";
             dataCell.cell.styles.textColor = [15, 23, 42];
           }
-          // Greyscale italic for N/A cells
-          if (String(dataCell.cell.raw).toLowerCase() === "n/a") {
+          // Bold the Grade column too (second to last)
+          if (dataCell.column.index === lastColIdx - 1) {
+            dataCell.cell.styles.fontStyle = "bold";
+          }
+          // Greyscale italic for "-" (no data) cells
+          if (String(dataCell.cell.raw).trim() === "-") {
             dataCell.cell.styles.textColor = [148, 163, 184];
             dataCell.cell.styles.fontStyle = "italic";
           }
@@ -350,7 +377,7 @@ export default function AdminRankings() {
             pageHeight - 4,
             { align: "right" }
           );
-          doc.text("Masomo School — Academics Office", 8, pageHeight - 4);
+          doc.text("Junda High School — Academics Office", 8, pageHeight - 4);
         },
       });
 
@@ -404,7 +431,7 @@ export default function AdminRankings() {
         <div className="d-flex align-items-center gap-3">
           <img
             src={logoImage}
-            alt="Masomo School"
+            alt="Junda High School"
             style={{ width: 48, height: 48, objectFit: "contain" }}
           />
           <div>
@@ -583,10 +610,13 @@ export default function AdminRankings() {
                   <th style={{ position: "sticky", left: 235, zIndex: 3, background: "#fff", minWidth: 130 }}>
                     Reg No
                   </th>
-                  {scope === "grade" && <th style={{ minWidth: 110 }}>Class</th>}
+                  {scope === "grade" && <th style={{ minWidth: 150 }}>Class</th>}
                   {data.subjects.map((s) => (
                     <th key={s} className="text-center" style={{ minWidth: 100 }}>{s}</th>
                   ))}
+                  <th className="text-center" style={{ minWidth: 90 }}>Total Marks</th>
+                  <th className="text-center" style={{ minWidth: 80 }}>Total Pts</th>
+                  <th className="text-center" style={{ minWidth: 70 }}>Grade</th>
                   <th className="text-center" style={{ minWidth: 110, background: "#f4f6f8" }}>
                     Average %
                   </th>
@@ -610,6 +640,19 @@ export default function AdminRankings() {
                         </td>
                       );
                     })}
+                    <td className="text-center">
+                      {r.total_marks === null || r.total_marks === undefined
+                        ? <span className="text-muted">N/A</span>
+                        : r.total_marks}
+                    </td>
+                    <td className="text-center">
+                      {r.total_points === null || r.total_points === undefined
+                        ? <span className="text-muted">N/A</span>
+                        : r.total_points}
+                    </td>
+                    <td className="text-center fw-semibold">
+                      {r.overall_grade || <span className="text-muted">N/A</span>}
+                    </td>
                     <td className="text-center fw-bold" style={{ background: "#f4f6f8" }}>
                       {r.average_marks === null || r.average_marks === undefined
                         ? <span className="text-muted">N/A</span>

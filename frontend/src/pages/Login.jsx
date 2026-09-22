@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
-import logo from "../assets/masomo_logo.png";
+import logo from "../assets/junda_high_logo.png";
 
 const HOME_BY_ROLE = {
   ADMIN: "/admin",
@@ -73,16 +73,16 @@ export default function Login() {
   return (
     <div className="login-page" style={{ background: "#ffffff", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
       <div className="login-card" style={{ maxWidth: "420px", width: "100%", padding: "2.5rem", background: "#ffffff", borderRadius: "var(--radius-lg)", boxShadow: "0 8px 40px rgba(11, 37, 69, 0.08)", border: "1px solid var(--border-color)" }}>
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: "1rem" }}>
-          <img src={logo} alt="Moi Forces Academy Logo" style={{ width: "100px", height: "100px", objectFit: "contain", borderRadius: "var(--radius-md)" }} />
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: "1.75rem" }}>
+          <img src={logo} alt="Junda High School Logo" style={{ width: "150px", height: "150px", objectFit: "contain", borderRadius: "var(--radius-md)" }} />
         </div>
 
         <div style={{ marginBottom: "0.5rem", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center" }}>
           <h1 style={{ fontSize: "1.5rem", fontWeight: 700, color: "var(--blue-900)", margin: 0, fontFamily: "var(--font-display)" }}>
-            Masomo System
+            Junda High School
           </h1>
           <p style={{ fontSize: "0.72rem", color: "var(--ink-400)", margin: "0.2rem 0 0 0", letterSpacing: "0.06em", textTransform: "uppercase" }}>
-            School Management System
+            Masomo Portal
           </p>
         </div>
 
@@ -200,7 +200,7 @@ export default function Login() {
         )}
 
         <div style={{ marginTop: "1.5rem", textAlign: "center", fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>
-          <span>Masomo School MIS © {new Date().getFullYear()} Steve Ongera. All rights reserved.</span>
+          <span>Junda High School © {new Date().getFullYear()} Steve Ongera. All rights reserved.</span>
         </div>
       </div>
     </div>

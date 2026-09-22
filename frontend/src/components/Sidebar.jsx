@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
-import logo from "../assets/masomo_logo.png";
+import logo from "../assets/junda_high_logo.png";
 import { NAV_BY_ROLE } from "../config/navigation";
 
 /**
@@ -70,15 +70,14 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
               width: "100%"
             }}>
               <div style={{
-                width: "36px",
-                height: "36px",
+                width: "44px",
+                height: "44px",
                 borderRadius: "4px",
-                background: "#ffffff",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 flexShrink: 0,
-                padding: "4px"
+                padding: "2px"
               }}>
                 <img
                   src={logo}
@@ -97,21 +96,20 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
                 overflow: "hidden",
                 textOverflow: "ellipsis"
               }}>
-                MASOMO SYSTEM
+                MASOMO PORTAL
               </span>
             </div>
           ) : (
-            // Collapsed sidebar - show only logo with white background
+            // Collapsed sidebar - show only logo without background
             <div style={{
-              width: "36px",
-              height: "36px",
+              width: "44px",
+              height: "44px",
               borderRadius: "4px",
-              background: "#ffffff",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               margin: "0 auto",
-              padding: "4px"
+              padding: "2px"
             }}>
               <img
                 src={logo}
@@ -180,7 +178,7 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
               letterSpacing: "0.04em",
               fontWeight: 500,
             }}>
-              Masomo System © {new Date().getFullYear()}
+              Masomo Portal © {new Date().getFullYear()}
             </div>
             <div style={{
               fontSize: "0.55rem",

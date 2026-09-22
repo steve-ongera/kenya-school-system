@@ -43,7 +43,7 @@ router.register("selection-tracks", views.SelectionTrackViewSet)
 router.register("track-group-rules", views.TrackGroupRuleViewSet)
 router.register(r"expense-categories", views.ExpenseCategoryViewSet, basename="expense-category")
 router.register(r"expenses", views.ExpenseViewSet, basename="expense")
-
+router.register(r"clearance", views.ClearanceApplicationViewSet, basename="clearance")
 
 
 urlpatterns = [
@@ -54,6 +54,8 @@ urlpatterns = [
     path("license/me/", views.LicenseMeView.as_view(), name="license-me"),
     path("license/redeem/", views.LicenseRedeemView.as_view(), name="license-redeem"),
     path("license/status/", views.LicenseStatusView.as_view()),
+    path("my-clearance/", views.StudentClearanceView.as_view(), name="my-clearance"),
+    path("my-class-teacher-classrooms/", views.MyClassTeacherClassroomsView.as_view(), name="my-class-teacher-classrooms"),
         
     path("auth/me/", views.MeView.as_view(), name="me"),
     path("auth/change-password/", views.ChangePasswordView.as_view(), name="change-password"),
@@ -77,5 +79,7 @@ urlpatterns = [
     path("finance-reports/student-balances/", views.FinanceStudentBalancesReportView.as_view()),
     path("report-cards/<str:token>/qr/", views.ReportCardQrView.as_view()),
     path("report-cards/verify/<str:token>/", views.ReportCardVerifyView.as_view()),
+    path("exam-summary/", views.StudentExamSummaryView.as_view(), name="exam-summary"),
+    path("fees/my-structures/", views.StudentFeeStructuresView.as_view(), name="my-fee-structures"),
     path("", include(router.urls)),
 ]

@@ -901,6 +901,35 @@ function ScheduleExamsTab({
 }) {
   const [search, setSearch] = useState("");
 
+  // true once the admin has typed their own exam name - from then on we stop
+  // overwriting it when they change the term / type / grade dropdowns
+  const [nameEdited, setNameEdited] = useState(false);
+
+  // after a successful save the parent resets examForm back to emptyExamForm
+  // (same object reference), so re-enable auto-naming for the next exam
+  useEffect(() => {
+    if (examForm === emptyExamForm) setNameEdited(false);
+  }, [examForm]);
+
+  // "Form 4 Midterm Exam – Term 1 2026"
+  const suggestName = (form) => {
+    const term = terms.find((t) => String(t.id) === String(form.term));
+    const type = examTypes.find((et) => String(et.id) === String(form.exam_type));
+    const grade = gradeLevels.find((g) => String(g.id) === String(form.grade_level));
+    if (!term || !type || !grade) return "";
+    return `${grade.name} ${type.name} – Term ${term.term_number} ${term.academic_year_label}`;
+  };
+
+  // update one or more fields and refresh the suggested name (unless edited by hand)
+  const updateExamForm = (patch) => {
+    const next = { ...examForm, ...patch };
+    if (!nameEdited && !("name" in patch)) {
+      const suggested = suggestName(next);
+      if (suggested) next.name = suggested;
+    }
+    setExamForm(next);
+  };
+
   const visibleExams = useMemo(() => {
     if (!search.trim()) return exams;
     const q = search.trim().toLowerCase();
@@ -922,7 +951,7 @@ function ScheduleExamsTab({
               className="form-select"
               required
               value={examForm.term}
-              onChange={(e) => setExamForm({ ...examForm, term: e.target.value })}
+              onChange={(e) => updateExamForm({ term: e.target.value })}
             >
               <option value="">Term...</option>
               {terms.map((t) => (
@@ -937,7 +966,7 @@ function ScheduleExamsTab({
               className="form-select"
               required
               value={examForm.exam_type}
-              onChange={(e) => setExamForm({ ...examForm, exam_type: e.target.value })}
+              onChange={(e) => updateExamForm({ exam_type: e.target.value })}
             >
               <option value="">Exam type...</option>
               {examTypes.map((et) => (
@@ -952,7 +981,7 @@ function ScheduleExamsTab({
               className="form-select"
               required
               value={examForm.grade_level}
-              onChange={(e) => setExamForm({ ...examForm, grade_level: e.target.value })}
+              onChange={(e) => updateExamForm({ grade_level: e.target.value })}
             >
               <option value="">Grade level...</option>
               {gradeLevels.map((g) => (
@@ -965,11 +994,17 @@ function ScheduleExamsTab({
           <div className="col-md-3">
             <input
               className="form-control"
-              placeholder="Exam name"
+              placeholder="e.g. Form 4 Midterm Exam – Term 1 2026"
               value={examForm.name}
-              onChange={(e) => setExamForm({ ...examForm, name: e.target.value })}
+              onChange={(e) => {
+                // clearing the box hands control back to the auto-suggestion
+                setNameEdited(e.target.value.trim() !== "");
+                setExamForm({ ...examForm, name: e.target.value });
+              }}
+              maxLength={120}
               required
             />
+            <div className="form-text">Suggested from term, type and grade. You can edit it.</div>
           </div>
           <div className="col-md-3">
             <label className="form-label small">Start date</label>

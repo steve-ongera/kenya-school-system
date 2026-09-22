@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import { financeApi, paymentsApi, profileApi } from "../../services/api";
 import ReceiptCard from "../../components/Receiptcard";
 import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
-import logoImage from "../../assets/masomo_logo.png";
+import logoImage from "../../assets/junda_high_logo.png";
 
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_TRIES = 20; // ~1 minute
+
+// Printed on receipts and the fee statement
+const SCHOOL_NAME = "Junda High School";
+const DOC_COPY_NOTE = "This is a computer-generated document copy.";
 
 const currency = (v) => Number(v || 0).toLocaleString();
 
@@ -16,6 +22,19 @@ const METHOD_LABEL = {
   CASH: "Cash",
   CHEQUE: "Cheque",
 };
+
+// "Term 1 - 2026" -> sortable number (20261). null if the label isn't in that shape.
+const termOrder = (inv) => {
+  const m = /Term\s+(\d+)\s*-\s*(\d{4})/i.exec(inv.term_label || "");
+  return m ? Number(m[2]) * 10 + Number(m[1]) : null;
+};
+
+// Brought-forward wording: positive = arrears, negative = credit from earlier terms
+const bfText = (v) => (Number(v) < 0 ? `KES ${currency(Math.abs(Number(v)))} credit` : `KES ${currency(v)}`);
+
+// A payment response may carry one payment (`payment`) or several (`payments`)
+const paymentsFrom = (data) =>
+  data.payments?.length ? data.payments : data.payment ? [data.payment] : [];
 
 // Load an image URL as base64 (used for embedding the logo into print docs)
 const getImageBase64 = (url) =>
@@ -40,12 +59,13 @@ export default function StudentFees() {
   const [loading, setLoading] = useState(true);
   const [feeStatus, setFeeStatus] = useState(null);
 
-  // pay modal state
-  const [payInvoice, setPayInvoice] = useState(null);
+  // pay modal state (ONE general payment - the backend splits it across invoices, oldest term first)
+  const [showPayModal, setShowPayModal] = useState(false);
   const [phone, setPhone] = useState("");
   const [amount, setAmount] = useState("");
   const [payError, setPayError] = useState("");
   const [payStatus, setPayStatus] = useState(""); // "", "SUBMITTING", "PENDING", "COMPLETED", "FAILED"
+  const [paidPayments, setPaidPayments] = useState([]); // one row per invoice the payment was split into
 
   // receipt viewer state
   const [receipt, setReceipt] = useState(null);
@@ -53,14 +73,20 @@ export default function StudentFees() {
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const [printingReceipt, setPrintingReceipt] = useState(false);
 
+  // fee statement download state
+  const [downloadingStatement, setDownloadingStatement] = useState(false);
+
+  // Returns the fresh list so callers can use it straight away
   const loadInvoices = async () => {
     setLoading(true);
     try {
-      const { data } = await financeApi.invoices();
+      const { data } = await financeApi.invoices({ page_size: 200 });
       const list = (data.results ?? data).sort((a, b) => new Date(b.issued_at) - new Date(a.issued_at));
       setInvoices(list);
+      return list;
     } catch (error) {
       console.error("Failed to load invoices:", error);
+      return [];
     } finally {
       setLoading(false);
     }
@@ -85,19 +111,44 @@ export default function StudentFees() {
   const totalDue = invoices.reduce((s, i) => s + Number(i.term_charge), 0);
   const totalPaid = invoices.reduce((s, i) => s + Number(i.amount_paid), 0);
   const netBalance = totalDue - totalPaid;
+  const prepaidAmount = netBalance < 0 ? Math.abs(netBalance) : 0;
 
-  const openPayModal = (invoice) => {
-    setPayInvoice(invoice);
+  // Oldest -> newest, for the statement and the "latest term" figures
+  const chronological = [...invoices].sort((a, b) => {
+    const ka = termOrder(a);
+    const kb = termOrder(b);
+    if (ka !== null && kb !== null && ka !== kb) return ka - kb;
+    return new Date(a.issued_at) - new Date(b.issued_at);
+  });
+  const latestInvoice = chronological[chronological.length - 1] || null;
+  // what was carried INTO the latest term from earlier terms (+ arrears, - credit)
+  const latestBroughtForward = latestInvoice ? Number(latestInvoice.brought_forward) : 0;
+
+  // ---- General payment (one button, backend splits across invoices) ----
+  const openPayModal = () => {
     setPhone(defaultPhone);
-    setAmount(invoice.balance > 0 ? String(invoice.balance) : "");
+    setAmount(netBalance > 0 ? String(Math.ceil(netBalance)) : "");
     setPayError("");
     setPayStatus("");
+    setPaidPayments([]);
+    setShowPayModal(true);
   };
 
   const closePayModal = () => {
-    setPayInvoice(null);
+    setShowPayModal(false);
     setPayStatus("");
     setPayError("");
+    setPaidPayments([]);
+  };
+
+  // Called once the payment is confirmed: refresh invoices, then show which term(s) it landed on
+  const finishPayment = async (payments) => {
+    const list = await loadInvoices();
+    const termByInvoice = Object.fromEntries(list.map((i) => [i.id, i.term_label]));
+    setPaidPayments(payments.map((p) => ({ ...p, term_label: termByInvoice[p.invoice] || "-" })));
+    setPayStatus("COMPLETED");
+    // A single payment can open its receipt straight away; several are listed in the success screen
+    if (payments.length === 1) await viewReceipt(payments[0].id);
   };
 
   const pollStatus = async (checkoutRequestId, triesLeft) => {
@@ -110,9 +161,7 @@ export default function StudentFees() {
     try {
       const { data } = await paymentsApi.status(checkoutRequestId);
       if (data.status === "COMPLETED") {
-        setPayStatus("COMPLETED");
-        await loadInvoices();
-        if (data.payment) await viewReceipt(data.payment.id);
+        await finishPayment(paymentsFrom(data));
       } else if (data.status === "FAILED" || data.status === "CANCELLED") {
         setPayStatus("FAILED");
         setPayError(data.result_description || "Payment was not completed.");
@@ -129,15 +178,14 @@ export default function StudentFees() {
     setPayError("");
     setPayStatus("SUBMITTING");
     try {
+      // No invoice_id -> the backend treats this as a general payment
+      // and splits it across invoices, oldest term first.
       const { data } = await paymentsApi.initiate({
-        invoice_id: payInvoice.id,
         phone_number: phone,
         amount: Number(amount),
       });
       if (data.status === "COMPLETED") {
-        setPayStatus("COMPLETED");
-        await loadInvoices();
-        if (data.payment) await viewReceipt(data.payment.id);
+        await finishPayment(paymentsFrom(data));
       } else {
         setPayStatus("PENDING");
         pollStatus(data.checkout_request_id, POLL_MAX_TRIES);
@@ -168,6 +216,257 @@ export default function StudentFees() {
     setReceiptLoading(false);
   };
 
+  // Get all payments from invoices
+  const allPayments = invoices.flatMap((inv) =>
+    (inv.payments || []).map((p) => ({ ...p, term_label: inv.term_label }))
+  );
+
+  // ---- Download the full fee statement (PDF) ----
+  // One row per term: what the term cost, what was brought forward, what
+  // was due in total, what was paid, and the balance carried to the next
+  // term (negative = prepaid / credit).
+  const handleDownloadStatement = async () => {
+    if (!invoices.length) return;
+    try {
+      setDownloadingStatement(true);
+
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const M = 12;
+
+      const base64Logo = await getImageBase64(logoImage);
+      const today = new Date();
+      const generatedOn = today.toLocaleDateString("en-KE", {
+        year: "numeric", month: "long", day: "numeric",
+      });
+
+      const studentName = invoices[0]?.student_name || "-";
+      const admissionNo = invoices[0]?.admission_no || "-";
+      const firstTerm = chronological[0]?.term_label || "-";
+      const lastTerm = latestInvoice?.term_label || "-";
+
+      const gridStyles = { lineColor: [226, 232, 240], lineWidth: 0.1, textColor: [51, 65, 85] };
+      const labelCell = { fontStyle: "bold", fillColor: [241, 245, 249], textColor: [71, 85, 105] };
+      const RED = [220, 38, 38];
+      const GREEN = [22, 163, 74];
+
+      // --- Header ---
+      if (base64Logo) doc.addImage(base64Logo, "PNG", M, 8, 12, 12);
+      const textX = base64Logo ? M + 16 : M;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(13);
+      doc.setTextColor(15, 23, 42);
+      doc.text(SCHOOL_NAME, textX, 14);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(71, 85, 105);
+      doc.text("Fee Statement", textX, 19);
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Generated ${generatedOn}`, pageWidth - M, 14, { align: "right" });
+      doc.setDrawColor(203, 213, 225);
+      doc.setLineWidth(0.3);
+      doc.line(M, 23, pageWidth - M, 23);
+
+      // --- Student block ---
+      autoTable(doc, {
+        startY: 26,
+        theme: "grid",
+        body: [
+          ["Student", studentName, "Admission No", admissionNo],
+          ["Statement Date", generatedOn, "Terms Covered", firstTerm === lastTerm ? firstTerm : `${firstTerm} to ${lastTerm}`],
+        ],
+        styles: { fontSize: 8.5, cellPadding: 1.8, ...gridStyles },
+        columnStyles: {
+          0: { cellWidth: 30, ...labelCell },
+          1: { cellWidth: 58 },
+          2: { cellWidth: 30, ...labelCell },
+          3: { cellWidth: "auto" },
+        },
+        margin: { left: M, right: M },
+      });
+
+      // --- Summary strip ---
+      const balanceLabel = netBalance > 0 ? "Balance Owing" : netBalance < 0 ? "Prepaid (Credit)" : "Balance";
+      autoTable(doc, {
+        startY: doc.lastAutoTable.finalY + 3,
+        theme: "grid",
+        head: [["Total Fees Charged", "Total Paid", "Brought Forward (latest term)", balanceLabel]],
+        body: [[
+          `KES ${currency(totalDue)}`,
+          `KES ${currency(totalPaid)}`,
+          bfText(latestBroughtForward),
+          `KES ${currency(Math.abs(netBalance))}`,
+        ]],
+        styles: {
+          fontSize: 9, cellPadding: 1.8, halign: "center", valign: "middle",
+          fontStyle: "bold", ...gridStyles, textColor: [15, 23, 42],
+        },
+        headStyles: {
+          fillColor: [241, 245, 249], textColor: [71, 85, 105],
+          fontSize: 7, fontStyle: "bold", cellPadding: 1.4,
+        },
+        didParseCell: (data) => {
+          if (data.section !== "body") return;
+          if (data.column.index === 2 && latestBroughtForward !== 0) {
+            data.cell.styles.textColor = latestBroughtForward > 0 ? RED : GREEN;
+          }
+          if (data.column.index === 3) {
+            data.cell.styles.textColor = netBalance > 0 ? RED : GREEN;
+          }
+        },
+        margin: { left: M, right: M },
+      });
+
+      let y = doc.lastAutoTable.finalY + 5;
+      const statusNote =
+        netBalance > 0
+          ? `Outstanding balance: KES ${currency(netBalance)}.`
+          : netBalance < 0
+            ? `Prepaid: KES ${currency(prepaidAmount)} paid in advance. It will be applied to your next term's fees.`
+            : "Your account is fully settled.";
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(...(netBalance > 0 ? RED : GREEN));
+      doc.text(statusNote, M, y);
+      y += 5;
+
+      // --- Statement by term ---
+      const rowStatus = (bal) => (bal > 0 ? "Owing" : bal < 0 ? "Prepaid" : "Cleared");
+      autoTable(doc, {
+        startY: y,
+        theme: "grid",
+        head: [["Term", "Grade", "Term Fee", "Brought Fwd", "Total Due", "Paid", "Balance", "Status"]],
+        body: chronological.map((inv) => [
+          inv.term_label,
+          inv.grade_level_name,
+          currency(inv.term_charge),
+          currency(inv.brought_forward),
+          currency(inv.amount_due),
+          currency(inv.amount_paid),
+          currency(inv.balance),
+          rowStatus(Number(inv.balance)),
+        ]),
+        foot: [[
+          "Total", "", currency(totalDue), "-", "-", currency(totalPaid), currency(netBalance),
+          rowStatus(netBalance),
+        ]],
+        showFoot: "lastPage",
+        styles: { fontSize: 8, cellPadding: 1.8, overflow: "ellipsize", ...gridStyles },
+        headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: "bold" },
+        footStyles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: "bold" },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles: {
+          0: { cellWidth: 26 },
+          1: { cellWidth: 18 },
+          2: { cellWidth: 24, halign: "right" },
+          3: { cellWidth: 24, halign: "right" },
+          4: { cellWidth: 24, halign: "right" },
+          5: { cellWidth: 24, halign: "right" },
+          6: { cellWidth: 24, halign: "right" },
+          7: { cellWidth: 22, halign: "center" },
+        },
+        margin: { left: M, right: M },
+        didParseCell: (data) => {
+          if (data.section !== "body") return;
+          const inv = chronological[data.row.index];
+          if (!inv) return;
+          const bf = Number(inv.brought_forward);
+          const bal = Number(inv.balance);
+          if (data.column.index === 3 && bf !== 0) {
+            data.cell.styles.textColor = bf > 0 ? RED : GREEN;
+          }
+          if (data.column.index === 5) data.cell.styles.textColor = GREEN;
+          if (data.column.index === 6 || data.column.index === 7) {
+            data.cell.styles.fontStyle = "bold";
+            data.cell.styles.textColor = bal > 0 ? RED : GREEN;
+          }
+        },
+      });
+      y = doc.lastAutoTable.finalY + 4;
+
+      const legend = doc.splitTextToSize(
+        "Term Fee is that term's own fee. Brought Fwd is the balance carried in from earlier terms " +
+        "(positive = unpaid, negative = credit). Total Due = Term Fee + Brought Fwd. " +
+        "Balance = Total Due - Paid and is carried into the next term; a negative balance means you have prepaid.",
+        pageWidth - 2 * M
+      );
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text(legend, M, y);
+      y += legend.length * 3 + 6;
+
+      // --- Payments ---
+      const paymentsSorted = [...allPayments].sort((a, b) => new Date(a.paid_at) - new Date(b.paid_at));
+      if (paymentsSorted.length > 0) {
+        if (y > pageHeight - 50) {
+          doc.addPage();
+          y = 20;
+        }
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9.5);
+        doc.setTextColor(15, 23, 42);
+        doc.text("Payments Received", M, y);
+
+        autoTable(doc, {
+          startY: y + 2,
+          theme: "grid",
+          head: [["Receipt No", "Date", "Term", "Method", "Reference", "Amount (KES)"]],
+          body: paymentsSorted.map((p) => [
+            p.receipt_no || "-",
+            new Date(p.paid_at).toLocaleDateString("en-KE", { year: "numeric", month: "short", day: "numeric" }),
+            p.term_label,
+            METHOD_LABEL[p.method] || p.method,
+            p.reference || "-",
+            currency(p.amount),
+          ]),
+          foot: [["Total", "", "", "", "", currency(totalPaid)]],
+          showFoot: "lastPage",
+          styles: { fontSize: 8, cellPadding: 1.8, overflow: "ellipsize", ...gridStyles },
+          headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: "bold" },
+          footStyles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: "bold" },
+          alternateRowStyles: { fillColor: [248, 250, 252] },
+          columnStyles: {
+            0: { cellWidth: 32 },
+            1: { cellWidth: 26 },
+            2: { cellWidth: 26 },
+            3: { cellWidth: 22 },
+            4: { cellWidth: "auto" },
+            5: { cellWidth: 30, halign: "right" },
+          },
+          margin: { left: M, right: M },
+        });
+      }
+
+      // --- Footer on every page ---
+      const totalPages = doc.getNumberOfPages();
+      for (let p = 1; p <= totalPages; p++) {
+        doc.setPage(p);
+        doc.setDrawColor(226, 232, 240);
+        doc.setLineWidth(0.2);
+        doc.line(M, pageHeight - 14, pageWidth - M, pageHeight - 14);
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(6.5);
+        doc.setTextColor(100, 116, 139);
+        doc.text(DOC_COPY_NOTE, pageWidth / 2, pageHeight - 10, { align: "center" });
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7);
+        doc.setTextColor(148, 163, 184);
+        doc.text(`${SCHOOL_NAME} — Document Copy`, M, pageHeight - 5.5);
+        doc.text(`Page ${p} of ${totalPages}`, pageWidth - M, pageHeight - 5.5, { align: "right" });
+      }
+
+      const safeName = String(studentName).replace(/\s+/g, "_");
+      doc.save(`Fee_Statement_${safeName}_${today.toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      console.error("Failed to generate fee statement PDF:", err);
+    } finally {
+      setDownloadingStatement(false);
+    }
+  };
+
   // ---- Print a receipt with logo + signature/stamp blocks ----
   // Renders into a hidden iframe so only the receipt itself prints,
   // not the whole page. Matches the finance-side receipt layout.
@@ -178,7 +477,7 @@ export default function StudentFees() {
 
       const base64Logo = await getImageBase64(logoImage);
       const logoTag = base64Logo
-        ? `<img src="${base64Logo}" alt="Masomo School" class="logo" />`
+        ? `<img src="${base64Logo}" alt="${SCHOOL_NAME}" class="logo" />`
         : "";
 
       const methodLabel = METHOD_LABEL[receipt.method] || receipt.method;
@@ -254,7 +553,7 @@ export default function StudentFees() {
               <div class="header-left">
                 ${logoTag}
                 <div>
-                  <p class="school-name">Masomo School</p>
+                  <p class="school-name">${SCHOOL_NAME}</p>
                   <p class="subtitle">Official Payment Receipt</p>
                 </div>
               </div>
@@ -311,7 +610,7 @@ export default function StudentFees() {
             </div>
 
             <div class="footer">
-              <span>Masomo School — Finance Department</span>
+              <span>${SCHOOL_NAME} — Finance Department</span>
               <span>Official payment receipt</span>
             </div>
           </body>
@@ -360,11 +659,6 @@ export default function StudentFees() {
     }
   };
 
-  // Get all payments from invoices
-  const allPayments = invoices.flatMap((inv) =>
-    (inv.payments || []).map((p) => ({ ...p, term_label: inv.term_label }))
-  );
-
   return (
     <div>
       {/* Breadcrumb */}
@@ -382,12 +676,47 @@ export default function StudentFees() {
             View your fee statements and make payments
           </p>
         </div>
-        {!loading && (
-          <span className={`badge ${netBalance > 0 ? "badge-danger" : "badge-success"}`} style={{ fontSize: "0.85rem", padding: "0.4rem 0.8rem" }}>
-            <i className={`bi ${netBalance > 0 ? "bi-exclamation-circle" : "bi-check-circle"} me-1`}></i>
-            Balance: KES {netBalance.toLocaleString()}
-          </span>
-        )}
+        <div className="d-flex gap-2 align-items-center flex-wrap">
+          {!loading && (
+            <span className={`badge ${netBalance > 0 ? "badge-danger" : "badge-success"}`} style={{ fontSize: "0.85rem", padding: "0.4rem 0.8rem" }}>
+              <i className={`bi ${netBalance > 0 ? "bi-exclamation-circle" : "bi-check-circle"} me-1`}></i>
+              {netBalance < 0
+                ? `Prepaid: KES ${currency(prepaidAmount)}`
+                : `Balance: KES ${currency(netBalance)}`}
+            </span>
+          )}
+          <a href="/student/fee-structure" className="btn btn-sm btn-outline-secondary">
+            <i className="bi bi-card-list me-1"></i>
+            Fee Structure
+          </a>
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={openPayModal}
+            disabled={loading || invoices.length === 0}
+          >
+            <i className="bi bi-phone me-1"></i>
+            {netBalance > 0 ? "Pay Fees" : "Pay in Advance"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-primary"
+            onClick={handleDownloadStatement}
+            disabled={loading || downloadingStatement || invoices.length === 0}
+          >
+            {downloadingStatement ? (
+              <>
+                <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                Preparing...
+              </>
+            ) : (
+              <>
+                <i className="bi bi-file-earmark-pdf me-1"></i>
+                Download Statement
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Fee Structure Missing Banner */}
@@ -412,8 +741,12 @@ export default function StudentFees() {
           <i className="bi bi-exclamation-circle" style={{ fontSize: "1.2rem" }}></i>
           <span>
             You have an outstanding balance of <strong>KES {netBalance.toLocaleString()}</strong> across
-            your fee statements. You don't need to pay it all at once — partial payments are accepted.
+            your fee statements. You don't need to pay it all at once — partial payments are accepted and
+            are applied to your oldest unpaid term first.
           </span>
+          <button className="btn btn-sm btn-primary ms-auto" onClick={openPayModal}>
+            <i className="bi bi-phone me-1"></i>Pay Now
+          </button>
         </div>
       )}
       {!loading && netBalance < 0 && (
@@ -425,15 +758,83 @@ export default function StudentFees() {
         }}>
           <i className="bi bi-piggy-bank" style={{ fontSize: "1.2rem" }}></i>
           <span>
-            You have a credit balance of <strong>KES {Math.abs(netBalance).toLocaleString()}</strong> from
-            a previous overpayment. It will be applied automatically to your next term's fees.
+            You have prepaid <strong>KES {Math.abs(netBalance).toLocaleString()}</strong>. This credit will be
+            applied automatically to your next term's fees.
           </span>
+        </div>
+      )}
+
+      {/* Summary cards: what you owed, what was carried forward, what you paid, where you stand */}
+      {!loading && invoices.length > 0 && (
+        <div className="row g-3 mb-4">
+          <div className="col-6 col-md-3">
+            <div className="stat-card" style={{ padding: "0.75rem 1rem" }}>
+              <div>
+                <div className="stat-card__value" style={{ fontSize: "1.2rem" }}>KES {currency(totalDue)}</div>
+                <div className="stat-card__label">Total Fees Charged</div>
+              </div>
+            </div>
+          </div>
+          <div className="col-6 col-md-3">
+            <div className="stat-card stat-card--gold" style={{ padding: "0.75rem 1rem" }}>
+              <div>
+                <div
+                  className="stat-card__value"
+                  style={{
+                    fontSize: "1.2rem",
+                    color: latestBroughtForward > 0 ? "var(--danger-600)" : latestBroughtForward < 0 ? "var(--success-600)" : undefined,
+                  }}
+                >
+                  {bfText(latestBroughtForward)}
+                </div>
+                <div className="stat-card__label">
+                  Brought Forward{latestInvoice ? ` (${latestInvoice.term_label})` : ""}
+                </div>
+                <div className="stat-card__label" style={{ fontSize: "0.7rem" }}>
+                  {latestBroughtForward > 0
+                    ? "Unpaid from earlier terms"
+                    : latestBroughtForward < 0
+                      ? "Credit from earlier terms"
+                      : "Nothing carried in"}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="col-6 col-md-3">
+            <div className="stat-card stat-card--success" style={{ padding: "0.75rem 1rem" }}>
+              <div>
+                <div className="stat-card__value" style={{ fontSize: "1.2rem" }}>KES {currency(totalPaid)}</div>
+                <div className="stat-card__label">Total Paid</div>
+              </div>
+            </div>
+          </div>
+          <div className="col-6 col-md-3">
+            <div className="stat-card stat-card--blue" style={{ padding: "0.75rem 1rem" }}>
+              <div>
+                <div
+                  className="stat-card__value"
+                  style={{
+                    fontSize: "1.2rem",
+                    color: netBalance > 0 ? "var(--danger-600)" : "var(--success-600)",
+                  }}
+                >
+                  KES {currency(Math.abs(netBalance))}
+                </div>
+                <div className="stat-card__label">
+                  {netBalance > 0 ? "Balance Owing" : netBalance < 0 ? "Prepaid (Credit)" : "Balance"}
+                </div>
+                {netBalance < 0 && (
+                  <div className="stat-card__label" style={{ fontSize: "0.7rem" }}>Applied to next term</div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
       {/* Invoices Table */}
       {loading ? (
-        <TableSkeleton rows={5} columns={8} />
+        <TableSkeleton rows={5} columns={7} />
       ) : invoices.length === 0 ? (
         <div className="table-wrap mb-4">
           <div className="empty-state">
@@ -468,8 +869,7 @@ export default function StudentFees() {
                   <th className="text-end">Term Fee</th>
                   <th className="text-end">Total Due</th>
                   <th className="text-end">Paid</th>
-                  <th className="text-end">Balance</th>
-                  <th style={{ width: "100px" }}></th>
+                  <th className="text-end">Balance c/f</th>
                 </tr>
               </thead>
               <tbody>
@@ -483,24 +883,17 @@ export default function StudentFees() {
                     <td>
                       <span className="badge badge-blue">{inv.grade_level_name}</span>
                     </td>
-                    <td className={`text-end ${inv.brought_forward < 0 ? "text-success" : inv.brought_forward > 0 ? "text-danger" : ""}`}>
+                    <td className={`text-end ${Number(inv.brought_forward) < 0 ? "text-success" : Number(inv.brought_forward) > 0 ? "text-danger" : ""}`}>
                       {Number(inv.brought_forward).toLocaleString()}
                     </td>
                     <td className="text-end">{Number(inv.term_charge).toLocaleString()}</td>
                     <td className="text-end">{Number(inv.amount_due).toLocaleString()}</td>
                     <td className="text-end text-success">{Number(inv.amount_paid).toLocaleString()}</td>
-                    <td className={`text-end fw-bold ${inv.balance > 0 ? "text-danger" : "text-success"}`}>
+                    <td className={`text-end fw-bold ${Number(inv.balance) > 0 ? "text-danger" : "text-success"}`}>
                       {Number(inv.balance).toLocaleString()}
-                    </td>
-                    <td className="text-end">
-                      <button
-                        className={`btn btn-sm ${inv.balance > 0 ? "btn-primary" : "btn-outline-secondary"}`}
-                        onClick={() => openPayModal(inv)}
-                        style={{ width: "100%" }}
-                      >
-                        <i className={`bi ${inv.balance > 0 ? "bi-phone" : "bi-plus-circle"} me-1`}></i>
-                        {inv.balance > 0 ? "Pay" : "Top Up"}
-                      </button>
+                      {Number(inv.balance) < 0 && (
+                        <span className="badge badge-success ms-1" style={{ fontSize: "0.65rem" }}>Prepaid</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -511,16 +904,9 @@ export default function StudentFees() {
             <span className="table-wrap__footer-info">
               Showing <strong>{invoices.length}</strong> invoice{invoices.length !== 1 ? "s" : ""}
             </span>
-            <div style={{ display: "flex", gap: "1rem", fontSize: "var(--fs-xs)" }}>
-              <span style={{ color: "var(--success-600)" }}>
-                <i className="bi bi-check-circle me-1"></i>
-                Paid: {invoices.filter(i => Number(i.balance || 0) === 0).length}
-              </span>
-              <span style={{ color: "var(--danger-600)" }}>
-                <i className="bi bi-exclamation-circle me-1"></i>
-                Outstanding: {invoices.filter(i => Number(i.balance || 0) > 0).length}
-              </span>
-            </div>
+            <span style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>
+              Each term's balance is carried into the next term.
+            </span>
           </div>
         </div>
       )}
@@ -595,8 +981,8 @@ export default function StudentFees() {
         </>
       )}
 
-      {/* Payment Modal */}
-      {payInvoice && (
+      {/* Payment Modal - one general payment, split across terms automatically */}
+      {showPayModal && (
         <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }} tabIndex="-1" role="dialog">
           <div className="modal-dialog modal-dialog-centered" role="document">
             <div className="modal-content">
@@ -604,7 +990,24 @@ export default function StudentFees() {
                 <div className="modal-body text-center py-4">
                   <i className="bi bi-check-circle-fill text-success" style={{ fontSize: "3rem" }}></i>
                   <h5 className="mt-3" style={{ fontWeight: 700 }}>Payment Successful</h5>
-                  <p className="text-muted">Your fee statement has been updated.</p>
+                  <p className="text-muted">Your payment was applied to your fee statements:</p>
+                  {paidPayments.length > 0 && (
+                    <table className="table table-sm text-start mb-3">
+                      <tbody>
+                        {paidPayments.map((p) => (
+                          <tr key={p.id}>
+                            <td>{p.term_label}</td>
+                            <td className="text-end fw-bold text-success">KES {currency(p.amount)}</td>
+                            <td className="text-end">
+                              <button className="btn btn-sm btn-outline-primary" onClick={() => viewReceipt(p.id)}>
+                                <i className="bi bi-receipt me-1"></i>Receipt
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                   <button className="btn btn-primary" onClick={closePayModal}>
                     <i className="bi bi-check2 me-2"></i>Close
                   </button>
@@ -624,7 +1027,7 @@ export default function StudentFees() {
                   <h5 style={{ fontWeight: 700 }}>Check your phone</h5>
                   <p className="text-muted">
                     An M-Pesa prompt has been sent to <strong>{phone}</strong>. Enter your PIN to
-                    complete the payment of <strong>KES {Number(amount).toLocaleString()}</strong>.
+                    complete the payment of <strong>KES {currency(amount)}</strong>.
                   </p>
                   <div className="text-muted small">
                     <i className="bi bi-clock me-1"></i>
@@ -642,9 +1045,15 @@ export default function StudentFees() {
                   </div>
                   <form onSubmit={submitPayment}>
                     <div className="modal-body">
-                      <p className="text-muted small mb-3">
-                        {payInvoice.term_label} — {payInvoice.grade_level_name}
-                      </p>
+                      <div className="alert alert-light border small py-2 mb-3">
+                        {netBalance > 0 ? (
+                          <>Total outstanding: <strong>KES {currency(netBalance)}</strong>. </>
+                        ) : (
+                          <>Your account is settled. Anything you pay now is kept as credit for your next term. </>
+                        )}
+                        Your payment is applied automatically to your oldest unpaid term first, then the next,
+                        and so on. Partial payments are fine.
+                      </div>
 
                       {payError && (
                         <div className="alert alert-danger py-2">
@@ -665,10 +1074,6 @@ export default function StudentFees() {
                           onChange={(e) => setAmount(e.target.value)}
                           placeholder="Enter amount to pay"
                         />
-                        <div className="form-text-hint">
-                          Balance owed: <strong>KES {Number(payInvoice.balance).toLocaleString()}</strong>.
-                          You may pay less (partial) or more (the extra becomes a credit for next term).
-                        </div>
                       </div>
 
                       <div className="mb-3">

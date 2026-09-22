@@ -152,42 +152,6 @@ function EditUserModal({ user, form, setForm, saving, error, onSave, onCancel })
   );
 }
 
-// ===========================================================================
-// Delete confirmation modal
-// ===========================================================================
-function DeleteUserModal({ user, saving, error, onConfirm, onCancel }) {
-  return (
-    <>
-      <div className="modal d-block" tabIndex="-1" role="dialog" style={{ zIndex: 1055 }}>
-        <div className="modal-dialog modal-dialog-centered" role="document">
-          <div className="modal-content">
-            <div className="modal-header">
-              <h5 className="modal-title">Delete User Account?</h5>
-              <button type="button" className="btn-close" onClick={onCancel} aria-label="Close" />
-            </div>
-            <div className="modal-body">
-              {error && <div className="alert alert-danger py-2 px-3">{error}</div>}
-              <p className="mb-0">
-                Delete <strong>{user.first_name} {user.last_name}</strong> ({user.username}, {user.role})? This
-                cannot be undone.
-              </p>
-            </div>
-            <div className="modal-footer">
-              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onCancel}>
-                Cancel
-              </button>
-              <button type="button" className="btn btn-danger btn-sm" onClick={onConfirm} disabled={saving}>
-                {saving ? "Deleting…" : "Delete"}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div className="modal-backdrop show" style={{ zIndex: 1050 }} />
-    </>
-  );
-}
-
 export default function AdminUsers() {
   const [users, setUsers] = useState([]);
   const [totalItems, setTotalItems] = useState(0);
@@ -211,11 +175,6 @@ export default function AdminUsers() {
   const [editForm, setEditForm] = useState(emptyEditForm);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState("");
-
-  // ---- Delete user modal state --------------------------------------------
-  const [deletingUser, setDeletingUser] = useState(null);
-  const [deleteSaving, setDeleteSaving] = useState(false);
-  const [deleteError, setDeleteError] = useState("");
 
   // Debounce the search box.
   useEffect(() => {
@@ -312,40 +271,6 @@ export default function AdminUsers() {
       setEditError(errorText(err, "Could not update this user."));
     } finally {
       setEditSaving(false);
-    }
-  };
-
-  // ---------------------------------------------------------------------
-  // Delete user
-  // ---------------------------------------------------------------------
-  const startDelete = (user) => {
-    setDeletingUser(user);
-    setDeleteError("");
-  };
-
-  const cancelDelete = () => {
-    setDeletingUser(null);
-    setDeleteError("");
-  };
-
-  const confirmDelete = async () => {
-    setDeleteSaving(true);
-    setDeleteError("");
-    try {
-      await api.delete(`/users/${deletingUser.id}/`);
-      cancelDelete();
-      // If we just deleted the last row on this page, step back a page.
-      if (users.length === 1 && currentPage > 1) {
-        setCurrentPage((p) => p - 1);
-      } else {
-        await loadUsers();
-      }
-      setMessage("User account deleted.");
-      setMessageType("success");
-    } catch (err) {
-      setDeleteError(errorText(err, "Could not delete this user."));
-    } finally {
-      setDeleteSaving(false);
     }
   };
 
@@ -531,7 +456,7 @@ export default function AdminUsers() {
                   <th>Email</th>
                   <th>Phone</th>
                   <th>Status</th>
-                  <th style={{ width: "90px" }}>Actions</th>
+                  <th style={{ width: "60px" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -575,14 +500,6 @@ export default function AdminUsers() {
                         >
                           <i className="bi bi-pencil"></i>
                         </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-outline-danger btn-icon"
-                          title="Delete"
-                          onClick={() => startDelete(u)}
-                        >
-                          <i className="bi bi-trash"></i>
-                        </button>
                       </div>
                     </td>
                   </tr>
@@ -615,16 +532,6 @@ export default function AdminUsers() {
           error={editError}
           onSave={saveEdit}
           onCancel={cancelEdit}
-        />
-      )}
-
-      {deletingUser && (
-        <DeleteUserModal
-          user={deletingUser}
-          saving={deleteSaving}
-          error={deleteError}
-          onConfirm={confirmDelete}
-          onCancel={cancelDelete}
         />
       )}
     </div>

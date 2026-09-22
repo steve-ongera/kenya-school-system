@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { reportCardsApi } from "../services/api";
-import logoImage from "../assets/masomo_logo.png";
+import logoImage from "../assets/junda_high_logo.png";
 
 export default function VerifyReportCard() {
   const { token } = useParams();
@@ -81,7 +81,7 @@ export default function VerifyReportCard() {
               "This document could not be verified against our records. It may be a forgery, or the link may have expired."}
           </p>
           <p className="verify-hint">
-            If you believe this is a mistake, please contact the Academics Office at Masomo School.
+            If you believe this is a mistake, please contact the Academics Office at Junda High School.
           </p>
           <Link to="/" className="btn btn-outline-primary btn-sm mt-2">
             <i className="bi bi-house me-1"></i> Return Home
@@ -97,9 +97,9 @@ export default function VerifyReportCard() {
       <div className="verify-card verify-card--valid">
         {/* Header */}
         <div className="verify-header">
-          <img src={logoImage} alt="Masomo School" className="verify-logo" />
+          <img src={logoImage} alt="Junda High School" className="verify-logo" />
           <div>
-            <div className="verify-school">Masomo School</div>
+            <div className="verify-school">Junda High School</div>
             <div className="verify-subtitle">Report Card Verification</div>
           </div>
         </div>
@@ -194,7 +194,7 @@ export default function VerifyReportCard() {
             day: "numeric",
           })}
           {" · "}
-          © Masomo School — Academics Office
+          © Junda High School — Academics Office
         </div>
       </div>
     </div>

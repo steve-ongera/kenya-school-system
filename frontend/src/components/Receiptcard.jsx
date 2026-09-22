@@ -1,5 +1,5 @@
 // components/ReceiptCard.jsx
-import logoImage from "../assets/masomo_logo.png";
+import logoImage from "../assets/junda_high_logo.png";
 
 export default function ReceiptCard({ receipt, showQr = true }) {
   if (!receipt) return null;
@@ -18,7 +18,7 @@ export default function ReceiptCard({ receipt, showQr = true }) {
       <div className="text-center mb-3">
         <img
           src={logoImage}
-          alt="Masomo School"
+          alt="Junda High School"
           style={{
             width: 56,
             height: 56,
@@ -180,7 +180,7 @@ export default function ReceiptCard({ receipt, showQr = true }) {
         className="text-center mt-3"
         style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}
       >
-        Masomo School — Finance Department
+        Junda High School — Finance Department
       </div>
     </div>
   );

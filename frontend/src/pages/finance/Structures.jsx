@@ -3,7 +3,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { financeApi, calendarApi, academicsApi, schoolApi } from "../../services/api";
 import Breadcrumb from "../../components/Breadcrumb";
-import logoImage from "../../assets/masomo_logo.png";
+import logoImage from "../../assets/junda_high_logo.png";
 
 const currency = (value) => Number(value || 0).toLocaleString();
 
@@ -236,7 +236,7 @@ export default function FinanceStructures() {
 
     const base64Logo = await getImageBase64(logoImage);
 
-    const schoolName = school?.name || "Masomo School";
+    const schoolName = school?.name || "Junda High School";
     const generatedOn = new Date().toLocaleDateString("en-KE", {
       year: "numeric", month: "long", day: "numeric",
     });

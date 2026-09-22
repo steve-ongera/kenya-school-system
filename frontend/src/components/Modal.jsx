@@ -1,15 +1,16 @@
 // src/components/Modal.jsx
-export default function Modal({ 
-  show, 
-  onClose, 
-  title, 
-  children, 
-  size, 
+export default function Modal({
+  show,
+  onClose,
+  title,
+  children,
+  size,
   footer,
   closeOnBackdrop = true,
-  fullscreen = false
 }) {
   if (!show) return null;
+
+  const isFullscreen = size === "fullscreen";
 
   const handleBackdropClick = (e) => {
     if (closeOnBackdrop && e.target === e.currentTarget) {
@@ -19,8 +20,8 @@ export default function Modal({
 
   return (
     <>
-      <div 
-        className="modal-backdrop fade show" 
+      <div
+        className="modal-backdrop fade show"
         onClick={handleBackdropClick}
         style={{
           position: "fixed",
@@ -51,37 +52,48 @@ export default function Modal({
         onClick={handleBackdropClick}
       >
         <div
-          className={`modal-dialog modal-dialog-centered modal-dialog-scrollable ${size ? `modal-${size}` : ""} ${fullscreen ? "modal-fullscreen" : ""}`}
+          className={`modal-dialog modal-dialog-scrollable ${
+            isFullscreen ? "modal-fullscreen" : "modal-dialog-centered"
+          } ${size && !isFullscreen ? `modal-${size}` : ""}`}
           role="document"
           style={{
             display: "flex",
-            alignItems: "center",
-            minHeight: "calc(100% - 1rem)",
-            margin: "0.5rem auto",
-            maxWidth: size === "sm" ? "400px" : size === "lg" ? "800px" : size === "xl" ? "1000px" : "560px",
+            alignItems: isFullscreen ? "stretch" : "center",
+            minHeight: isFullscreen ? "100vh" : "calc(100% - 1rem)",
+            margin: isFullscreen ? 0 : "0.5rem auto",
+            maxWidth: isFullscreen
+              ? "100vw"
+              : size === "sm"
+              ? "400px"
+              : size === "lg"
+              ? "800px"
+              : size === "xl"
+              ? "1000px"
+              : "560px",
             width: "100%",
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div 
+          <div
             className="modal-content"
             style={{
               position: "relative",
               display: "flex",
               flexDirection: "column",
               width: "100%",
+              height: isFullscreen ? "100vh" : undefined,
               pointerEvents: "auto",
               backgroundColor: "#ffffff",
               backgroundClip: "padding-box",
-              border: "1px solid var(--border-color)",
-              borderRadius: "var(--radius-lg)",
-              boxShadow: "0 20px 60px rgba(11, 37, 69, 0.15)",
+              border: isFullscreen ? "none" : "1px solid var(--border-color)",
+              borderRadius: isFullscreen ? 0 : "var(--radius-lg)",
+              boxShadow: isFullscreen ? "none" : "0 20px 60px rgba(11, 37, 69, 0.15)",
               outline: 0,
-              maxHeight: "calc(100vh - 1rem)",
+              maxHeight: isFullscreen ? "100vh" : "calc(100vh - 1rem)",
             }}
           >
             {/* Modal Header */}
-            <div 
+            <div
               className="modal-header"
               style={{
                 display: "flex",
@@ -90,12 +102,12 @@ export default function Modal({
                 justifyContent: "space-between",
                 padding: "1rem 1.5rem",
                 borderBottom: "1px solid var(--border-color)",
-                borderTopLeftRadius: "var(--radius-lg)",
-                borderTopRightRadius: "var(--radius-lg)",
+                borderTopLeftRadius: isFullscreen ? 0 : "var(--radius-lg)",
+                borderTopRightRadius: isFullscreen ? 0 : "var(--radius-lg)",
                 backgroundColor: "var(--bg-app)",
               }}
             >
-              <h5 
+              <h5
                 className="modal-title"
                 style={{
                   margin: 0,
@@ -128,15 +140,15 @@ export default function Modal({
                   color: "var(--ink-600)",
                   transition: "opacity 0.15s ease",
                 }}
-                onMouseEnter={(e) => e.currentTarget.style.opacity = 1}
-                onMouseLeave={(e) => e.currentTarget.style.opacity = 0.5}
+                onMouseEnter={(e) => (e.currentTarget.style.opacity = 1)}
+                onMouseLeave={(e) => (e.currentTarget.style.opacity = 0.5)}
               >
                 <i className="bi bi-x-lg"></i>
               </button>
             </div>
 
             {/* Modal Body */}
-            <div 
+            <div
               className="modal-body"
               style={{
                 position: "relative",
@@ -153,7 +165,7 @@ export default function Modal({
 
             {/* Modal Footer (optional) */}
             {footer && (
-              <div 
+              <div
                 className="modal-footer"
                 style={{
                   display: "flex",
@@ -163,8 +175,8 @@ export default function Modal({
                   justifyContent: "flex-end",
                   padding: "0.75rem 1.5rem",
                   borderTop: "1px solid var(--border-color)",
-                  borderBottomLeftRadius: "var(--radius-lg)",
-                  borderBottomRightRadius: "var(--radius-lg)",
+                  borderBottomLeftRadius: isFullscreen ? 0 : "var(--radius-lg)",
+                  borderBottomRightRadius: isFullscreen ? 0 : "var(--radius-lg)",
                   backgroundColor: "var(--bg-app)",
                   gap: "0.5rem",
                 }}

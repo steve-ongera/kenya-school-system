@@ -916,9 +916,10 @@ class PaymentSerializer(serializers.ModelSerializer):
 
 
 class InitiatePaymentSerializer(serializers.Serializer):
-    """Used by students/parents/finance to pay an invoice - partial or full, via STK push (or the DEBUG bypass)."""
+    """Pay ONE invoice (invoice_id given) or the student's WHOLE balance (invoice_id omitted)."""
 
-    invoice_id = serializers.IntegerField()
+    invoice_id = serializers.IntegerField(required=False)
+    student_id = serializers.IntegerField(required=False)  # parents only
     phone_number = serializers.CharField(max_length=15)
     amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("1"))
 
@@ -1378,3 +1379,43 @@ class TimetableGridQuerySerializer(serializers.Serializer):
 
 class AutoGenerateTimetableSerializer(serializers.Serializer):
     term = serializers.PrimaryKeyRelatedField(queryset=models.Term.objects.all())
+    
+    
+    
+# ---------------------------------------------------------------------------
+# STUDENT CLEARANCE
+# ---------------------------------------------------------------------------
+class ClearanceApplicationSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source="student.user.get_full_name", read_only=True)
+    admission_no = serializers.CharField(source="student.admission_no", read_only=True)
+    student_phone = serializers.CharField(source="student.user.phone_number", read_only=True)
+    curriculum_type = serializers.CharField(source="student.curriculum_type", read_only=True)
+    classroom_label = serializers.CharField(source="enrollment.classroom.__str__", read_only=True)
+    academic_year_year = serializers.IntegerField(source="enrollment.academic_year.year", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    reviewed_by_name = serializers.CharField(source="reviewed_by.get_full_name", read_only=True, default=None)
+    collected_by_name = serializers.CharField(
+        source="collected_recorded_by.get_full_name", read_only=True, default=None
+    )
+    is_collected = serializers.SerializerMethodField()
+    current_balance = serializers.SerializerMethodField()
+ 
+    class Meta:
+        model = models.ClearanceApplication
+        fields = [
+            "id", "student", "admission_no", "student_name", "student_phone", "curriculum_type",
+            "classroom_label", "academic_year_year",
+            "status", "status_display", "student_remarks", "admin_remarks",
+            "balance_at_submission", "current_balance", "cleared_with_balance",
+            "clearance_no", "submitted_at",
+            "reviewed_by_name", "reviewed_at",
+            "is_collected", "collected_at", "collected_by_name",
+        ]
+ 
+    def get_is_collected(self, obj):
+        return obj.collected_at is not None
+ 
+    def get_current_balance(self, obj):
+        # live figure (positive = owes, negative = prepaid), not the snapshot from when they applied
+        return float(services.get_outstanding_balance(obj.student))
+ 

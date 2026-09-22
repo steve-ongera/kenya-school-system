@@ -504,10 +504,17 @@ def generate_report_card_qr_base64(token: str) -> str:
 
 def get_report_card_verification(token: str) -> dict:
     """
-    Recomputes the student's result LIVE — never trusts a stored snapshot —
+    Recomputes the student's result LIVE - never trusts a stored snapshot -
     so if a mark is corrected after printing, an old report card's QR will
     show the discrepancy instead of falsely confirming stale figures.
     Deliberately excludes fee data - this endpoint is public.
+
+    Two shapes, decided by the token:
+      - token carries an exam_id  -> figures for THAT exam only, computed by
+        get_student_exam_summary() so they match the printed report card
+        exactly (total marks, average, points, grade, class/grade position).
+      - token has no exam_id      -> the combined-term view (every exam in
+        the term), with the END-OF-TERM ranking position as before.
     """
     payload = read_report_card_token(token)
     if not payload:
@@ -520,15 +527,52 @@ def get_report_card_verification(token: str) -> dict:
     if not enrollment or not term:
         return {"valid": False, "detail": "This report card no longer exists."}
 
-    exam = models.Exam.objects.filter(pk=payload["exam_id"]).first() if payload.get("exam_id") else None
+    exam = None
+    if payload.get("exam_id"):
+        exam = models.Exam.objects.filter(pk=payload["exam_id"]).first()
+        if not exam:
+            # don't silently fall back to a combined-term view for an
+            # exam-specific report card whose exam has been deleted
+            return {"valid": False, "detail": "This report card no longer exists."}
+
     classroom = enrollment.classroom
 
+    identity = {
+        "valid": True,
+        "student_name": enrollment.student.user.get_full_name(),
+        "admission_no": enrollment.student.admission_no,
+        "classroom": str(classroom),
+        "academic_year": classroom.academic_year.year,
+        "term": str(term),
+        "exam": exam.name if exam else "All Exams (Combined)",
+    }
+
+    # ---------------------------------------------------------------
+    # Exam-specific report card: same numbers the student's PDF shows
+    # ---------------------------------------------------------------
+    if exam:
+        summary = get_student_exam_summary(enrollment, exam)
+        return {
+            **identity,
+            "average_marks": summary["average"],
+            "overall_grade": summary["overall_grade"],
+            "total_marks": summary["total_marks"],
+            "total_max": summary["total_max"],
+            "total_points": summary["total_points"],
+            "average_points": summary["average_points"],
+            "class_position": summary["class_position"],
+            "class_size": summary["class_size"],
+            "grade_position": summary["grade_position"],
+            "grade_size": summary["grade_size"],
+        }
+
+    # ---------------------------------------------------------------
+    # Combined-term report card (no exam_id in the token)
+    # ---------------------------------------------------------------
     def result_filter(**extra):
-        base = {"exam__term": term, **extra}
-        if exam:
-            base = {"exam": exam, **extra}
         return models.ExamResult.objects.filter(
-            is_absent=False, marks_obtained__isnull=False, max_marks__gt=0, **base
+            is_absent=False, marks_obtained__isnull=False, max_marks__gt=0,
+            exam__term=term, **extra
         )
 
     offered_subject_ids = set(
@@ -557,18 +601,17 @@ def get_report_card_verification(token: str) -> dict:
     ).first()
 
     return {
-        "valid": True,
-        "student_name": enrollment.student.user.get_full_name(),
-        "admission_no": enrollment.student.admission_no,
-        "classroom": str(classroom),
-        "academic_year": classroom.academic_year.year,
-        "term": str(term),
-        "exam": exam.name if exam else "All Exams (Combined)",
+        **identity,
         "average_marks": average,
         "overall_grade": overall_grade.grade_letter if overall_grade else None,
+        "total_marks": None,
+        "total_max": None,
         "total_points": round(sum(points_values), 1) if points_values else None,
         "average_points": round(sum(points_values) / len(points_values), 2) if points_values else None,
         "class_position": ranking.class_position if ranking else None,
+        "class_size": None,
+        "grade_position": ranking.grade_position if ranking else None,
+        "grade_size": None,
     }
 
 
@@ -646,6 +689,118 @@ def rank_grade(term: models.Term, grade_level: models.GradeLevel, checkpoint: st
     return all_scores
 
 
+# ---------------------------------------------------------------------------
+# PER-EXAM STUDENT SUMMARY (total marks, points, overall grade, position)
+# ---------------------------------------------------------------------------
+RANKABLE_ENROLLMENT_STATUSES = (
+    models.Enrollment.Status.ACTIVE,
+    models.Enrollment.Status.PROMOTED,
+    models.Enrollment.Status.GRADUATED,
+    models.Enrollment.Status.REPEATED,
+)
+
+
+def _competition_ranks(averages: dict) -> dict:
+    """{key: average} -> {key: rank}. Ties share a rank (1, 2, 2, 4)."""
+    ranks, prev, rank = {}, None, 0
+    for idx, (key, avg) in enumerate(sorted(averages.items(), key=lambda kv: -kv[1]), start=1):
+        if avg != prev:
+            rank = idx
+        prev = avg
+        ranks[key] = rank
+    return ranks
+
+
+def get_student_exam_summary(enrollment: models.Enrollment, exam: models.Exam) -> dict:
+    """
+    Everything the report card needs for ONE student in ONE exam:
+    total marks, average, total points (8-4-4), overall grade, class
+    position and grade-wide position.
+
+    Subject % = sum(marks) / sum(max) across that subject's papers (same
+    as the student results page). Overall average = mean of subject %s.
+    Ranking is by that average; ties share a rank; students with no marks
+    for the exam are not ranked.
+    """
+    classroom = enrollment.classroom
+    grade_level = classroom.grade_level
+    curriculum_type = grade_level.curriculum_type
+    is_844 = curriculum_type == models.CurriculumType.LEGACY_844
+
+    # everyone in the same grade (all streams) for that academic year
+    classroom_by_enrollment = dict(
+        models.Enrollment.objects.filter(
+            classroom__grade_level=grade_level,
+            classroom__academic_year=classroom.academic_year,
+            status__in=RANKABLE_ENROLLMENT_STATUSES,
+        ).values_list("id", "classroom_id")
+    )
+
+    rows = models.ExamResult.objects.filter(
+        exam=exam,
+        enrollment_id__in=list(classroom_by_enrollment.keys() | {enrollment.id}),
+        is_absent=False,
+        marks_obtained__isnull=False,
+        max_marks__gt=0,
+    ).values("enrollment_id", "subject_id", "marks_obtained", "max_marks")
+
+    # enrollment_id -> subject_id -> [marks, max]
+    per_subject = defaultdict(lambda: defaultdict(lambda: [Decimal("0"), Decimal("0")]))
+    for r in rows:
+        cell = per_subject[r["enrollment_id"]][r["subject_id"]]
+        cell[0] += r["marks_obtained"]
+        cell[1] += r["max_marks"]
+
+    def subject_pct(cell):
+        return float(cell[0] / cell[1] * 100)
+
+    averages = {}
+    for eid, subjects in per_subject.items():
+        pcts = [subject_pct(c) for c in subjects.values()]
+        averages[eid] = round(sum(pcts) / len(pcts), 2)
+
+    mine = per_subject.get(enrollment.id)
+    if not mine:
+        return {
+            "exam_id": exam.id, "enrollment_id": enrollment.id, "has_marks": False,
+            "total_marks": None, "total_max": None, "average": None,
+            "total_points": None, "average_points": None,
+            "overall_grade": None, "overall_remark": None,
+            "class_position": None, "class_size": 0,
+            "grade_position": None, "grade_size": 0,
+        }
+
+    subjects_by_id = models.Subject.objects.in_bulk(list(mine.keys()))
+    points = []
+    for subject_id, cell in mine.items():
+        pct = Decimal(str(round(subject_pct(cell), 2)))
+        grade = grade_for_percentage(curriculum_type, pct, subjects_by_id.get(subject_id))
+        points.append(float(grade.points))
+
+    average = averages[enrollment.id]
+    overall = grade_for_percentage(curriculum_type, Decimal(str(average)))
+
+    grade_ranks = _competition_ranks({e: a for e, a in averages.items() if e in classroom_by_enrollment})
+    class_ranks = _competition_ranks(
+        {e: a for e, a in averages.items() if classroom_by_enrollment.get(e) == classroom.id}
+    )
+
+    return {
+        "exam_id": exam.id,
+        "enrollment_id": enrollment.id,
+        "has_marks": True,
+        "total_marks": float(sum(c[0] for c in mine.values())),
+        "total_max": float(sum(c[1] for c in mine.values())),
+        "average": average,
+        "total_points": round(sum(points), 1) if is_844 else None,
+        "average_points": round(sum(points) / len(points), 2) if is_844 else None,
+        "overall_grade": overall.grade_letter,
+        "overall_remark": overall.remark,
+        "class_position": class_ranks.get(enrollment.id),
+        "class_size": len(class_ranks),
+        "grade_position": grade_ranks.get(enrollment.id),
+        "grade_size": len(grade_ranks),
+    }
 # ---------------------------------------------------------------------------
 # PROMOTION
 # ---------------------------------------------------------------------------
@@ -935,27 +1090,24 @@ def _get_mpesa_access_token() -> str:
     return response.json()["access_token"]
 
 
-def initiate_payment(invoice: models.Invoice, phone_number: str, amount: Decimal, initiated_by):
-    """
-    Single entry point a student/parent/finance officer calls to pay fees.
-
-    - DEBUG=True (local dev / demos): bypasses Safaricom completely and
-      completes the payment immediately, so the whole flow (including the
-      receipt + QR code) can be exercised without real M-Pesa credentials.
-    - DEBUG=False (production): sends a genuine STK push via the Safaricom
-      Daraja API. The Payment row is only created once Safaricom calls back
-      to handle_mpesa_callback() - this function returns a PENDING result
-      and the frontend polls /payments/status/<checkout_request_id>/.
-    """
+def initiate_payment(invoice, phone_number, amount, initiated_by, general=False):
     if amount <= 0:
         raise ValueError("Payment amount must be greater than zero.")
 
+    student = invoice.enrollment.student
+
     if settings.DEBUG:
-        payment = record_payment(
-            invoice, amount, models.Payment.Method.MPESA,
-            reference="DEBUG-BYPASS", recorded_by=initiated_by,
-        )
-        return {"status": "COMPLETED", "payment": payment}
+        if general:
+            payments = record_bulk_payment(
+                student, amount, models.Payment.Method.MPESA,
+                reference="DEBUG-BYPASS", recorded_by=initiated_by,
+            )
+        else:
+            payments = [record_payment(
+                invoice, amount, models.Payment.Method.MPESA,
+                reference="DEBUG-BYPASS", recorded_by=initiated_by,
+            )]
+        return {"status": "COMPLETED", "payment": payments[-1], "payments": payments}
 
     # ---- production: real Safaricom Daraja STK Push ----
     access_token = _get_mpesa_access_token()
@@ -974,8 +1126,8 @@ def initiate_payment(invoice: models.Invoice, phone_number: str, amount: Decimal
         "PartyB": settings.MPESA_SHORTCODE,
         "PhoneNumber": phone_number,
         "CallBackURL": settings.MPESA_CALLBACK_URL,
-        "AccountReference": f"FEES-{invoice.id}",
-        "TransactionDesc": f"School fees - {invoice.enrollment.student.admission_no}",
+        "AccountReference": f"FEES-{student.admission_no}" if general else f"FEES-{invoice.id}",
+        "TransactionDesc": f"School fees - {student.admission_no}",
     }
     response = requests.post(
         f"{settings.MPESA_BASE_URL}/mpesa/stkpush/v1/processrequest",
@@ -987,6 +1139,7 @@ def initiate_payment(invoice: models.Invoice, phone_number: str, amount: Decimal
 
     stk_request = models.MpesaSTKPushRequest.objects.create(
         invoice=invoice,
+        is_general=general,
         phone_number=phone_number,
         amount=amount,
         checkout_request_id=data.get("CheckoutRequestID"),
@@ -995,6 +1148,7 @@ def initiate_payment(invoice: models.Invoice, phone_number: str, amount: Decimal
         initiated_by=initiated_by,
     )
     return {"status": "PENDING", "stk_request": stk_request, "raw_response": data}
+
 
 
 @transaction.atomic
@@ -1018,13 +1172,24 @@ def handle_mpesa_callback(payload: dict):
     if result_code == 0:
         items = {i.get("Name"): i.get("Value") for i in callback.get("CallbackMetadata", {}).get("Item", [])}
         mpesa_receipt = items.get("MpesaReceiptNumber", "")
-        amount = items.get("Amount", stk_request.amount)
-        payment = record_payment(
-            stk_request.invoice, Decimal(str(amount)), models.Payment.Method.MPESA,
-            reference=mpesa_receipt, recorded_by=stk_request.initiated_by,
-        )
+        amount = Decimal(str(items.get("Amount", stk_request.amount)))
+        Method = models.Payment.Method
+
+        if stk_request.is_general:
+            payments = record_bulk_payment(
+                stk_request.invoice.enrollment.student, amount, Method.MPESA,
+                reference=mpesa_receipt, recorded_by=stk_request.initiated_by,
+            )
+            payment = payments[-1]
+        else:
+            payment = record_payment(
+                stk_request.invoice, amount, Method.MPESA,
+                reference=mpesa_receipt, recorded_by=stk_request.initiated_by,
+            )
+
         stk_request.status = models.MpesaSTKPushRequest.Status.COMPLETED
-        stk_request.save(update_fields=["status"])
+        stk_request.mpesa_receipt_number = mpesa_receipt
+        stk_request.save(update_fields=["status", "mpesa_receipt_number"])
         return payment
 
     stk_request.status = models.MpesaSTKPushRequest.Status.FAILED
@@ -2099,3 +2264,331 @@ def get_student_status_label(student: models.StudentProfile) -> str:
         models.Enrollment.Status.DROPPED: "Dropped",
     }
     return terminal_labels.get(enrollment.status, str(enrollment.classroom))
+
+
+
+# ---------------------------------------------------------------------------
+# STUDENT CLEARANCE
+# ---------------------------------------------------------------------------
+def generate_clearance_no() -> str:
+    """CLR-<year>-00001, sequential per calendar year."""
+    prefix = f"CLR-{timezone.now().year}-"
+    last = (
+        models.ClearanceApplication.objects.filter(clearance_no__startswith=prefix)
+        .order_by("-clearance_no")
+        .first()
+    )
+    next_seq = 1
+    if last:
+        try:
+            next_seq = int(last.clearance_no.split("-")[-1]) + 1
+        except ValueError:
+            pass
+    return f"{prefix}{next_seq:05d}"
+ 
+ 
+def clearance_eligibility(student: models.StudentProfile) -> dict:
+    """
+    A student may apply for clearance once they have finished their final year:
+      - their LATEST enrollment is in a grade with no next grade
+        (Form 4 / Grade 12 - the same rule promotions use to graduate a class), and
+      - that enrollment is GRADUATED, or is still ACTIVE but the final term of
+        its academic year has started.
+    Returns {"eligible": bool, "reason": str, "enrollment": Enrollment | None}.
+    """
+    enrollment = (
+        models.Enrollment.objects.filter(student=student)
+        .select_related("classroom__grade_level", "academic_year")
+        .order_by("-academic_year__year", "-id")
+        .first()
+    )
+    if not enrollment:
+        return {"eligible": False, "reason": "You have no enrollment record yet.", "enrollment": None}
+ 
+    grade = enrollment.classroom.grade_level
+    if grade.next_grade_id is not None:
+        return {
+            "eligible": False,
+            "reason": f"Clearance is for students who have finished their final year. You are currently in {grade.name}.",
+            "enrollment": enrollment,
+        }
+ 
+    allowed = (models.Enrollment.Status.ACTIVE, models.Enrollment.Status.GRADUATED)
+    if enrollment.status not in allowed:
+        return {
+            "eligible": False,
+            "reason": f"Your last enrollment is marked '{enrollment.get_status_display()}', so online clearance "
+                      "isn't available. Please see the school office.",
+            "enrollment": enrollment,
+        }
+ 
+    if enrollment.status == models.Enrollment.Status.ACTIVE:
+        final_term = (
+            models.Term.objects.filter(academic_year=enrollment.academic_year).order_by("-term_number").first()
+        )
+        if not final_term:
+            return {
+                "eligible": False,
+                "reason": "The terms for your final year haven't been set up yet. Please see the school office.",
+                "enrollment": enrollment,
+            }
+        if final_term.start_date > timezone.localdate():
+            return {
+                "eligible": False,
+                "reason": f"Clearance opens when your final term starts on {final_term.start_date:%d %b %Y}.",
+                "enrollment": enrollment,
+            }
+ 
+    return {"eligible": True, "reason": "", "enrollment": enrollment}
+ 
+ 
+def _notify_student(student, sender, subject, body):
+    """In-app notification for one student, via the existing Communication system."""
+    comm = models.Communication.objects.create(
+        sender=sender,
+        subject=subject,
+        body=body,
+        category=models.Communication.Category.GENERAL,
+        audience_type=models.Communication.AudienceType.INDIVIDUAL,
+        include_students=True,
+        include_guardians=False,
+        send_in_app=True,
+        send_sms=False,
+        send_email=False,
+    )
+    comm.target_students.set([student])
+    send_communication(comm)
+ 
+ 
+def get_student_clearance_state(student: models.StudentProfile) -> dict:
+    """Everything the student's Clearance page needs in one payload."""
+    info = clearance_eligibility(student)
+    application = (
+        models.ClearanceApplication.objects.filter(student=student)
+        .select_related("student__user", "enrollment__classroom", "enrollment__academic_year",
+                        "reviewed_by", "collected_recorded_by")
+        .first()
+    )
+    enrollment = info["enrollment"]
+    balance = get_outstanding_balance(student)  # positive = owes, negative = prepaid
+ 
+    return {
+        "student": {"name": student.user.get_full_name(), "admission_no": student.admission_no},
+        "eligible": info["eligible"],
+        "reason": info["reason"],
+        "class_label": str(enrollment.classroom) if enrollment else None,
+        "academic_year": enrollment.academic_year.year if enrollment else None,
+        "outstanding_balance": float(balance),
+        "can_apply": info["eligible"] and (
+            application is None or application.status == models.ClearanceApplication.Status.REJECTED
+        ),
+        "application": serializers.ClearanceApplicationSerializer(application).data if application else None,
+    }
+ 
+ 
+@transaction.atomic
+def submit_clearance_application(student: models.StudentProfile, remarks: str = ""):
+    """Create the application, or reopen a REJECTED one. Notifies every admin."""
+    info = clearance_eligibility(student)
+    if not info["eligible"]:
+        raise ValueError(info["reason"])
+ 
+    Status = models.ClearanceApplication.Status
+    existing = models.ClearanceApplication.objects.select_for_update().filter(student=student).first()
+    if existing and existing.status == Status.PENDING:
+        raise ValueError("Your application is already with the administration.")
+    if existing and existing.status == Status.CLEARED:
+        raise ValueError("You have already been cleared.")
+ 
+    balance = get_outstanding_balance(student)
+ 
+    if existing:  # re-applying after being marked Not Cleared
+        application = existing
+        application.enrollment = info["enrollment"]
+        application.status = Status.PENDING
+        application.student_remarks = remarks
+        application.balance_at_submission = balance
+        application.submitted_at = timezone.now()
+        application.reviewed_by = None
+        application.reviewed_at = None
+        application.admin_remarks = ""
+        application.clearance_no = None
+        application.cleared_with_balance = False
+        application.collected_at = None
+        application.collected_recorded_by = None
+        application.save()
+    else:
+        application = models.ClearanceApplication.objects.create(
+            student=student, enrollment=info["enrollment"], student_remarks=remarks,
+            balance_at_submission=balance,
+        )
+ 
+    _notify_admins(
+        subject=f"Clearance application: {student.user.get_full_name()}",
+        body=f"{student.user.get_full_name()} ({student.admission_no}, {info['enrollment'].classroom}) "
+             "has applied for clearance. Review it under Student Clearance.",
+    )
+    return application
+ 
+ 
+@transaction.atomic
+def review_clearance(application, reviewer, decision: str, remarks: str = "", force: bool = False):
+    """
+    decision: "CLEAR" or "REJECT".
+    Clearing a student who still owes fees is blocked unless force=True
+    (same pattern as promotion's `force`); the override is recorded on the row.
+    Rejecting needs a reason so the student knows what to fix.
+    """
+    Status = models.ClearanceApplication.Status
+    if application.status != Status.PENDING:
+        raise ValueError("Only pending applications can be reviewed.")
+ 
+    remarks = (remarks or "").strip()
+    balance = get_outstanding_balance(application.student)
+ 
+    if decision == "CLEAR":
+        if balance > 0 and not force:
+            raise ValueError(
+                f"This student still owes KES {balance:,.2f}. Ask them to clear the balance first, "
+                "or tick the override to clear them anyway."
+            )
+        application.status = Status.CLEARED
+        application.clearance_no = generate_clearance_no()
+        application.cleared_with_balance = balance > 0
+    elif decision == "REJECT":
+        if not remarks:
+            raise ValueError("Please give the reason, so the student knows what to fix.")
+        application.status = Status.REJECTED
+    else:
+        raise ValueError("Unknown decision.")
+ 
+    application.reviewed_by = reviewer
+    application.reviewed_at = timezone.now()
+    application.admin_remarks = remarks
+    application.save()
+ 
+    if decision == "CLEAR":
+        _notify_student(
+            application.student, reviewer,
+            subject="You have been cleared",
+            body=f"Your clearance ({application.clearance_no}) has been approved. Download your clearance "
+                 "slip from the Clearance page and bring it with you when you come to collect your certificate."
+                 + (f"\n\nNote from the administration: {remarks}" if remarks else ""),
+        )
+    else:
+        _notify_student(
+            application.student, reviewer,
+            subject="Clearance not approved yet",
+            body=f"Your clearance application was not approved: {remarks}\n\n"
+                 "Please sort this out and apply again from the Clearance page.",
+        )
+    return application
+ 
+ 
+@transaction.atomic
+def reopen_clearance(application):
+    """Send a CLEARED (not yet collected) or REJECTED application back to PENDING, e.g. after a mistake."""
+    Status = models.ClearanceApplication.Status
+    if application.status == Status.PENDING:
+        raise ValueError("This application is already pending.")
+    if application.collected_at:
+        raise ValueError("The certificate has already been collected, so this clearance can't be reopened.")
+ 
+    application.status = Status.PENDING
+    application.clearance_no = None
+    application.cleared_with_balance = False
+    application.reviewed_by = None
+    application.reviewed_at = None
+    application.admin_remarks = ""
+    application.save()
+    return application
+ 
+ 
+@transaction.atomic
+def mark_clearance_collected(application, recorded_by):
+    """Stamped by the admin when the student comes in person for their certificate."""
+    if application.status != models.ClearanceApplication.Status.CLEARED:
+        raise ValueError("Only a cleared student can collect their certificate.")
+    if application.collected_at:
+        raise ValueError("This certificate has already been marked as collected.")
+    application.collected_at = timezone.now()
+    application.collected_recorded_by = recorded_by
+    application.save(update_fields=["collected_at", "collected_recorded_by"])
+    return application
+
+
+def get_payment_anchor_invoice(student):
+    """Most recent invoice - only used to identify the student for a general payment."""
+    return (
+        models.Invoice.objects.filter(enrollment__student=student)
+        .order_by("-fee_structure__term__academic_year__year", "-fee_structure__term__term_number")
+        .first()
+    )
+    
+    
+def _record_payment_shared_receipt(invoice, amount, method, reference, recorded_by, receipt_no):
+    """Same steps as record_payment(), but with a receipt number supplied by the caller."""
+    payment = models.Payment.objects.create(
+        invoice=invoice, amount=amount, method=method, reference=reference,
+        recorded_by=recorded_by, receipt_no=receipt_no,
+    )
+    invoice.amount_paid = invoice.payments.aggregate(total=Sum("amount"))["total"] or 0
+    invoice.save(update_fields=["amount_paid"])
+
+    recalculate_student_invoice_chain(invoice.enrollment.student)
+    invoice.refresh_from_db()
+    return payment
+
+
+@transaction.atomic
+def record_finance_payment(student, amount, method, reference, recorded_by):
+    """
+    FINANCE-DESK ONLY. Pays a student's balance oldest-invoice-first, like
+    record_bulk_payment(), but every split piece shares ONE receipt number
+    and the whole thing is all-or-nothing. The student portal keeps using
+    record_bulk_payment() unchanged.
+    """
+    amount = Decimal(str(amount))
+    if amount <= 0:
+        raise ValueError("Payment amount must be greater than zero.")
+
+    receipt_no = generate_receipt_no()  # once for the whole payment
+    remaining = amount
+    payments = []
+
+    while remaining > 0:
+        invoice = (
+            models.Invoice.objects.filter(enrollment__student=student, amount_due__gt=F("amount_paid"))
+            .select_related("fee_structure__term")
+            .order_by("fee_structure__term__academic_year__year", "fee_structure__term__term_number")
+            .first()
+        )
+        if not invoice:
+            break
+        pay_amount = min(remaining, invoice.balance)
+        payments.append(
+            _record_payment_shared_receipt(invoice, pay_amount, method, reference, recorded_by, receipt_no)
+        )
+        remaining -= pay_amount
+
+    if remaining > 0:
+        # everything settled and money left over -> prepaid credit on the latest invoice
+        target = (
+            models.Invoice.objects.filter(enrollment__student=student)
+            .order_by("-fee_structure__term__academic_year__year", "-fee_structure__term__term_number")
+            .first()
+        )
+        if not target:
+            raise ValueError("This student has no invoices yet - nothing to pay against.")
+        payments.append(
+            _record_payment_shared_receipt(target, remaining, method, reference, recorded_by, receipt_no)
+        )
+
+    if not payments:
+        raise ValueError("This student has no invoices yet - nothing to pay against.")
+
+    # Safety check: recorded must equal received, otherwise the transaction rolls back
+    if sum(p.amount for p in payments) != amount:
+        raise ValueError("Payment allocation mismatch - nothing was recorded. Please try again.")
+
+    return payments

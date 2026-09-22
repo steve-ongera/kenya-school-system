@@ -920,6 +920,11 @@ class MpesaSTKPushRequest(models.Model):
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
     result_description = models.CharField(max_length=200, blank=True)
     initiated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="stk_requests_initiated")
+    is_general = models.BooleanField(
+        default=False,
+        help_text="True = pay the student's whole balance (split oldest-first) instead of one invoice.",
+    )
+    mpesa_receipt_number = models.CharField(max_length=30, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1332,3 +1337,62 @@ class Expense(models.Model):
 
     def __str__(self):
         return f"{self.item_name} x{self.quantity} - KES {self.total_amount} ({self.expense_date})"
+    
+    
+    
+    
+# ---------------------------------------------------------------------------
+# 14. STUDENT CLEARANCE (final-year leavers)
+# ---------------------------------------------------------------------------
+class ClearanceApplication(models.Model):
+    """
+    ONE ROW PER STUDENT. A final-year student applies online, an admin
+    reviews and clears them, and the student then collects their
+    certificate in person (collected_at is stamped by the admin at the desk).
+ 
+    A student whose application is REJECTED can apply again - that reopens
+    this same row (status back to PENDING) instead of creating a second one.
+    """
+ 
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending Review"
+        CLEARED = "CLEARED", "Cleared"
+        REJECTED = "REJECTED", "Not Cleared"
+ 
+    student = models.OneToOneField(StudentProfile, on_delete=models.CASCADE, related_name="clearance")
+    enrollment = models.ForeignKey(
+        Enrollment, on_delete=models.CASCADE, related_name="clearance_applications",
+        help_text="The final-year enrollment this clearance is for.",
+    )
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    student_remarks = models.TextField(blank=True)
+    balance_at_submission = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        help_text="Outstanding fee balance when the student applied. Positive = owing.",
+    )
+    submitted_at = models.DateTimeField(default=timezone.now)
+ 
+    reviewed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="clearances_reviewed"
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    admin_remarks = models.TextField(blank=True)
+    clearance_no = models.CharField(max_length=30, unique=True, null=True, blank=True, editable=False)
+    cleared_with_balance = models.BooleanField(
+        default=False,
+        help_text="True if an admin cleared the student while a fee balance was still outstanding.",
+    )
+ 
+    collected_at = models.DateTimeField(null=True, blank=True)
+    collected_recorded_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="clearances_collected"
+    )
+ 
+    class Meta:
+        db_table = "clearance_applications"
+        ordering = ["-submitted_at"]
+ 
+    def __str__(self):
+        return f"{self.student.admission_no} - {self.get_status_display()}"
+ 
+ 

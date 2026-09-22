@@ -23,6 +23,7 @@ export const NAV_BY_ROLE = {
         { to: "/admin/promotions", icon: "bi-arrow-up-circle", label: "Promotions" },
         { to: "/admin/calendar", icon: "bi-calendar-week", label: "Academic Calendar" },
         { to: "/admin/timetable", icon: "bi-grid-3x3", label: "Timetable Management" },
+        { to: "/admin/clearance", icon: "bi-patch-check", label: "Student Clearance" },
       ],
     },
     {
@@ -38,6 +39,7 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/admin/fees", icon: "bi-cash-coin", label: "Fee Structures" },
         { to: "/admin/expenses", icon: "bi-wallet2", label: "Expenses" },
+        { to: "/admin/verify-receipt", icon: "bi-qr-code-scan", label: "Verify Receipt" },
         { to: "/admin/finance-reports/collections", icon: "bi-graph-up-arrow", label: "Collections Report" },
         { to: "/admin/finance-reports/class-analysis", icon: "bi-bar-chart-steps", label: "Class Analysis" },
         { to: "/admin/finance-reports/detailed", icon: "bi-table", label: "Detailed Report" },
@@ -47,6 +49,7 @@ export const NAV_BY_ROLE = {
       label: "Communication",
       items: [
         { to: "/admin/communications", icon: "bi-megaphone", label: "Announcements" },
+        { to: "/admin/letters", icon: "bi-envelope-paper", label: "Letters & Documents" },
       ],
     },
     {
@@ -113,12 +116,14 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/student/subjects", icon: "bi-journal-bookmark", label: "My Subjects" },
         { to: "/student/results", icon: "bi-journal-text", label: "My Results" },
+        { to: "/student/clearance", icon: "bi-patch-check", label: "Clearance" },
       ],
     },
     {
       label: "Finance",
       items: [
         { to: "/student/fees", icon: "bi-cash-coin", label: "Fee Statement" },
+        { to: "/student/fee-structure", icon: "bi-card-list", label: "Fee Structure" },
       ],
     },
     {
@@ -192,6 +197,7 @@ export const NAV_BY_ROLE = {
         { to: "/finance/structures", icon: "bi-receipt", label: "Fee Structures" },
         { to: "/finance/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
         { to: "/finance/payments", icon: "bi-cash-coin", label: "Payments" },
+        { to: "/finance/verify-receipt", icon: "bi-qr-code-scan", label: "Verify Receipt" },
         { to: "/finance/expenses", icon: "bi-wallet2", label: "Expenses" },
       ],
     },

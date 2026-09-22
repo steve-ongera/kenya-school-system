@@ -4,7 +4,7 @@ import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import logoImage from "../../assets/masomo_logo.png";
+import logoImage from "../../assets/junda_high_logo.png";
 
 // ---------------------------------------------------------------------------
 // Fallback grading bands, used ONLY when /grading-scales/ isn't reachable or
@@ -54,6 +54,13 @@ const getImageBase64 = (url) =>
     img.onerror = () => resolve(null);
   });
 
+// Printed on the PDF header and footer
+const SCHOOL_NAME = "Junda High School";
+const DOC_COPY_NOTE = "This is a computer-generated document copy. Scan the QR code to verify its authenticity.";
+
+// "#3 of 42" or "-" when there is no position
+const positionText = (pos, size) => (pos ? `#${pos}${size ? ` of ${size}` : ""}` : "-");
+
 export default function StudentResults() {
   // ---- identity / curriculum ----
   const [profile, setProfile] = useState(null);
@@ -78,7 +85,11 @@ export default function StudentResults() {
   const [results, setResults] = useState([]);
   const [resultsLoading, setResultsLoading] = useState(false);
 
-  // ---- ranking ----
+  // ---- per-exam summary (total marks, points, overall grade, position) ----
+  const [examSummary, setExamSummary] = useState(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+
+  // ---- term ranking ----
   const [ranking, setRanking] = useState(null);
   const [rankingCheckpoint, setRankingCheckpoint] = useState(null);
   const [rankingLoading, setRankingLoading] = useState(false);
@@ -200,7 +211,22 @@ export default function StudentResults() {
   }, [currentEnrollment, selectedExam]);
 
   // ---------------------------------------------------------------------
-  // Ranking
+  // Per-exam summary: total marks, points, overall grade, class position
+  // ---------------------------------------------------------------------
+  useEffect(() => {
+    setExamSummary(null);
+    if (!currentEnrollment || !selectedExam) return;
+    let cancelled = false;
+    setSummaryLoading(true);
+    examsApi.summary({ enrollment: currentEnrollment.id, exam: selectedExam })
+      .then(({ data }) => { if (!cancelled) setExamSummary(data); })
+      .catch((err) => console.error("Failed to load exam summary:", err))
+      .finally(() => { if (!cancelled) setSummaryLoading(false); });
+    return () => { cancelled = true; };
+  }, [currentEnrollment, selectedExam]);
+
+  // ---------------------------------------------------------------------
+  // Term ranking (midterm / end of term)
   // ---------------------------------------------------------------------
   useEffect(() => {
     setRanking(null);
@@ -241,8 +267,10 @@ export default function StudentResults() {
   // ---------------------------------------------------------------------
   const curriculumType = profile?.student_profile?.curriculum_type;
 
-  const gradeFor = (subjectId, percentage) => {
-    if (percentage === null || percentage === undefined) return null;
+  const gradeFor = (subjectId, rawPct) => {
+    if (rawPct === null || rawPct === undefined) return null;
+    // Round to 2dp so values like 74.995 don't fall between two bands
+    const percentage = Math.round(rawPct * 100) / 100;
     const scaleRows = gradingScales.filter(
       (s) => s.curriculum_type === curriculumType && percentage >= Number(s.min_percentage) && percentage <= Number(s.max_percentage)
     );
@@ -279,7 +307,7 @@ export default function StudentResults() {
   }, [results, gradingScales, curriculumType]);
 
   // ---------------------------------------------------------------------
-  // Overall stats
+  // Overall stats (computed locally from the subject rows)
   // ---------------------------------------------------------------------
   const stats = useMemo(() => {
     const scored = subjectRows.filter((r) => r.percentage !== null);
@@ -291,6 +319,25 @@ export default function StudentResults() {
     const totalPoints = allHavePoints ? scored.reduce((s, r) => s + r.grade.points, 0) : null;
     return { subjectCount: scored.length, totalMarks, totalMax, average, totalPoints };
   }, [subjectRows]);
+
+  // ---------------------------------------------------------------------
+  // Overall block: server values first, local calculation as a fallback
+  // ---------------------------------------------------------------------
+  const overall = useMemo(() => {
+    if (!stats) return null;
+    const is844 = curriculumType !== "CBC";
+    const local = gradeFor(null, stats.average);
+    return {
+      average: Number(examSummary?.average ?? stats.average),
+      grade: examSummary?.overall_grade ?? local?.letter ?? "-",
+      remark: examSummary?.overall_remark || local?.remark || "",
+      totalPoints: is844 ? (examSummary?.total_points ?? stats.totalPoints) : null,
+      classPosition: examSummary?.class_position ?? null,
+      classSize: examSummary?.class_size ?? null,
+      gradePosition: examSummary?.grade_position ?? null,
+      gradeSize: examSummary?.grade_size ?? null,
+    };
+  }, [stats, examSummary, curriculumType, gradingScales]);
 
   const perfBadgeClass = (percentage) => {
     if (percentage === null || percentage === undefined) return "badge-neutral";
@@ -304,7 +351,7 @@ export default function StudentResults() {
   const selectedTermObj = terms.find((t) => String(t.id) === String(selectedTerm));
 
   // ---------------------------------------------------------------------
-  // Download report card PDF — only Percentage, Grade, Points/Remark
+  // Download report card PDF (single A4 page, backend QR for verification)
   // ---------------------------------------------------------------------
   const handleDownloadReportPdf = async () => {
     if (!subjectRows.length) return;
@@ -314,38 +361,51 @@ export default function StudentResults() {
       const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
+      const MARGIN = 12;
+      const is844 = curriculumType !== "CBC";
 
       const base64Logo = await getImageBase64(logoImage);
+      // QR PNG is generated by the backend (see StudentExamSummaryView)
+      const qrDataUrl = examSummary?.qr_code_base64
+        ? `data:image/png;base64,${examSummary.qr_code_base64}`
+        : null;
 
       const generatedOn = new Date().toLocaleDateString("en-KE", {
         year: "numeric", month: "long", day: "numeric",
       });
 
-      // --- Header ---
+      const gridStyles = {
+        lineColor: [226, 232, 240],
+        lineWidth: 0.1,
+        textColor: [51, 65, 85],
+      };
+      const labelCell = { fontStyle: "bold", fillColor: [241, 245, 249], textColor: [71, 85, 105] };
+
+      // --- Header (compact) ---
       if (base64Logo) {
-        doc.addImage(base64Logo, "PNG", 12, 10, 14, 14);
+        doc.addImage(base64Logo, "PNG", MARGIN, 8, 12, 12);
       }
+      const textX = base64Logo ? MARGIN + 16 : MARGIN;
 
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(15);
+      doc.setFontSize(13);
       doc.setTextColor(15, 23, 42);
-      doc.text("Masomo School", base64Logo ? 30 : 12, 17);
+      doc.text(SCHOOL_NAME, textX, 14);
 
       doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
+      doc.setFontSize(9);
       doc.setTextColor(71, 85, 105);
-      doc.text("Student Report Card", base64Logo ? 30 : 12, 23);
+      doc.text("Student Report Card", textX, 19);
 
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(8);
+      doc.setFontSize(7);
       doc.setTextColor(100, 116, 139);
-      doc.text(`Generated ${generatedOn}`, pageWidth - 12, 16, { align: "right" });
+      doc.text(`Generated ${generatedOn}`, pageWidth - MARGIN, 14, { align: "right" });
 
       doc.setDrawColor(203, 213, 225);
       doc.setLineWidth(0.3);
-      doc.line(12, 28, pageWidth - 12, 28);
+      doc.line(MARGIN, 23, pageWidth - MARGIN, 23);
 
-      // --- Student meta block ---
+      // --- Student meta block (3 rows) ---
       const studentName = `${profile?.first_name || ""} ${profile?.last_name || ""}`.trim() || "-";
       const admissionNo = profile?.student_profile?.admission_no || "-";
       const className = currentClassroom
@@ -353,184 +413,213 @@ export default function StudentResults() {
         : "-";
       const termName = selectedTermObj ? `Term ${selectedTermObj.term_number}` : "-";
       const yearName = yearLabel(selectedYear);
+      const examLabel = selectedExamObj
+        ? `${selectedExamObj.name}${selectedExamObj.exam_type_name ? ` (${selectedExamObj.exam_type_name})` : ""}`
+        : "-";
 
       autoTable(doc, {
-        startY: 32,
+        startY: 26,
         theme: "grid",
         body: [
           ["Student", studentName, "Admission No", admissionNo],
-          ["Class", className, "Curriculum", curriculumType === "CBC" ? "CBC" : "8-4-4"],
-          ["Academic Year", String(yearName), "Term", termName],
-          ["Exam", selectedExamObj?.name || "-", "Exam Type", selectedExamObj?.exam_type_name || "-"],
+          ["Class", className, "Curriculum", is844 ? "8-4-4" : "CBC"],
+          ["Year / Term", `${yearName} - ${termName}`, "Exam", examLabel],
         ],
-        styles: {
-          fontSize: 9,
-          cellPadding: 2.5,
-          lineColor: [226, 232, 240],
-          lineWidth: 0.1,
-          textColor: [51, 65, 85],
-        },
+        styles: { fontSize: 8, cellPadding: 1.6, ...gridStyles },
         columnStyles: {
-          0: { cellWidth: 32, fontStyle: "bold", fillColor: [241, 245, 249], textColor: [71, 85, 105] },
-          1: { cellWidth: 58 },
-          2: { cellWidth: 32, fontStyle: "bold", fillColor: [241, 245, 249], textColor: [71, 85, 105] },
+          0: { cellWidth: 26, ...labelCell },
+          1: { cellWidth: 62 },
+          2: { cellWidth: 28, ...labelCell },
           3: { cellWidth: "auto" },
         },
-        margin: { left: 12, right: 12 },
+        margin: { left: MARGIN, right: MARGIN },
       });
+      let cursorY = doc.lastAutoTable.finalY + 3;
 
-      let cursorY = doc.lastAutoTable.finalY + 6;
-
-      // --- Summary strip ---
-      const summaryLeft = ranking
-        ? [
-            `Class Position: #${ranking.class_position}${ranking.grade_position ? ` (Grade-wide #${ranking.grade_position})` : ""}`,
-            `Term Average (${rankingCheckpoint === "MIDTERM" ? "Midterm" : "End of Term"}): ${ranking.average_marks}%`,
-          ]
-        : [`Exam Average: ${stats ? stats.average.toFixed(1) : "0.0"}%`];
-
-      if (stats && ranking) {
-        summaryLeft.push(`This Exam Average: ${stats.average.toFixed(1)}%`);
-      }
-
+      // --- Performance summary (this exam): labels row + values row ---
       autoTable(doc, {
         startY: cursorY,
-        theme: "plain",
-        body: summaryLeft.map((line) => [line]),
+        theme: "grid",
+        head: [[
+          "Total Marks",
+          "Exam Average",
+          is844 ? "Total Points" : "Overall Level",
+          "Overall Grade",
+          "Class Position",
+          "Grade Position",
+        ]],
+        body: [[
+          stats ? `${stats.totalMarks} / ${stats.totalMax}` : "-",
+          overall ? `${overall.average.toFixed(1)}%` : "-",
+          String(is844 ? (overall?.totalPoints ?? "-") : (overall?.remark || "-")),
+          String(overall?.grade || "-"),
+          positionText(overall?.classPosition, overall?.classSize),
+          positionText(overall?.gradePosition, overall?.gradeSize),
+        ]],
         styles: {
-          fontSize: 9,
-          cellPadding: 1.8,
-          textColor: [15, 23, 42],
+          fontSize: 9, cellPadding: 1.6, halign: "center", valign: "middle",
+          fontStyle: "bold", ...gridStyles, textColor: [15, 23, 42],
         },
-        margin: { left: 12, right: 12 },
+        headStyles: {
+          fillColor: [241, 245, 249], textColor: [71, 85, 105],
+          fontSize: 7, fontStyle: "bold", cellPadding: 1.4,
+        },
+        margin: { left: MARGIN, right: MARGIN },
       });
+      cursorY = doc.lastAutoTable.finalY + 3;
 
-      cursorY = doc.lastAutoTable.finalY + 6;
+      // --- Term ranking (single line, term-level) ---
+      if (ranking) {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7.5);
+        doc.setTextColor(71, 85, 105);
+        doc.text(
+          `Term Position (${rankingCheckpoint === "MIDTERM" ? "Midterm" : "End of Term"}): #${ranking.class_position}` +
+          `${ranking.grade_position ? ` (Grade-wide #${ranking.grade_position})` : ""}` +
+          `   |   Term Average: ${ranking.average_marks}%`,
+          MARGIN,
+          cursorY + 3
+        );
+        cursorY += 7;
+      } else {
+        cursorY += 1;
+      }
 
-      // --- Subjects table ---
-      const tableColumn =
-        curriculumType === "CBC"
-          ? ["Subject", "Percentage", "Grade", "Remark"]
-          : ["Subject", "Percentage", "Grade", "Points"];
+      // --- Subjects table: font/padding scale down so everything fits on ONE page ---
+      const tableColumn = is844
+        ? ["Subject", "Percentage", "Grade", "Points"]
+        : ["Subject", "Percentage", "Grade", "Remark"];
 
       const tableRows = subjectRows.map((row) => {
         const pct = row.percentage !== null ? `${row.percentage.toFixed(1)}%` : "-";
         const grade = row.grade?.letter || "-";
-        if (curriculumType === "CBC") {
-          const remark = row.grade?.remark || "-";
-          return [row.subject_name, pct, grade, remark];
+        if (!is844) {
+          return [row.subject_name, pct, grade, row.grade?.remark || "-"];
         }
         const pts = row.grade?.points !== null && row.grade?.points !== undefined ? String(row.grade.points) : "-";
         return [row.subject_name, pct, grade, pts];
       });
 
+      const rowCount = tableRows.length;
+      const bodyFont = rowCount > 20 ? 7 : rowCount > 14 ? 7.5 : 8.5;
+      const lineMM = bodyFont * 0.3528 * 1.15;
+      const RESERVED_BOTTOM = 56; // signatures + QR + footer
+      const availableH = pageHeight - cursorY - RESERVED_BOTTOM;
+      const rowH = availableH / (rowCount + 2); // + header row + overall row
+      const pad = Math.max(0.5, Math.min(2.2, (rowH - lineMM) / 2));
+
       autoTable(doc, {
         startY: cursorY,
         head: [tableColumn],
         body: tableRows,
+        foot: [[
+          "Overall",
+          overall ? `${overall.average.toFixed(1)}%` : "-",
+          overall?.grade || "-",
+          is844 ? String(overall?.totalPoints ?? "-") : (overall?.remark || "-"),
+        ]],
+        showFoot: "lastPage",
         theme: "grid",
         styles: {
-          fontSize: 9,
-          cellPadding: 2.5,
-          lineColor: [226, 232, 240],
-          lineWidth: 0.1,
-          textColor: [51, 65, 85],
+          fontSize: bodyFont,
+          cellPadding: pad,
           overflow: "ellipsize",
+          ...gridStyles,
         },
         headStyles: {
-          fillColor: [15, 23, 42],
-          textColor: [255, 255, 255],
-          fontStyle: "bold",
-          fontSize: 9,
-          cellPadding: 2.5,
-          halign: "left",
+          fillColor: [15, 23, 42], textColor: [255, 255, 255],
+          fontStyle: "bold", fontSize: bodyFont, cellPadding: pad, halign: "left",
         },
         bodyStyles: {
-          fontSize: 9,
-          textColor: [51, 65, 85],
-          cellPadding: 2.5,
-          valign: "middle",
+          fontSize: bodyFont, textColor: [51, 65, 85], cellPadding: pad, valign: "middle",
+        },
+        footStyles: {
+          fillColor: [241, 245, 249], textColor: [15, 23, 42],
+          fontStyle: "bold", fontSize: bodyFont, cellPadding: pad,
         },
         alternateRowStyles: { fillColor: [248, 250, 252] },
-        columnStyles:
-          curriculumType === "CBC"
-            ? {
-                0: { cellWidth: "auto", halign: "left" },
-                1: { cellWidth: 32, halign: "right" },
-                2: { cellWidth: 24, halign: "center" },
-                3: { cellWidth: 60, halign: "left" },
-              }
-            : {
-                0: { cellWidth: "auto", halign: "left" },
-                1: { cellWidth: 36, halign: "right" },
-                2: { cellWidth: 28, halign: "center" },
-                3: { cellWidth: 28, halign: "center" },
-              },
-        margin: { left: 12, right: 12 },
+        columnStyles: !is844
+          ? {
+              0: { cellWidth: "auto", halign: "left" },
+              1: { cellWidth: 32, halign: "right" },
+              2: { cellWidth: 24, halign: "center" },
+              3: { cellWidth: 60, halign: "left" },
+            }
+          : {
+              0: { cellWidth: "auto", halign: "left" },
+              1: { cellWidth: 36, halign: "right" },
+              2: { cellWidth: 28, halign: "center" },
+              3: { cellWidth: 28, halign: "center" },
+            },
+        margin: { left: MARGIN, right: MARGIN },
         didParseCell: (data) => {
-          if (data.section === "body") {
-            const row = subjectRows[data.row.index];
-            if (!row) return;
-            const pct = row.percentage;
-            if (pct === null || pct === undefined) return;
-            const gradeCol = 2;
-            const pctCol = 1;
-            if (data.column.index === gradeCol) {
-              if (pct >= 80) data.cell.styles.textColor = [22, 163, 74];
-              else if (pct >= 60) data.cell.styles.textColor = [217, 140, 31];
-              else if (pct >= 40) data.cell.styles.textColor = [37, 99, 201];
-              else data.cell.styles.textColor = [220, 38, 38];
-              data.cell.styles.fontStyle = "bold";
-            }
-            if (data.column.index === pctCol) {
-              data.cell.styles.fontStyle = "bold";
-              data.cell.styles.textColor = [15, 23, 42];
-            }
+          if (data.section !== "body") return;
+          const row = subjectRows[data.row.index];
+          const pct = row?.percentage;
+          if (pct === null || pct === undefined) return;
+          if (data.column.index === 2) {
+            if (pct >= 80) data.cell.styles.textColor = [22, 163, 74];
+            else if (pct >= 60) data.cell.styles.textColor = [217, 140, 31];
+            else if (pct >= 40) data.cell.styles.textColor = [37, 99, 201];
+            else data.cell.styles.textColor = [220, 38, 38];
+            data.cell.styles.fontStyle = "bold";
           }
-        },
-        didDrawPage: () => {
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(7);
-          doc.setTextColor(148, 163, 184);
-          doc.text(
-            `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
-            pageWidth - 12,
-            pageHeight - 6,
-            { align: "right" }
-          );
-          doc.text("Masomo School — Academics Office", 12, pageHeight - 6);
+          if (data.column.index === 1) {
+            data.cell.styles.fontStyle = "bold";
+            data.cell.styles.textColor = [15, 23, 42];
+          }
         },
       });
 
-      // --- Signature blocks: Class Teacher + Principal ---
-      let finalY = doc.lastAutoTable.finalY + 16;
-      if (finalY > pageHeight - 30) {
-        doc.addPage();
-        finalY = 24;
-      }
+      // --- Signatures (left/right) with the verification QR in the middle ---
+      const sigY = Math.min(doc.lastAutoTable.finalY + 12, pageHeight - 44);
+      const sigLineW = 56;
 
       doc.setDrawColor(148, 163, 184);
       doc.setLineWidth(0.2);
 
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(9);
-      doc.setTextColor(15, 23, 42);
-      doc.text("Class Teacher's Signature:", 12, finalY);
-      doc.line(12, finalY + 10, 90, finalY + 10);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(7.5);
-      doc.setTextColor(100, 116, 139);
-      doc.text("Sign & Official Stamp", 12, finalY + 14);
+      const drawSignature = (x, label) => {
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(8);
+        doc.setTextColor(15, 23, 42);
+        doc.text(label, x, sigY);
+        doc.line(x, sigY + 12, x + sigLineW, sigY + 12);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(6.5);
+        doc.setTextColor(100, 116, 139);
+        doc.text("Sign & Official Stamp", x, sigY + 15.5);
+      };
+      drawSignature(MARGIN, "Class Teacher's Signature:");
+      drawSignature(pageWidth - MARGIN - sigLineW, "Principal's Signature:");
 
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(9);
-      doc.setTextColor(15, 23, 42);
-      doc.text("Principal's Signature:", pageWidth - 90, finalY);
-      doc.line(pageWidth - 90, finalY + 10, pageWidth - 12, finalY + 10);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(7.5);
-      doc.setTextColor(100, 116, 139);
-      doc.text("Sign & Official Stamp", pageWidth - 90, finalY + 14);
+      if (qrDataUrl) {
+        const qrSize = 24;
+        doc.addImage(qrDataUrl, "PNG", (pageWidth - qrSize) / 2, sigY - 3, qrSize, qrSize);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(6.5);
+        doc.setTextColor(100, 116, 139);
+        doc.text("Scan to verify", pageWidth / 2, sigY + qrSize + 1.5, { align: "center" });
+      }
+
+      // --- Footer on every page: document copy notice for the school ---
+      const totalPages = doc.getNumberOfPages();
+      for (let p = 1; p <= totalPages; p++) {
+        doc.setPage(p);
+        doc.setDrawColor(226, 232, 240);
+        doc.setLineWidth(0.2);
+        doc.line(MARGIN, pageHeight - 14, pageWidth - MARGIN, pageHeight - 14);
+
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(6.5);
+        doc.setTextColor(100, 116, 139);
+        doc.text(DOC_COPY_NOTE, pageWidth / 2, pageHeight - 10, { align: "center" });
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7);
+        doc.setTextColor(148, 163, 184);
+        doc.text(`${SCHOOL_NAME} — Document Copy`, MARGIN, pageHeight - 5.5);
+        doc.text(`Page ${p} of ${totalPages}`, pageWidth - MARGIN, pageHeight - 5.5, { align: "right" });
+      }
 
       const safeName = (studentName || "student").replace(/\s+/g, "_");
       const safeExam = (selectedExamObj?.name || "exam").replace(/\s+/g, "_");
@@ -692,12 +781,12 @@ export default function StudentResults() {
             <hr />
           </div>
 
-          {/* ---- Ranking summary ---- */}
+          {/* ---- Term ranking summary ---- */}
           {rankingLoading && (
             <div className="alert alert-light no-print" style={{ padding: "0.75rem 1.25rem" }}>
               <span className="text-muted-soft">
                 <i className="bi bi-hourglass-split me-2"></i>
-                Loading class position...
+                Loading term position...
               </span>
             </div>
           )}
@@ -709,7 +798,7 @@ export default function StudentResults() {
             }}>
               <div>
                 <i className="bi bi-trophy me-2" style={{ color: "var(--gold-500)" }}></i>
-                <strong>Class Position:</strong>
+                <strong>Term Position:</strong>
                 <span style={{ fontSize: "1.1rem", fontWeight: 700, color: "var(--ink-900)", marginLeft: "0.5rem" }}>
                   #{ranking.class_position}
                 </span>
@@ -732,53 +821,38 @@ export default function StudentResults() {
             </div>
           )}
 
-          {/* ---- Stats ---- */}
-          {stats && !resultsLoading && (
+          {/* ---- Stats for THIS exam ---- */}
+          {stats && overall && !resultsLoading && (
             <div className="row g-3 mb-3">
-              <div className="col-6 col-md-3">
-                <div className="stat-card" style={{ padding: "0.75rem 1rem" }}>
-                  <div>
-                    <div className="stat-card__value" style={{ fontSize: "1.2rem" }}>{stats.subjectCount}</div>
-                    <div className="stat-card__label">Subjects</div>
-                  </div>
-                </div>
-              </div>
-              <div className="col-6 col-md-3">
-                <div className="stat-card stat-card--success" style={{ padding: "0.75rem 1rem" }}>
-                  <div>
-                    <div className="stat-card__value" style={{ fontSize: "1.2rem" }}>
-                      {stats.totalMarks} / {stats.totalMax}
-                    </div>
-                    <div className="stat-card__label">Total Marks (this exam)</div>
-                  </div>
-                </div>
-              </div>
-              <div className="col-6 col-md-3">
-                <div className="stat-card stat-card--gold" style={{ padding: "0.75rem 1rem" }}>
-                  <div>
-                    <div className="stat-card__value" style={{ fontSize: "1.2rem" }}>{stats.average.toFixed(1)}%</div>
-                    <div className="stat-card__label">Exam Average</div>
-                  </div>
-                </div>
-              </div>
-              <div className="col-6 col-md-3">
-                <div className="stat-card stat-card--blue" style={{ padding: "0.75rem 1rem" }}>
-                  <div>
-                    <div className="stat-card__value" style={{ fontSize: "1.2rem" }}>
-                      {curriculumType === "CBC"
-                        ? (fallbackGrade("CBC", stats.average)?.remark || "-")
-                        : (stats.totalPoints !== null ? stats.totalPoints : "-")}
-                    </div>
-                    <div className="stat-card__label">
-                      {curriculumType === "CBC" ? "Overall Level" : "Total Points"}
+              {[
+                { label: "Subjects", value: stats.subjectCount, cls: "" },
+                { label: "Total Marks (this exam)", value: `${stats.totalMarks} / ${stats.totalMax}`, cls: "stat-card--success" },
+                { label: "Exam Average", value: `${overall.average.toFixed(1)}%`, cls: "stat-card--gold" },
+                curriculumType === "CBC"
+                  ? { label: "Overall Level", value: overall.remark || "-", cls: "stat-card--blue" }
+                  : { label: "Total Points", value: overall.totalPoints ?? "-", cls: "stat-card--blue" },
+                { label: "Overall Grade", value: overall.grade, cls: "stat-card--success" },
+                {
+                  label: "Class Position (this exam)",
+                  value: summaryLoading ? "…" : positionText(overall.classPosition, overall.classSize),
+                  sub: overall.gradePosition ? `Grade-wide ${positionText(overall.gradePosition, overall.gradeSize)}` : null,
+                  cls: "stat-card--gold",
+                },
+              ].map((c) => (
+                <div className="col-6 col-md-4 col-xl" key={c.label}>
+                  <div className={`stat-card ${c.cls}`} style={{ padding: "0.75rem 1rem" }}>
+                    <div>
+                      <div className="stat-card__value" style={{ fontSize: "1.2rem" }}>{c.value}</div>
+                      <div className="stat-card__label">{c.label}</div>
+                      {c.sub && <div className="stat-card__label" style={{ fontSize: "0.7rem" }}>{c.sub}</div>}
                     </div>
                   </div>
                 </div>
-              </div>
+              ))}
             </div>
           )}
 
-          {/* ---- Per-subject table (clean: no Marks / Out of) ---- */}
+          {/* ---- Per-subject table ---- */}
           {resultsLoading ? (
             <TableSkeleton rows={5} columns={4} />
           ) : subjectRows.length === 0 ? (
@@ -856,6 +930,18 @@ export default function StudentResults() {
                       </tr>
                     ))}
                   </tbody>
+                  {overall && (
+                    <tfoot>
+                      <tr style={{ fontWeight: 700 }}>
+                        <td>Overall</td>
+                        <td className="text-end">{overall.average.toFixed(1)}%</td>
+                        <td className="text-center">{overall.grade}</td>
+                        {curriculumType === "CBC"
+                          ? <td>{overall.remark || "-"}</td>
+                          : <td className="text-center">{overall.totalPoints ?? "-"}</td>}
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
               <div className="table-wrap__footer no-print">
@@ -867,7 +953,7 @@ export default function StudentResults() {
                     type="button"
                     className="btn btn-sm btn-outline-primary"
                     onClick={handleDownloadReportPdf}
-                    disabled={downloadingPdf || subjectRows.length === 0}
+                    disabled={downloadingPdf || summaryLoading || subjectRows.length === 0}
                   >
                     {downloadingPdf ? (
                       <>
