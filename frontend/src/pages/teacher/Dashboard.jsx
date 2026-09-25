@@ -73,7 +73,7 @@ export default function TeacherDashboard() {
             </div>
             <div>
               <h1 className="page-title" style={{ marginBottom: "0.1rem" }}>
-                {getGreeting()}, {user?.first_name || "Teacher"}! 👋
+                {getGreeting()}, {user?.first_name || "Teacher"}! 
               </h1>
               <p className="page-subtitle" style={{ marginBottom: "0" }}>
                 Welcome to your teaching dashboard

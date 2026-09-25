@@ -4,12 +4,10 @@ export const BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
   "http://127.0.0.1:8000/api/v1";
 
-  
 const api = axios.create({
   baseURL: BASE_URL,
 });
 
-// ---- attach access token to every request ----
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem("access_token");
   if (token) {
@@ -18,7 +16,6 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// ---- auto-refresh on 401 once, then bail out to /login ----
 let isRefreshing = false;
 let queue = [];
 
@@ -31,8 +28,10 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
+
     if (error.response?.status === 401 && !originalRequest._retry) {
       const refreshToken = localStorage.getItem("refresh_token");
+
       if (!refreshToken) {
         localStorage.clear();
         window.location.href = "/login";
@@ -50,6 +49,7 @@ api.interceptors.response.use(
 
       originalRequest._retry = true;
       isRefreshing = true;
+
       try {
         const { data } = await axios.post(`${BASE_URL}/auth/refresh/`, { refresh: refreshToken });
         localStorage.setItem("access_token", data.access);
@@ -65,13 +65,11 @@ api.interceptors.response.use(
         isRefreshing = false;
       }
     }
+
     return Promise.reject(error);
   }
 );
 
-// ---------------------------------------------------------------------------
-// AUTH
-// ---------------------------------------------------------------------------
 export const authApi = {
   login: (username, password) => api.post("/auth/login/", { username, password }),
   verifyOtp: (challengeToken, otpCode) =>
@@ -90,10 +88,6 @@ export const securityApi = {
   loginAttemptsSummary: () => api.get("/login-attempts/summary/"),
 };
 
-
-// ---------------------------------------------------------------------------
-// PROFILE (any role - self-service, non-critical fields only)
-// ---------------------------------------------------------------------------
 export const profileApi = {
   me: () => api.get("/profile/me/"),
   update: (payload) => api.patch("/profile/me/", payload),
@@ -101,30 +95,20 @@ export const profileApi = {
 
 export const dashboardApi = {
   stats: () => api.get("/dashboard/stats/"),
+  principalStats: () => api.get("/dashboard/principal-stats/"),
+  secretaryStats: () => api.get("/dashboard/secretary-stats/"),
 };
 
-// extend the existing calendarApi with write operations
-
-
-// ---------------------------------------------------------------------------
-// REPORTS
-// ---------------------------------------------------------------------------
 export const reportsApi = {
   overview: () => api.get("/reports/overview/"),
 };
 
-// ---------------------------------------------------------------------------
-// SCHOOL SETTINGS
-// ---------------------------------------------------------------------------
 export const schoolApi = {
   list: () => api.get("/schools/"),
   create: (payload) => api.post("/schools/", payload),
   update: (id, payload) => api.patch(`/schools/${id}/`, payload),
 };
 
-// ---------------------------------------------------------------------------
-// PARENTS / GUARDIANS
-// ---------------------------------------------------------------------------
 export const guardiansApi = {
   list: (params) => api.get("/parents/", { params }),
   create: (payload) => api.post("/parents/", payload),
@@ -133,9 +117,6 @@ export const guardiansApi = {
   unlink: (id) => api.delete(`/parent-links/${id}/`),
 };
 
-// ---------------------------------------------------------------------------
-// ACADEMIC CALENDAR
-// ---------------------------------------------------------------------------
 export const calendarApi = {
   academicYears: () => api.get("/academic-years/"),
   createAcademicYear: (payload) => api.post("/academic-years/", payload),
@@ -145,20 +126,11 @@ export const calendarApi = {
   updateTerm: (id, payload) => api.patch(`/terms/${id}/`, payload),
 };
 
-// ---------------------------------------------------------------------------
-// CURRICULUM / CLASSES
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// CURRICULUM / CLASSES
-// ---------------------------------------------------------------------------
 export const academicsApi = {
   gradeLevels: (params) => api.get("/grade-levels/", { params }),
 
   streams: () => api.get("/streams/"),
   classrooms: (params) => api.get("/classrooms/", { params }),
-  // Unpaginated classroom list for pickers/dropdowns (promotions, timetable
-  // setup, bulk actions). Use this instead of `classrooms()` anywhere the
-  // UI needs EVERY classroom, not just the first page.
   allClassrooms: (params) => api.get("/classrooms/all/", { params }),
 
   classroomResults: (id, params) => api.get(`/classrooms/${id}/results/`, { params }),
@@ -192,16 +164,14 @@ export const academicsApi = {
   updateGradingScale: (id, payload) => api.patch(`/grading-scales/${id}/`, payload),
   deleteGradingScale: (id) => api.delete(`/grading-scales/${id}/`),
 
-  addSubjectPaper: (payload) => api.post("/subject-papers/", payload), // alias, mirrors createSubjectPaper
+  addSubjectPaper: (payload) => api.post("/subject-papers/", payload),
+
   examSpreadsheet: (classroomId, examId) =>
     api.get(`/classrooms/${classroomId}/exam_spreadsheet/`, { params: { exam: examId } }),
   saveExamSpreadsheet: (classroomId, payload) =>
     api.post(`/classrooms/${classroomId}/save_exam_spreadsheet/`, payload),
 };
 
-// ---------------------------------------------------------------------------
-// STUDENTS / ENROLLMENT
-// ---------------------------------------------------------------------------
 export const studentsApi = {
   list: (params) => api.get("/students/", { params }),
   detail: (id) => api.get(`/students/${id}/`),
@@ -209,15 +179,19 @@ export const studentsApi = {
   update: (id, payload) => api.patch(`/students/${id}/`, payload),
   remove: (id) => api.delete(`/students/${id}/`),
   resetPassword: (id, payload) => api.post(`/students/${id}/reset_password/`, payload),
+
   enrollments: (params) => api.get("/enrollments/", { params }),
   promote: (enrollmentId, payload) => api.post(`/enrollments/${enrollmentId}/promote/`, payload),
   bulkPromote: (payload) => api.post("/enrollments/bulk_promote/", payload),
+
   getSubjects: (enrollmentId) => api.get(`/enrollments/${enrollmentId}/subjects/`),
   unlockSubjects: (enrollmentId) => api.post(`/enrollments/${enrollmentId}/unlock_subjects/`),
   setSubjects: (enrollmentId, subjectIds, pathwayId, trackId) =>
-  api.post(`/enrollments/${enrollmentId}/subjects/`, {
-    subject_ids: subjectIds, pathway_id: pathwayId ?? null, track_id: trackId ?? null,
-  }),
+    api.post(`/enrollments/${enrollmentId}/subjects/`, {
+      subject_ids: subjectIds,
+      pathway_id: pathwayId ?? null,
+      track_id: trackId ?? null,
+    }),
 };
 
 export const subjectGroupsApi = {
@@ -248,7 +222,6 @@ export const pathwaysApi = {
   delete: (id) => api.delete(`/pathways/${id}/`),
 };
 
-
 export const timetableApi = {
   periodSlots: () => api.get("/period-slots/"),
   bulkSetStructure: (slots) => api.post("/period-slots/bulk_set/", { slots }),
@@ -259,9 +232,6 @@ export const timetableApi = {
   autoGenerate: (term) => api.post("/timetable-entries/auto_generate/", { term }),
 };
 
-// ---------------------------------------------------------------------------
-// TEACHER ALLOCATION
-// ---------------------------------------------------------------------------
 export const teacherApi = {
   myAllocations: () => api.get("/my-allocations/"),
   allAllocations: (params) => api.get("/teacher-allocations/", { params }),
@@ -269,9 +239,6 @@ export const teacherApi = {
   myClassTeacherClassrooms: () => api.get("/my-class-teacher-classrooms/"),
 };
 
-// ---------------------------------------------------------------------------
-// EXAMS / RESULTS / RANKING
-// ---------------------------------------------------------------------------
 export const examsApi = {
   examTypes: () => api.get("/exam-types/"),
   exams: (params) => api.get("/exams/", { params }),
@@ -282,20 +249,21 @@ export const examsApi = {
   summary: (params) => api.get("/exam-summary/", { params }),
 };
 
-// ---------------------------------------------------------------------------
-// FEES
-// ---------------------------------------------------------------------------
 export const financeApi = {
   feeStructures: (params) => api.get("/fee-structures/", { params }),
   createFeeStructure: (payload) => api.post("/fee-structures/", payload),
-  updateFeeStructure: (id, payload) => api.patch(`/fee-structures/${id}/`, payload), // NEW
-  deleteFeeStructure: (id) => api.delete(`/fee-structures/${id}/`),                  // NEW
+  updateFeeStructure: (id, payload) => api.patch(`/fee-structures/${id}/`, payload),
+  deleteFeeStructure: (id) => api.delete(`/fee-structures/${id}/`),
+
   invoices: (params) => api.get("/invoices/", { params }),
   generateInvoice: (payload) => api.post("/invoices/generate/", payload),
+
   recordPayment: (payload) => api.post("/payments/", payload),
   recordBulkPayment: (payload) => api.post("/payments/pay_balance/", payload),
+
   status: () => api.get("/fees/status/"),
   myStructures: (params) => api.get("/fees/my-structures/", { params }),
+
   payments: (params) => api.get("/payments/", { params }),
   paymentReceipt: (paymentId) => api.get(`/payments/${paymentId}/finance_receipt/`),
   verifyReceiptSecure: (receiptNo) => api.get(`/payments/verify/${encodeURIComponent(receiptNo)}/`),
@@ -306,10 +274,9 @@ export const performanceApi = {
 };
 
 export const clearanceApi = {
-  // student
   me: () => api.get("/my-clearance/"),
   apply: (payload) => api.post("/my-clearance/", payload),
-  // admin
+
   list: (params) => api.get("/clearance/", { params }),
   summary: () => api.get("/clearance/summary/"),
   clear: (id, payload) => api.post(`/clearance/${id}/clear/`, payload),
@@ -318,37 +285,32 @@ export const clearanceApi = {
   markCollected: (id) => api.post(`/clearance/${id}/mark_collected/`),
 };
 
-
 export const communicationApi = {
   list: (params) => api.get("/communications/", { params }),
   send: (payload) => api.post("/communications/", payload),
 };
- 
+
 export const notificationApi = {
   list: (params) => api.get("/notifications/", { params }),
   unreadCount: () => api.get("/notifications/unread_count/"),
   markRead: (id) => api.post(`/notifications/${id}/mark_read/`),
   markAllRead: () => api.post("/notifications/mark_all_read/"),
 };
- 
+
 export const messagingApi = {
   conversations: () => api.get("/conversations/"),
-  start: (payload) => api.post("/conversations/", payload), // { recipient_id, student_id?, body }
+  start: (payload) => api.post("/conversations/", payload),
   messages: (conversationId) => api.get(`/conversations/${conversationId}/messages/`),
   send: (conversationId, body) => api.post(`/conversations/${conversationId}/messages/`, { body }),
   unreadCount: () => api.get("/conversations/unread_count/"),
-  searchRecipients: (params) => api.get("/messaging/recipients/", { params }), // { search, role? }
+  searchRecipients: (params) => api.get("/messaging/recipients/", { params }),
 };
- 
 
-// ---------------------------------------------------------------------------
-// FINANCE REPORTS (3 pages: collections, class analysis, detailed)
-// ---------------------------------------------------------------------------
 export const financeReportsApi = {
   collections: (params) => api.get("/finance-reports/collections/", { params }),
   classAnalysis: (params) => api.get("/finance-reports/class-analysis/", { params }),
   detailed: (params) => api.get("/finance-reports/detailed/", { params }),
-  studentBalances: (params) => api.get("/finance-reports/student-balances/", { params }), // <-- ADD
+  studentBalances: (params) => api.get("/finance-reports/student-balances/", { params }),
 };
 
 export const licenseApi = {
@@ -374,24 +336,15 @@ export const expensesApi = {
   summary: (params) => api.get("/expenses/summary/", { params }),
 };
 
-// ---------------------------------------------------------------------------
-// REPORT CARD VERIFICATION (QR code generation + public verify lookup)
-// ---------------------------------------------------------------------------
 export const reportCardsApi = {
   qrCode: (token) => api.get(`/report-cards/${token}/qr/`),
-  verify: (token) => api.get(`/report-cards/verify/${token}/`), // public, no auth needed
+  verify: (token) => api.get(`/report-cards/verify/${token}/`),
 };
 
-// ---------------------------------------------------------------------------
-// STUDENT/PARENT SELF-SERVICE FEE PAYMENT (STK push, DEBUG-bypassed locally)
-// ---------------------------------------------------------------------------
 export const paymentsApi = {
-  // amount can be less than the balance (partial) or more (creates a credit
-  // that automatically applies to the student's next term invoice)
   initiate: (payload) => api.post("/payments/initiate/", payload),
   status: (checkoutRequestId) => api.get(`/payments/status/${checkoutRequestId}/`),
   receipt: (paymentId) => api.get(`/payments/${paymentId}/receipt/`),
-  // public - no auth required, used by the QR-code verification page
   verifyReceipt: (receiptNo) => api.get(`/receipts/verify/${receiptNo}/`),
 };
 

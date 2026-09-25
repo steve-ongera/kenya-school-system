@@ -31,6 +31,8 @@ class User(AbstractUser):
 
     class Role(models.TextChoices):
         ADMIN = "ADMIN", "Administrator"
+        PRINCIPAL = "PRINCIPAL", "Principal"
+        SECRETARY = "SECRETARY", "Secretary"
         TEACHER = "TEACHER", "Teacher"
         STUDENT = "STUDENT", "Student"
         PARENT = "PARENT", "Parent/Guardian"
@@ -46,17 +48,17 @@ class User(AbstractUser):
     is_super_admin = models.BooleanField(
         default=False,
         help_text="Required (in addition to role=ADMIN) to delete students, "
-                   "classrooms, terms, academic years, grade levels, or subjects.",
+                  "classrooms, terms, academic years, grade levels, or subjects.",
     )
 
-    ROLES_REQUIRING_2FA = ("ADMIN", "TEACHER", "FINANCE")
+    ROLES_REQUIRING_2FA = ("ADMIN", "PRINCIPAL", "SECRETARY", "TEACHER", "FINANCE")
 
     # --- brute-force protection ---
     failed_login_attempts = models.PositiveSmallIntegerField(default=0)
     locked_until = models.DateTimeField(null=True, blank=True)
     last_failed_login_at = models.DateTimeField(null=True, blank=True)
 
-    # --- 2FA (OTP) --- 
+    # --- 2FA (OTP) ---
     otp_code = models.CharField(max_length=6, blank=True, null=True)
     otp_expires_at = models.DateTimeField(null=True, blank=True)
 
@@ -147,7 +149,7 @@ class AcademicYear(models.Model):
         return str(self.year)
 
     def save(self, *args, **kwargs):
-        # only one academic year may be "current"
+        # Only one academic year may be "current".
         if self.is_current:
             AcademicYear.objects.exclude(pk=self.pk).update(is_current=False)
         super().save(*args, **kwargs)
@@ -340,12 +342,12 @@ class Enrollment(models.Model):
     selection_track = models.ForeignKey(
         "SelectionTrack", on_delete=models.SET_NULL, null=True, blank=True, related_name="enrollments",
         help_text="8-4-4 elective track chosen for this enrollment year (e.g. Technical+Humanities "
-                   "vs Triple Science).",
+                  "vs Triple Science).",
     )
     subjects_locked_at = models.DateTimeField(
         null=True, blank=True,
         help_text="Timestamp of the student's first subject-selection submission. "
-                   "Once set, self-service edits are blocked until an admin unlocks it.",
+                  "Once set, self-service edits are blocked until an admin unlocks it.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -367,8 +369,9 @@ class Enrollment(models.Model):
 # ---------------------------------------------------------------------------
 class SubjectGroup(models.Model):
     """A category of electives, e.g. Technical, Humanities, Sciences."""
-    name = models.CharField(max_length=80)          # "Technical"
-    code = models.CharField(max_length=20, unique=True)  # "TECHNICAL"
+
+    name = models.CharField(max_length=80)                # "Technical"
+    code = models.CharField(max_length=20, unique=True)    # "TECHNICAL"
 
     class Meta:
         db_table = "subject_groups"
@@ -384,8 +387,9 @@ class SelectionTrack(models.Model):
     A student picks ONE track, then must satisfy every TrackGroupRule
     under it, plus the grade's overall min/max total on SubjectSelectionRule.
     """
+
     grade_level = models.ForeignKey(GradeLevel, on_delete=models.CASCADE, related_name="selection_tracks")
-    name = models.CharField(max_length=80)   # "Technical + Humanities", "Triple Science"
+    name = models.CharField(max_length=80)  # "Technical + Humanities", "Triple Science"
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -397,6 +401,7 @@ class SelectionTrack(models.Model):
 
 class TrackGroupRule(models.Model):
     """Within a track, how many subjects a student must pick from a given group."""
+
     track = models.ForeignKey(SelectionTrack, on_delete=models.CASCADE, related_name="group_rules")
     group = models.ForeignKey(SubjectGroup, on_delete=models.CASCADE, related_name="track_rules")
     min_choose = models.PositiveSmallIntegerField(default=1)
@@ -411,8 +416,8 @@ class TrackGroupRule(models.Model):
 
 
 class Pathway(models.Model):
-    name = models.CharField(max_length=80)          # "STEM"
-    code = models.CharField(max_length=20, unique=True)  # "STEM", "SOCIAL", "ARTS_SPORTS"
+    name = models.CharField(max_length=80)                # "STEM"
+    code = models.CharField(max_length=20, unique=True)    # "STEM", "SOCIAL", "ARTS_SPORTS"
     description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
 
@@ -434,13 +439,13 @@ class Subject(models.Model):
     pathway = models.ForeignKey(
         "Pathway", on_delete=models.SET_NULL, null=True, blank=True, related_name="subjects",
         help_text="Set only for CBC electives that belong to a pathway (STEM / Social "
-                   "Sciences / Arts & Sports Science). Leave blank for compulsory subjects "
-                   "and all 8-4-4 subjects.",
+                  "Sciences / Arts & Sports Science). Leave blank for compulsory subjects "
+                  "and all 8-4-4 subjects.",
     )
     elective_group = models.ForeignKey(
         "SubjectGroup", on_delete=models.SET_NULL, null=True, blank=True, related_name="subjects",
         help_text="Category (Technical/Humanities/Sciences) for grades that select "
-                   "subjects group-by-group, e.g. Form 3-4. Leave blank otherwise.",
+                  "subjects group-by-group, e.g. Form 3-4. Leave blank otherwise.",
     )
 
     class Meta:
@@ -456,7 +461,7 @@ class SubjectPaper(models.Model):
 
     subject = models.ForeignKey(Subject, on_delete=models.CASCADE, related_name="papers")
     paper_number = models.PositiveSmallIntegerField()  # 1, 2, 3...
-    name = models.CharField(max_length=50)  # "Paper 1", "PP2"
+    name = models.CharField(max_length=50)             # "Paper 1", "PP2"
     max_marks = models.PositiveIntegerField(default=100)
 
     class Meta:
@@ -496,7 +501,7 @@ class SubjectSelectionRule(models.Model):
     requires_pathway = models.BooleanField(
         default=False,
         help_text="If true, students at this grade must pick ONE pathway first, and their "
-                   "optional-subject choices must all belong to that pathway.",
+                  "optional-subject choices must all belong to that pathway.",
     )
     min_optional_subjects = models.PositiveSmallIntegerField(default=0)
     max_optional_subjects = models.PositiveSmallIntegerField(default=0)
@@ -748,7 +753,9 @@ class TermPositionRanking(models.Model):
     total_marks = models.DecimalField(max_digits=8, decimal_places=2, default=0)
     average_marks = models.DecimalField(max_digits=6, decimal_places=2, default=0)
     class_position = models.PositiveIntegerField(null=True, blank=True)
-    grade_position = models.PositiveIntegerField(null=True, blank=True, help_text="Rank across the whole grade (all streams)")
+    grade_position = models.PositiveIntegerField(
+        null=True, blank=True, help_text="Rank across the whole grade (all streams)"
+    )
     computed_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -919,7 +926,9 @@ class MpesaSTKPushRequest(models.Model):
     merchant_request_id = models.CharField(max_length=60, blank=True)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
     result_description = models.CharField(max_length=200, blank=True)
-    initiated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="stk_requests_initiated")
+    initiated_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, related_name="stk_requests_initiated"
+    )
     is_general = models.BooleanField(
         default=False,
         help_text="True = pay the student's whole balance (split oldest-first) instead of one invoice.",
@@ -953,9 +962,7 @@ class FeeStructureMissingAlert(models.Model):
     grade/term, the alert is auto-resolved.
     """
 
-    grade_level = models.ForeignKey(
-        GradeLevel, on_delete=models.CASCADE, related_name="fee_alerts"
-    )
+    grade_level = models.ForeignKey(GradeLevel, on_delete=models.CASCADE, related_name="fee_alerts")
     term = models.ForeignKey(Term, on_delete=models.CASCADE, related_name="fee_alerts")
     affected_student_count = models.PositiveIntegerField(default=0)
     is_resolved = models.BooleanField(default=False)
@@ -1041,7 +1048,10 @@ class Communication(models.Model):
 
 
 class CommunicationRecipient(models.Model):
-    """One row per (communication, recipient, channel) - the delivery record for that channel, and (for IN_APP) the navbar notification itself."""
+    """
+    One row per (communication, recipient, channel) - the delivery record
+    for that channel, and (for IN_APP) the navbar notification itself.
+    """
 
     class Channel(models.TextChoices):
         IN_APP = "IN_APP", "In-App"
@@ -1075,7 +1085,10 @@ class CommunicationRecipient(models.Model):
 
 
 class Conversation(models.Model):
-    """A 1:1 thread - e.g. a class teacher and a parent discussing their child. `student` is optional context (which child the thread concerns)."""
+    """
+    A 1:1 thread - e.g. a class teacher and a parent discussing their
+    child. `student` is optional context (which child the thread concerns).
+    """
 
     participants = models.ManyToManyField(User, related_name="conversations")
     student = models.ForeignKey(
@@ -1284,7 +1297,7 @@ class SubscriptionPackage(models.Model):
 # 13. EXPENSES (daily running costs - Admin/Finance only)
 # ---------------------------------------------------------------------------
 class ExpenseCategory(models.Model):
-    name = models.CharField(max_length=80)          # "Stationery", "Electricity", "Repairs & Maintenance"
+    name = models.CharField(max_length=80)                # "Stationery", "Electricity", "Repairs & Maintenance"
     code = models.CharField(max_length=20, unique=True)
     is_active = models.BooleanField(default=True)
 
@@ -1304,7 +1317,7 @@ class Expense(models.Model):
         CHEQUE = "CHEQUE", "Cheque"
 
     category = models.ForeignKey(ExpenseCategory, on_delete=models.PROTECT, related_name="expenses")
-    item_name = models.CharField(max_length=150)       # "A4 Photocopy Paper"
+    item_name = models.CharField(max_length=150)  # "A4 Photocopy Paper"
     description = models.TextField(blank=True)
     quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1)
     unit_cost = models.DecimalField(max_digits=10, decimal_places=2)
@@ -1337,10 +1350,8 @@ class Expense(models.Model):
 
     def __str__(self):
         return f"{self.item_name} x{self.quantity} - KES {self.total_amount} ({self.expense_date})"
-    
-    
-    
-    
+
+
 # ---------------------------------------------------------------------------
 # 14. STUDENT CLEARANCE (final-year leavers)
 # ---------------------------------------------------------------------------
@@ -1349,16 +1360,16 @@ class ClearanceApplication(models.Model):
     ONE ROW PER STUDENT. A final-year student applies online, an admin
     reviews and clears them, and the student then collects their
     certificate in person (collected_at is stamped by the admin at the desk).
- 
+
     A student whose application is REJECTED can apply again - that reopens
     this same row (status back to PENDING) instead of creating a second one.
     """
- 
+
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending Review"
         CLEARED = "CLEARED", "Cleared"
         REJECTED = "REJECTED", "Not Cleared"
- 
+
     student = models.OneToOneField(StudentProfile, on_delete=models.CASCADE, related_name="clearance")
     enrollment = models.ForeignKey(
         Enrollment, on_delete=models.CASCADE, related_name="clearance_applications",
@@ -1371,7 +1382,7 @@ class ClearanceApplication(models.Model):
         help_text="Outstanding fee balance when the student applied. Positive = owing.",
     )
     submitted_at = models.DateTimeField(default=timezone.now)
- 
+
     reviewed_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name="clearances_reviewed"
     )
@@ -1382,17 +1393,15 @@ class ClearanceApplication(models.Model):
         default=False,
         help_text="True if an admin cleared the student while a fee balance was still outstanding.",
     )
- 
+
     collected_at = models.DateTimeField(null=True, blank=True)
     collected_recorded_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name="clearances_collected"
     )
- 
+
     class Meta:
         db_table = "clearance_applications"
         ordering = ["-submitted_at"]
- 
+
     def __str__(self):
         return f"{self.student.admission_no} - {self.get_status_display()}"
- 
- 

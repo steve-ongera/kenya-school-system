@@ -1,27 +1,59 @@
 """
-Seed initial data for the School Management System.
+Seed Junda High School Shanzu with REAL data only: base config (school, admin,
+subjects, license, packages, expense categories, grading scale, exam
+types, streams) + the CURRENT 2026 academic year/terms + the CURRENT
+Form 3 / Form 4 classrooms + the real Term 3 2026 fee structure
+(Form 3 = 12,500, Form 4 = 15,000) + the real 192-student roster with
+their real Term 3 2026 invoice AND their real payments, transcribed
+from the school's 22/09/2026 fee-balance report.
 
-Sets up a school currently running ONLY Form 3 and Form 4 (8-4-4), each with
-two streams (Blue, Red), academic year 2026 / Term 1 as current.
+MONEY MODEL (one definition, used everywhere in the system):
+  - Each student has exactly ONE invoice (2026 Term 3).
+  - invoice.brought_forward = the report's "Bal Term 2" (negative = credit).
+  - invoice.amount_due      = brought_forward + Term 3 fee.
+  - Each student's "Pay" figure becomes ONE real Payment row (M-Pesa,
+    dated 22/09/2026, reference SEED-<admission_no>, its own receipt no).
+  - invoice.amount_paid is ALWAYS re-derived as the SUM of that
+    invoice's Payment rows, so seeded payments, receipts, revenue
+    reports and balances can never disagree - and re-running this seeder
+    never wipes payments Finance recorded after seeding.
+  - Student balance = opening (earliest invoice's brought_forward)
+                      + term charges - payments
+    (see services.get_ledger_totals_bulk).
+
+*** KNOWN DATA ISSUE - PLEASE VERIFY AGAINST THE PHYSICAL REGISTER ***
+Admission No. 2742 was printed on the source sheets for TWO different
+students in TWO different classes: Nancy Mukami (Form 4 Blue) and
+Gerald Mganga (Form 3 Red). Nancy stays on 2742; Gerald has the
+placeholder "2742-TEMP" - correct it once you've checked the register,
+then re-run (idempotent).
+
+Also flagged, not blocking:
+  - 4 students had no admission number on the sheet: Kelvin Keyune,
+    Cindy Harmony, Risper Kadzo, Yasir Rama - each gets an
+    auto-generated number (prefix "24" Form 3, "23" Form 4).
+  - Cindy Harmony's Term 3 fee is 7,000 (mid-term joiner) - kept as a
+    per-student override.
+  - date_admitted is a placeholder per grade (2024-01-15 / 2023-01-16).
+  - Each student has ONE payment for their total "Pay" figure; real
+    M-Pesa codes/dates aren't in the report. Replace them later with
+    the M-Pesa statement if you need exact dates.
 
 Usage:
-    python manage.py seed_data
-    python manage.py seed_data --seed 7      # different (but repeatable) random students
+    python manage.py seed_data_term3_2026
 
-The command is idempotent: running it twice will not create duplicates.
-Existing rows are looked up by their natural keys (username, code, name...).
-Every user is created with the password "password123".
+Idempotent - safe to re-run.
 """
-import random
-import string
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from django.contrib.auth.hashers import make_password
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
+from api import services
 from api.models import (
     AcademicYear,
     ClassRoom,
@@ -34,16 +66,15 @@ from api.models import (
     GradeLevel,
     GradeSubject,
     GradingScale,
+    Invoice,
     License,
     LicenseAuditLog,
-    ParentGuardianProfile,
-    ParentStudentLink,
     PLAN_DEFAULTS,
+    Payment,
     PlanTier,
     School,
     Stream,
     StudentProfile,
-    StudentSubjectSelection,
     Subject,
     SubjectPaper,
     SubjectSelectionRule,
@@ -52,142 +83,97 @@ from api.models import (
     User,
 )
 
-# ---------------------------------------------------------------------------
-# CONFIG - edit these and re-run
-# ---------------------------------------------------------------------------
 DEFAULT_PASSWORD = "password123"
 
+# Date of the fee-balance report - seeded payments are stamped with it.
+REPORT_DATE = date(2026, 9, 22)
+
+# ---------------------------------------------------------------------------
+# 1. School identity
+# ---------------------------------------------------------------------------
 SCHOOL = {
-    "name": "Example High School",  # TODO: replace with the real school name
+    "name": "Junda High School Shanzu",
     "school_type": School.SchoolType.MIXED,
-    "knec_code": "00000000",         # TODO: real KNEC centre code
-    "county": "Nairobi",             # TODO: real county
-    "address": "P.O. Box 0000-00100, Nairobi",
+    "knec_code": "",   # TODO: real KNEC centre code
+    "county": "Mombasa",
+    "address": "",     # TODO: real postal address
 }
 
-ACADEMIC_YEAR = 2026
-YEAR_START = date(2026, 1, 5)
-YEAR_END = date(2026, 11, 27)
-TERM1_START = date(2026, 1, 5)
-TERM1_END = date(2026, 4, 3)
+ADMINS = [
+    ("admin1", "Admin", "One", True),
+]
 
 STREAMS = ["Blue", "Red"]
 
-# Only the grades this school currently runs.
-# admit_year = the year that cohort joined Form 1; dob_year = typical birth year.
 FORMS = [
-    {"name": "Form 3", "order": 103, "admit_year": 2024, "dob_year": 2009},
-    {"name": "Form 4", "order": 104, "admit_year": 2023, "dob_year": 2008},
+    {"name": "Form 1", "order": 101},
+    {"name": "Form 2", "order": 102},
+    {"name": "Form 3", "order": 103},
+    {"name": "Form 4", "order": 104},
 ]
 
-# (name, KCSE code, compulsory?, [(paper name, max marks), ...])
-# Paper structure follows the usual KCSE layout - adjust here if your school differs.
 SUBJECTS = [
-    # --- compulsory ---
-    ("Mathematics", "121", True, [("Paper 1", 100), ("Paper 2", 100)]),
-    ("English", "101", True, [("Paper 1", 60), ("Paper 2", 80), ("Paper 3", 60)]),
-    ("Kiswahili", "102", True, [("Paper 1", 40), ("Paper 2", 80), ("Paper 3", 80)]),
-    ("Chemistry", "233", True, [("Paper 1", 80), ("Paper 2", 80), ("Paper 3 (Practical)", 40)]),
-    # --- electives ---
-    ("Biology", "231", False, [("Paper 1", 80), ("Paper 2", 80), ("Paper 3 (Practical)", 40)]),
-    ("Physics", "232", False, [("Paper 1", 80), ("Paper 2", 80), ("Paper 3 (Practical)", 40)]),
-    ("Geography", "312", False, [("Paper 1", 100), ("Paper 2", 100)]),
-    ("History & Government", "311", False, [("Paper 1", 100), ("Paper 2", 100)]),
-    ("CRE", "313", False, [("Paper 1", 100), ("Paper 2", 100)]),
-    ("IRE", "314", False, [("Paper 1", 100), ("Paper 2", 100)]),
-    ("Computer Studies", "451", False, [("Paper 1 (Theory)", 100), ("Paper 2 (Practical)", 100)]),
-    ("Business Studies", "565", False, [("Paper 1", 100), ("Paper 2", 100)]),
-    ("French", "501", False, [("Paper 1", 100), ("Paper 2", 100), ("Paper 3", 100)]),
-    ("Home Science", "441", False, [("Paper 1", 80), ("Paper 2", 80), ("Paper 3 (Practical)", 40)]),
-    ("Agriculture", "443", False, [("Paper 1", 100), ("Paper 2", 100)]),
+    ("Mathematics", "MAT", 1, True, [("Paper 1", 100), ("Paper 2", 100)]),
+    ("English", "ENG", 1, True, [("Paper 1", 60), ("Paper 2", 80), ("Paper 3", 60)]),
+    ("Kiswahili", "KIS", 1, True, [("Paper 1", 40), ("Paper 2", 80), ("Paper 3", 80)]),
+    ("Chemistry", "CHE", 2, False, [("Paper 1", 80), ("Paper 2", 80), ("Paper 3 (Practical)", 40)]),
+    ("Biology", "BIO", 2, False, [("Paper 1", 80), ("Paper 2", 80), ("Paper 3 (Practical)", 40)]),
+    ("Physics", "PHY", 2, False, [("Paper 1", 80), ("Paper 2", 80), ("Paper 3 (Practical)", 40)]),
+    ("Geography", "GEO", 3, False, [("Paper 1", 100), ("Paper 2", 100)]),
+    ("History & Government", "HIS", 3, False, [("Paper 1", 100), ("Paper 2", 100)]),
+    ("CRE", "CRE", 3, False, [("Paper 1", 100), ("Paper 2", 100)]),
+    ("IRE", "IRE", 3, False, [("Paper 1", 100), ("Paper 2", 100)]),
+    ("Computer Studies", "COM", 4, False, [("Paper 1 (Theory)", 100), ("Paper 2 (Practical)", 100)]),
+    ("Business Studies", "BST", 5, False, [("Paper 1", 100), ("Paper 2", 100)]),
+    ("French", "FRE", 5, False, [("Paper 1", 100), ("Paper 2", 100), ("Paper 3", 100)]),
+    ("Home Science", "HSC", 4, False, [("Paper 1", 80), ("Paper 2", 80), ("Paper 3 (Practical)", 40)]),
+    ("Agriculture", "AGR", 4, False, [("Paper 1", 100), ("Paper 2", 100)]),
 ]
 
-# Subject-selection rule applied to Form 3 and Form 4 (on top of the 4 compulsory subjects)
 SELECTION_RULE = {
-    "min_optional_subjects": 3,
-    "max_optional_subjects": 5,
     "min_total_subjects": 7,
-    "max_total_subjects": 9,
+    "max_total_subjects": 8,
+    "min_optional_subjects": 4,
+    "max_optional_subjects": 5,
 }
 
-# Used when auto-picking electives for the seeded students
-SCIENCE_ELECTIVES = ["231", "232"]                    # Biology, Physics
-HUMANITY_ELECTIVES = ["312", "311", "313", "314"]     # Geo, History, CRE, IRE
-CONFLICTING = {"313": "314", "314": "313"}            # nobody takes CRE *and* IRE
-
 EXAM_TYPES = [
-    # name, weight, order, counts_towards_midterm_rank, counts_towards_endterm_rank
     ("Midterm Exam", Decimal("0.30"), 1, True, True),
     ("End-term Exam", Decimal("0.70"), 2, False, True),
 ]
 
-# KCSE-style grading (percentage bands -> letter, points)
 GRADING = [
-    # letter, min, max, points, remark
-    ("A", "80", "100", "12", "Excellent"),
-    ("A-", "75", "79.99", "11", "Very Good"),
-    ("B+", "70", "74.99", "10", "Good"),
-    ("B", "65", "69.99", "9", "Good"),
-    ("B-", "60", "64.99", "8", "Above Average"),
-    ("C+", "55", "59.99", "7", "Average"),
-    ("C", "50", "54.99", "6", "Average"),
-    ("C-", "45", "49.99", "5", "Below Average"),
-    ("D+", "40", "44.99", "4", "Weak"),
-    ("D", "35", "39.99", "3", "Weak"),
-    ("D-", "30", "34.99", "2", "Poor"),
-    ("E", "0", "29.99", "1", "Very Poor"),
+    ("A", "80", "100", "12", "Excellent performance. Demonstrates outstanding understanding and mastery."),
+    ("A-", "75", "79.99", "11", "Very good performance. Demonstrates strong understanding and consistent application."),
+    ("B+", "70", "74.99", "10", "Very good performance. Shows strong understanding and good application of concepts."),
+    ("B", "65", "69.99", "9", "Good performance. Demonstrates sound understanding and satisfactory application."),
+    ("B-", "60", "64.99", "8", "Good performance. Shows good understanding but needs greater consistency."),
+    ("C+", "55", "59.99", "7", "Satisfactory performance. Shows reasonable understanding with room for improvement."),
+    ("C", "50", "54.99", "6", "Fair performance. Demonstrates basic understanding but requires more practice."),
+    ("C-", "45", "49.99", "5", "Below average performance. Requires more effort and regular revision."),
+    ("D+", "40", "44.99", "4", "Weak performance. Requires greater effort and additional support."),
+    ("D", "35", "39.99", "3", "Weak performance. Shows limited understanding and needs focused improvement."),
+    ("D-", "30", "34.99", "2", "Poor performance. Requires more effort, guidance, and regular practice."),
+    ("E", "0", "29.99", "1", "Very poor performance. Requires intensive support and focused improvement."),
 ]
 
-# KES, Term 1 2026. Adjust to the school's real fee circular.
-FEES = {
-    "Form 3": [
-        ("Tuition", 18000),
-        ("Boarding & Meals", 22000),
-        ("Activity Fee", 2000),
-        ("Laboratory & Practicals", 3000),
-        ("Medical & Insurance", 1500),
-        ("Development & Maintenance", 3500),
-    ],
-    "Form 4": [
-        ("Tuition", 18000),
-        ("Boarding & Meals", 22000),
-        ("Activity Fee", 2000),
-        ("Laboratory & Practicals", 3000),
-        ("Medical & Insurance", 1500),
-        ("Development & Maintenance", 3500),
-        ("Mock & KCSE Exam Fee", 4000),
-    ],
-}
-
-# tier -> (monthly price KES, display order, feature bullets)
 PACKAGES = {
-    PlanTier.TRIAL: (Decimal("0"), 1, [
-        "Full feature access during the trial",
-        "Email support",
-    ]),
+    PlanTier.TRIAL: (Decimal("0"), 1, ["Full feature access during the trial", "Email support"]),
     PlanTier.GO: (Decimal("2000"), 2, [
-        "Student, teacher & class management",
-        "Exams, results & report forms",
-        "Fees & invoicing",
-        "Email support",
+        "Student, teacher & class management", "Exams, results & report forms",
+        "Fees & invoicing", "Email support",
     ]),
     PlanTier.STANDARD: (Decimal("6000"), 3, [
-        "Everything in Go",
-        "SMS & email notifications",
-        "Timetable generator",
-        "M-Pesa STK push fee collection",
+        "Everything in Go", "SMS & email notifications",
+        "Timetable generator", "M-Pesa STK push fee collection",
     ]),
     PlanTier.PREMIUM: (Decimal("15000"), 4, [
-        "Everything in Standard",
-        "Expense tracking & finance reports",
-        "Student clearance workflow",
-        "Priority support",
+        "Everything in Standard", "Expense tracking & finance reports",
+        "Student clearance workflow", "Priority support",
     ]),
     PlanTier.PRO: (Decimal("50000"), 5, [
-        "Everything in Premium",
-        "Unlimited students, classes & teachers",
-        "Dedicated account manager",
-        "24/7 priority support",
+        "Everything in Premium", "Unlimited students, classes & teachers",
+        "Dedicated account manager", "24/7 priority support",
     ]),
 }
 
@@ -208,168 +194,334 @@ EXPENSE_CATEGORIES = [
     ("Miscellaneous", "MISC"),
 ]
 
-ADMINS = [
-    # username, first, last, is_super_admin
-    ("admin1", "Joseph", "Kariuki", True),
-    ("admin2", "Agnes", "Wambui", False),
+# ONLY the current year.
+CALENDAR_2026 = [
+    (2026, 1, date(2026, 1, 5), date(2026, 4, 3), False),
+    (2026, 2, date(2026, 4, 27), date(2026, 7, 31), False),
+    (2026, 3, date(2026, 8, 24), date(2026, 11, 27), True),
 ]
 
-TEACHERS = [
-    ("James", "Mwangi"), ("Grace", "Achieng"), ("Peter", "Otieno"),
-    ("Lucy", "Kamau"), ("Hassan", "Juma"), ("Esther", "Chebet"),
-    ("Daniel", "Wafula"), ("Faith", "Mutua"), ("Samuel", "Kiptoo"),
-    ("Rose", "Njeri"),
+# ONLY the classes that exist right now: (grade, placeholder date_admitted, admission-no prefix)
+CURRENT_CLASSES = [
+    ("Form 3", date(2024, 1, 15), "24"),
+    ("Form 4", date(2023, 1, 16), "23"),
 ]
 
-MALE_NAMES = [
-    "Brian", "Kevin", "Dennis", "Victor", "Ian", "Collins", "Felix", "Eric", "Allan",
-    "Samuel", "Peter", "Joseph", "Moses", "Kelvin", "Nelson", "Hassan", "Baraka",
-    "Emmanuel", "Justus", "Vincent", "Wycliffe", "Elvis", "Duncan", "Newton", "Ibrahim",
+# ONLY the real Term 3 2026 fee.
+TERM3_2026_FEE = {
+    "Form 3": [("Tuition", Decimal("12500"))],
+    "Form 4": [("Tuition", Decimal("15000"))],
+}
+
+# ---------------------------------------------------------------------------
+# REAL students, from the 22/09/2026 Term 3 fee-balance report.
+# Row: (admission_no_or_None, name, gender, bal_term2, pay, term3_fee_override_or_None)
+# ---------------------------------------------------------------------------
+FORM_FOUR_RED = [
+    ("2299", "Abdhalla A. Kome", "M", -8500, 0, None),
+    ("2371", "Albina Chughu", "F", 9000, 1000, None),
+    ("2357", "Amani Douglas", "M", 3000, 8000, None),
+    ("2376", "Doroth Mumbe Ki", "F", 19100, 13000, None),
+    ("2462", "Esther Mbuche Di", "F", 31500, 0, None),
+    ("2458", "Francis Mwalimu", "M", 0, 5000, None),
+    ("2444", "Joseph Maitha Ric", "M", 2500, 0, None),
+    ("2386", "Mercy Nafungo W", "F", 21300, 3000, None),
+    ("2303", "Meshack Kiprono", "M", 10900, 4000, None),
+    ("2365", "Monica Dzame", "F", 9000, 3000, None),
+    ("2438", "Mwanapili Garam", "F", 39500, 0, None),
+    ("2331", "Nicholus Mweni N", "M", 5000, 20000, None),
+    ("2301", "Omar Kwale Deng", "M", 0, 10000, None),
+    ("2375", "Ramadhan Mwiny", "M", 39500, 0, None),
+    ("2349", "Ramadhan Mkare", "M", 42500, 0, None),
+    ("2469", "Riziki Sidi Kahindi", "F", 0, 5000, None),
+    ("2358", "Saumu Omar Lewa", "F", 3000, 8000, None),
+    ("2300", "Twaha Rashid Tw", "M", 10000, 0, None),
+    ("2306", "Emmanuel Kisagh", "M", 45200, 0, None),
+    ("2572", "Zuhura Hadija Ra", "F", 0, 0, None),
+    ("2664", "Dalan Rukih Odhi", "M", 1000, 2000, None),
+    ("2661", "Zaitun Bwanaind", "F", 4100, 5000, None),
+    ("2656", "Jayden Guchu Mb", "M", 2000, 7000, None),
+    ("2692", "Pius Mganga", "M", 1500, 7000, None),
+    ("2703", "Caleb Wambua Ky", "M", 0, 15000, None),
+    ("2714", "Athumani Mwame", "M", 33000, 0, None),
+    ("2345", "Enock Ongoro On", "M", 2000, 3000, None),
+    ("2737", "Glady's Mwikali", "F", 2500, 7500, None),
+    ("2332", "Florence Julius O", "F", 29400, 0, None),
+    ("2744", "Omar Fondo", "M", 22000, 0, None),
+    ("2745", "Abdilatif Abdi", "M", 3000, 8000, None),
+    ("2747", "Stefan Kelly", "M", 0, 5000, None),
+    ("2758", "Bidii Ngumbao", "M", 26000, 0, None),
+    ("2762", "Moses Maitha", "M", 28500, 0, None),
+    ("2771", "Mwachiti Nyale", "M", 24000, 0, None),
+    ("2774", "Sophia Kamanza", "F", 25700, 5000, None),
+    ("2780", "Queen Marion", "F", 10000, 7000, None),
+    ("2451", "Khadija Mdzomba", "F", 48800, 3000, None),
+    (None, "Kelvin Keyune", "M", 4000, 2000, None),
+    (None, "Cindy Harmony", "F", 0, 7000, 7000),
 ]
-FEMALE_NAMES = [
-    "Faith", "Mercy", "Grace", "Purity", "Winnie", "Joy", "Esther", "Lucy", "Naomi",
-    "Sharon", "Cynthia", "Ann", "Mary", "Halima", "Fatuma", "Zainab", "Rehema", "Amina",
-    "Brenda", "Lilian", "Diana", "Beatrice", "Caroline", "Doreen", "Gladys", "Irene",
+
+FORM_FOUR_BLUE = [
+    ("2305", "Abell Mwakio Kome", "M", 38200, 0, None),
+    ("2417", "Adam Gona Mwaro", "M", 2000, 5000, None),
+    ("2404", "Anderson David", "M", 23600, 3000, None),
+    ("2433", "Araphat Yaa Mohamed", "M", 21500, 0, None),
+    ("2424", "Beatrice Dama Hamisi", "F", 29750, 3900, None),
+    ("2415", "Charo Amos Kaingu", "M", 8500, 0, None),
+    ("2687", "Dhevent Mwakiti", "M", 27000, 0, None),
+    ("2706", "Duncan Kibet", "M", 14000, 2000, None),
+    ("2601", "Dwayne Kiwara", "M", 0, 6000, None),
+    ("2689", "Elisha Tsuma Nye", "M", 40500, 0, None),
+    ("2409", "Esther Chizi Tsum", "F", 10500, 6000, None),
+    ("2694", "Ismail Ndoro Ram", "M", 6000, 4000, None),
+    ("2403", "Jimmyson Khamisi", "M", 20000, 4500, None),
+    ("2385", "Lucy Nafula Wan", "F", 16800, 3000, None),
+    ("2431", "Mohammed Bakar", "M", 0, 6800, None),
+    ("2391", "Mtua Dominic Kya", "M", 26500, 10000, None),
+    ("2308", "Nicholas Jonyo", "M", 14000, 4500, None),
+    ("2699", "Riziki Juma", "M", -4000, 11000, None),
+    ("2448", "Salome Kazungu", "F", 46000, 0, None),
+    ("2592", "Saul Dala Nziga", "M", 36000, 0, None),
+    ("2700", "Sharon Wandia M", "F", 14000, 4000, None),
+    ("2486", "Sharrif Kaingu Ka", "M", 11500, 0, None),
+    ("2696", "Tellick Washe Ga", "M", 20000, 8000, None),
+    ("2702", "Victor Barasa We", "M", 0, 0, None),
+    ("2439", "Yasmin Medza Gon", "F", 2600, 5000, None),
+    ("2726", "Allan Shikoli Min", "M", 2200, 9000, None),
+    ("2731", "Rose Chausiku", "F", 2000, 5000, None),
+    ("2735", "Paul Dosho", "M", 32500, 0, None),
+    ("2740", "Pilly Anthony", "F", 0, 15000, None),
+    ("2742", "Nancy Mukami", "F", 0, 5000, None),
+    ("2757", "Dorcas Jumwa", "F", 3000, 7000, None),
+    ("2759", "Suleiman Pole", "M", 11500, 3000, None),
+    ("2765", "Ruth Pendo", "F", 25600, 2000, None),
+    ("2767", "Jesica Rongoma", "F", 2500, 2500, None),
+    ("2773", "Faridah Mbeyu", "F", 7500, 9000, None),
+    ("2779", "Benard Mwatela", "M", 26000, 0, None),
+    ("2587", "Omumali Khamis", "M", 0, 10000, None),
+    ("2781", "Martha Nafula", "F", 14100, 9000, None),
+    ("2785", "Faith Mluo Benar", "F", 16700, 3700, None),
+    ("2483", "Adam Charo Kitsa", "M", 74100, 0, None),
+    ("2791", "Rashid Salim", "M", 2000, 0, None),
 ]
-SURNAMES = [
-    "Mwangi", "Otieno", "Kamau", "Wanjiku", "Omondi", "Njoroge", "Mutua", "Kiptoo",
-    "Chebet", "Juma", "Hassan", "Wafula", "Nyongesa", "Achieng", "Kariuki", "Muriuki",
-    "Odhiambo", "Kimani", "Wekesa", "Mwende", "Kilonzo", "Mbugua", "Ndungu", "Cheruiyot",
-    "Barasa", "Onyango", "Salim", "Karisa", "Mwadzombo", "Ochieng", "Kibet", "Njeri",
-    "Waweru", "Simiyu", "Mumo", "Langat",
+
+FORM_THREE_RED = [
+    ("2517", "Abubakar Khamisi N", "M", 0, 1000, None),
+    ("2506", "Ali Hemed Ali", "M", 16000, 0, None),
+    ("2495", "Caleb Njuguna Wan", "M", 9000, 0, None),
+    ("2538", "Charles Husein Kar", "M", 38555, 0, None),
+    ("2693", "Chengo Garama Baf", "M", -5000, 7500, None),
+    ("2679", "Elisha Mohammed N", "M", 3350, 6800, None),
+    ("2401", "Emmanuel Mwambu", "M", 34400, 0, None),
+    ("2540", "Fednand Maitha Mr", "M", 5500, 4000, None),
+    ("2574", "Harryet Kadzo Ken", "F", 30100, 0, None),
+    ("2552", "Isaac Dzuya Katana", "M", 29500, 0, None),
+    ("2709", "Ismail Utanje Jamvi", "M", 17000, 0, None),
+    ("2490", "Jesse Mwangi Kimot", "M", 8950, 2000, None),
+    ("2685", "Johnson Kalama", "M", 50700, 0, None),
+    ("2567", "Kamanza Ngalaa Le", "M", 26500, 0, None),
+    ("2512", "Khadija Chizi Said", "F", 0, 12000, None),
+    ("2581", "Khamisi Kalume", "M", 19500, 0, None),
+    ("2570", "Kibibi Wanje Nyale", "F", 19000, 0, None),
+    ("2715", "Luqman Mohammed", "M", 0, 4500, None),
+    ("2516", "Mariam Athman Haj", "F", 37500, 0, None),
+    ("2576", "Matano Shedrack L", "M", 23500, 0, None),
+    ("2631", "Michael Runya Mwa", "M", 15000, 0, None),
+    ("2556", "Mwanyika Daudi Mt", "M", 22800, 2000, None),
+    ("2535", "Philip Mwangangi M", "M", 5500, 2400, None),
+    ("2707", "Prosper Malakai", "M", 30500, 0, None),
+    ("2612", "Samson Kithi Kenga", "M", 28500, 0, None),
+    ("2672", "Sharon Tenga Mwai", "F", 500, 5000, None),
+    ("2686", "Silas William", "M", 24500, 0, None),
+    ("2621", "Slyvia Kavata Fred", "F", 39500, 0, None),
+    ("2586", "Sophia Mnyazi Kalu", "F", 7000, 7000, None),
+    ("2720", "Muramba Bakari Mu", "M", 0, 3000, None),
+    ("2721", "Sheban Swalehe", "M", 3000, 0, None),
+    ("2728", "Nelson Shiundu", "M", 12500, 0, None),
+    ("2741", "Rashid Mwawiri", "M", 33500, 0, None),
+    ("2348", "Abdulhakim Kahind", "M", 6000, 0, None),
+    (None, "Risper Kadzo", "F", 8500, 0, None),
+    # KNOWN CLASH with 2742 (Nancy Mukami, Form 4 Blue). Replace
+    # "2742-TEMP" with Gerald's real number once checked, then re-run.
+    ("2742-TEMP", "Gerald Mganga", "M", 0, 3500, None),
+    ("2748", "Ahmed Dolal Nurie", "M", 0, 0, None),
+    ("2752", "Delvine Beja", "F", 10000, 0, None),
+    (None, "Yasir Rama", "M", 29000, 0, None),
+    ("2760", "Hamisi Mleka", "M", 25500, 0, None),
+    ("2763", "Meshack Kemoli", "M", 16700, 0, None),
+    ("2768", "Hussein Amir", "M", 7500, 10000, None),
+    ("2770", "Sandlinos Were", "M", 16200, 500, None),
+    ("2674", "Emmanuel Kitsao", "M", 24500, 4000, None),
+    ("2775", "Sammir Jaffar", "M", 7000, 0, None),
+    ("2777", "Ashline Kirongo", "F", 17000, 15000, None),
+    ("2636", "Baraka Kithi Chang", "M", 30100, 0, None),
+    ("2782", "Rashid Safari Kahin", "M", 21000, 0, None),
+    ("2783", "Abdallah Kea", "M", 23000, 0, None),
+    ("2787", "Lucy Katana", "F", 22500, 0, None),
+    ("2788", "Tony Gitau Peter", "M", 2500, 4000, None),
+    ("2790", "Leah Naomi", "F", 7200, 3000, None),
+    ("2792", "Catrina Ogal", "F", 500, 0, None),
+    ("2794", "Adam Athman Sheik", "M", 2000, 7000, None),
+    ("2796", "Chengo William", "M", 0, 3500, None),
+    ("2798", "Francis Mwajasi", "M", 0, 5000, None),
 ]
+
+FORM_THREE_BLUE = [
+    ("2695", "Sandra Odama Rachael", "F", 0, 10000, None),
+    ("2697", "Abdulkadir Musa Ali", "M", 0, 5000, None),
+    ("2523", "Alex Kazungu Katana", "M", 0, 4000, None),
+    ("2670", "Amos Gona Paul", "M", 8000, 5000, None),
+    ("2494", "Andrew Juma Nzovu", "M", 10500, 2500, None),
+    ("2622", "Athman Sifa Khamisi", "M", 500, 5500, None),
+    ("2501", "Ayub Mwang'ombe Athi", "M", 10400, 0, None),
+    ("2691", "Barak Obama", "M", 15000, 15000, None),
+    ("2525", "Binti-Ali Zeinab Mgaza", "F", 7800, 5000, None),
+    ("2599", "Brian Kazungu Katana", "M", 25500, 0, None),
+    ("2711", "Christopher Ghert", "M", 7500, 0, None),
+    ("2629", "Christopher Okwinami", "M", 45000, 0, None),
+    ("2673", "Cornelius Kioko", "M", 19000, 5000, None),
+    ("2623", "Denroy Karisa Mwero", "M", 41200, 0, None),
+    ("2682", "Ellis Mwavita Mwango", "M", 41000, 0, None),
+    ("2713", "Enock Ombeki", "M", 30800, 0, None),
+    ("2566", "Faridh Baraka", "M", 12000, 0, None),
+    ("2493", "Haji Mpemba Salimu", "M", 2000, 4000, None),
+    ("2518", "Hamisi Katana Rajab", "M", 16500, 0, None),
+    ("2539", "Kimanzi Mutsisya", "M", 19200, 0, None),
+    ("2653", "Lina Zawadi", "F", 8500, 3000, None),
+    ("2499", "Muthoki Faith Mwonge", "F", 12500, 0, None),
+    ("2701", "Mwanajuma Adam", "F", 3000, 8000, None),
+    ("2600", "Peter Nyawa Kachonjo", "M", 15500, 4000, None),
+    ("2489", "Regina Wairimu Kimoth", "F", 11950, 2000, None),
+    ("2590", "Rooney Mainga Ojuka", "M", 36700, 0, None),
+    ("2652", "Sidi Safari", "M", 22000, 5000, None),
+    ("2534", "Umi Hassan", "F", 0, 12500, None),
+    ("2727", "Ramadhan Hassan", "M", 17500, 0, None),
+    ("2729", "Wilson Nyule Samini", "M", 34000, 0, None),
+    ("2734", "Sarafina Sapur", "F", 29500, 0, None),
+    ("2736", "Purity Neema Kazungu", "F", 10500, 9500, None),
+    ("2738", "Sheban Amani", "M", 6500, 5000, None),
+    ("2739", "Peter Nicholas", "M", 500, 5500, None),
+    ("2749", "Douglas Zata Mwasi", "M", 29000, 0, None),
+    ("2751", "Moses Fondo", "M", 18500, 2000, None),
+    ("2750", "Shantel Asachi", "F", 22700, 0, None),
+    ("2753", "Mustafa Matano", "M", 22500, 0, None),
+    ("2754", "Mark Ryan", "M", 12500, 15000, None),
+    ("2755", "Job Rheinard", "M", 23000, 0, None),
+    ("2756", "Ibramovic Mkilo", "M", 13000, 0, None),
+    ("2761", "Abdalla Mwajabuni", "M", 27500, 0, None),
+    ("2766", "Max Charo", "M", 8700, 3000, None),
+    ("2772", "Onesmus Ngome Katana", "M", 10000, 16000, None),
+    ("2651", "Brian Joshua Mandala", "M", 9500, 0, None),
+    ("2776", "Julius Charo", "M", 24000, 8000, None),
+    ("2778", "Gibson Mwangata", "M", 8000, 4500, None),
+    ("2559", "Omar Ngala", "M", 34500, 0, None),
+    ("2594", "Leah Ali", "F", 20000, 0, None),
+    ("2784", "Abdi Amwayi", "M", 18000, 0, None),
+    ("2786", "Linah Katana", "F", 22500, 0, None),
+    ("2789", "Antony Thoya Salim", "M", 4000, 2000, None),
+    ("2793", "Moses Mae Wilfonce", "M", 7500, 0, None),
+    ("2795", "Abdillahi Ali Khamisi", "M", 0, 3000, None),
+    ("2797", "Mohammed Kea Ali", "M", 0, 4000, None),
+]
+
+
+def _split_name(full_name):
+    parts = full_name.strip().split(None, 1)
+    return (parts[0], parts[0]) if len(parts) == 1 else (parts[0], parts[1])
+
+
+def _rows_for(entries, grade, stream):
+    rows = []
+    for adm, full_name, gender, bal_term2, pay, fee_override in entries:
+        first, last = _split_name(full_name)
+        rows.append({
+            "first_name": first,
+            "last_name": last,
+            "gender": gender,
+            "grade": grade,
+            "stream": stream,
+            "admission_no": adm,
+            "bal_term2": Decimal(bal_term2),
+            "pay": Decimal(pay),
+            "fee_override": Decimal(fee_override) if fee_override is not None else None,
+        })
+    return rows
+
+
+STUDENTS = (
+    _rows_for(FORM_FOUR_RED, "Form 4", "Red")
+    + _rows_for(FORM_FOUR_BLUE, "Form 4", "Blue")
+    + _rows_for(FORM_THREE_RED, "Form 3", "Red")
+    + _rows_for(FORM_THREE_BLUE, "Form 3", "Blue")
+)
 
 
 class Command(BaseCommand):
-    help = "Seed initial data: school, Form 3/4 (8-4-4), subjects, users, students, fees, licences."
+    help = "Seed Junda High School Shanzu's base setup + REAL 2026 Term 3 fee data, payments and roster."
 
-    def add_arguments(self, parser):
-        parser.add_argument(
-            "--seed", type=int, default=2026,
-            help="Random seed for generated names/subject choices (same seed = same data).",
-        )
-
-    # ------------------------------------------------------------------
     @transaction.atomic
     def handle(self, *args, **options):
-        self.rng = random.Random(options["seed"])
-        # Hash once and reuse - hashing 150 passwords individually would take ages.
         self.pw_hash = make_password(DEFAULT_PASSWORD)
-        self._used_national_ids = set()
-        self._used_phones = set()
         self.counts = {}
 
-        self.stdout.write(self.style.MIGRATE_HEADING("Seeding school data..."))
-
+        self.stdout.write(self.style.MIGRATE_HEADING("Base setup"))
         school = self._seed_school()
         admins = self._seed_admins()
-        teachers = self._seed_teachers()
-        year, term = self._seed_calendar()
-        streams = self._seed_streams()
-        grades = self._seed_grade_levels()
-        classrooms = self._seed_classrooms(grades, streams, year, teachers)
-        subjects = self._seed_subjects(grades)
+        self.admin = admins[0]
+        self.streams = self._seed_streams()
+        self.grades = self._seed_grade_levels()
+        self._seed_subjects()
         self._seed_exam_types()
         self._seed_grading()
-        self._seed_fees(grades, term)
-        self._seed_students(year, grades, streams, classrooms, subjects)
         self._seed_packages()
         self._seed_license(school, admins[0])
         self._seed_expense_categories()
 
+        self.stdout.write(self.style.MIGRATE_HEADING("2026 calendar only"))
+        self.terms = self._seed_calendar()
+
+        self.stdout.write(self.style.MIGRATE_HEADING("2026 classrooms (Form 3 / Form 4 only)"))
+        self.classrooms = self._seed_classrooms()
+
+        self.stdout.write(self.style.MIGRATE_HEADING("Term 3 2026 fee structures"))
+        self.fee_structures = self._seed_fee_structures()
+
+        self.stdout.write(self.style.MIGRATE_HEADING(
+            f"Admitting {len(STUDENTS)} student(s) + Term 3 2026 invoice + M-Pesa payment"
+        ))
+        seq_by_prefix = {}
+        self.seeded_admission_nos = []
+        for row in STUDENTS:
+            self._process_student(row, seq_by_prefix)
+
+        self._verify_money()
         self._print_summary()
 
-    # ------------------------------------------------------------------
-    # helpers
     # ------------------------------------------------------------------
     def _bump(self, key, created):
         if created:
             self.counts[key] = self.counts.get(key, 0) + 1
 
-    def _national_id(self):
-        while True:
-            nid = str(self.rng.randint(20000000, 39999999))
-            if nid not in self._used_national_ids:
-                self._used_national_ids.add(nid)
-                return nid
-
-    def _phone(self):
-        while True:
-            phone = "+2547" + "".join(self.rng.choices(string.digits, k=8))
-            if phone not in self._used_phones:
-                self._used_phones.add(phone)
-                return phone
-
-    def _make_user(self, username, role, first, last, **extra):
-        user, created = User.objects.get_or_create(
-            username=username,
-            defaults=dict(
-                role=role, first_name=first, last_name=last,
-                password=self.pw_hash, **extra,
-            ),
-        )
-        self._bump(f"users:{role}", created)
-        return user, created
-
-    # ------------------------------------------------------------------
-    # 1. school
-    # ------------------------------------------------------------------
     def _seed_school(self):
         school, created = School.objects.get_or_create(
-            name=SCHOOL["name"],
-            defaults={k: v for k, v in SCHOOL.items() if k != "name"},
+            name=SCHOOL["name"], defaults={k: v for k, v in SCHOOL.items() if k != "name"},
         )
         self._bump("school", created)
         return school
 
-    # ------------------------------------------------------------------
-    # 2. staff users
-    # ------------------------------------------------------------------
     def _seed_admins(self):
         admins = []
         for username, first, last, is_super in ADMINS:
-            user, _ = self._make_user(
-                username, User.Role.ADMIN, first, last,
-                email=f"{username}@example.com",
-                phone_number=self._phone(),
-                national_id=self._national_id(),
-                is_super_admin=is_super,
+            user, created = User.objects.get_or_create(
+                username=username,
+                defaults=dict(
+                    role=User.Role.ADMIN, first_name=first, last_name=last,
+                    password=self.pw_hash, is_super_admin=is_super,
+                ),
             )
+            self._bump("users:ADMIN", created)
             admins.append(user)
         return admins
 
-    def _seed_teachers(self):
-        teachers = []
-        for i, (first, last) in enumerate(TEACHERS, start=1):
-            username = f"teacher{i}"
-            user, _ = self._make_user(
-                username, User.Role.TEACHER, first, last,
-                email=f"{username}@example.com",
-                phone_number=self._phone(),
-                national_id=self._national_id(),
-            )
-            teachers.append(user)
-        return teachers
-
-    # ------------------------------------------------------------------
-    # 3. calendar
-    # ------------------------------------------------------------------
-    def _seed_calendar(self):
-        year, y_created = AcademicYear.objects.update_or_create(
-            year=ACADEMIC_YEAR,
-            defaults={"start_date": YEAR_START, "end_date": YEAR_END, "is_current": True},
-        )
-        term, t_created = Term.objects.update_or_create(
-            academic_year=year, term_number=1,
-            defaults={"start_date": TERM1_START, "end_date": TERM1_END, "is_current": True},
-        )
-        self._bump("academic year", y_created)
-        self._bump("term", t_created)
-        return year, term
-
-    # ------------------------------------------------------------------
-    # 4. streams, grades, classrooms
-    # ------------------------------------------------------------------
     def _seed_streams(self):
         streams = {}
         for name in STREAMS:
@@ -380,7 +532,6 @@ class Command(BaseCommand):
 
     def _seed_grade_levels(self):
         grades = {}
-        # create the higher form first so Form 3 can point at it
         for form in sorted(FORMS, key=lambda f: -f["order"]):
             next_grade = None
             for other in FORMS:
@@ -391,35 +542,16 @@ class Command(BaseCommand):
                 defaults={
                     "education_level": GradeLevel.EducationLevel.LEGACY_SECONDARY,
                     "level_order": form["order"],
-                    "next_grade": next_grade,   # Form 4 -> None (graduating class)
+                    "next_grade": next_grade,
                 },
             )
             grades[form["name"]] = grade
             self._bump("grade levels", created)
         return grades
 
-    def _seed_classrooms(self, grades, streams, year, teachers):
-        classrooms = {}
-        idx = 0
-        for form in FORMS:
-            for stream_name in STREAMS:
-                classroom, created = ClassRoom.objects.get_or_create(
-                    grade_level=grades[form["name"]],
-                    stream=streams[stream_name],
-                    academic_year=year,
-                    defaults={"class_teacher": teachers[idx % len(teachers)]},
-                )
-                classrooms[(form["name"], stream_name)] = classroom
-                self._bump("classrooms", created)
-                idx += 1
-        return classrooms
-
-    # ------------------------------------------------------------------
-    # 5. subjects, papers, grade subjects, selection rule
-    # ------------------------------------------------------------------
-    def _seed_subjects(self, grades):
+    def _seed_subjects(self):
         subjects = {}
-        for name, code, compulsory, papers in SUBJECTS:
+        for name, code, _group, compulsory, papers in SUBJECTS:
             subject, created = Subject.objects.update_or_create(
                 code=code, curriculum_type=CurriculumType.LEGACY_844,
                 defaults={"name": name, "has_papers": bool(papers)},
@@ -434,32 +566,26 @@ class Command(BaseCommand):
                 )
                 self._bump("subject papers", p_created)
 
-            for grade in grades.values():
+            for grade in self.grades.values():
                 _, g_created = GradeSubject.objects.update_or_create(
-                    grade_level=grade, subject=subject,
-                    defaults={"is_compulsory": compulsory},
+                    grade_level=grade, subject=subject, defaults={"is_compulsory": compulsory},
                 )
                 self._bump("grade subjects", g_created)
 
-        for grade in grades.values():
+        for grade in self.grades.values():
             _, created = SubjectSelectionRule.objects.update_or_create(
-                grade_level=grade,
-                defaults={"requires_pathway": False, **SELECTION_RULE},
+                grade_level=grade, defaults={"requires_pathway": False, **SELECTION_RULE},
             )
             self._bump("selection rules", created)
         return subjects
 
-    # ------------------------------------------------------------------
-    # 6. exam types, grading, fees
-    # ------------------------------------------------------------------
     def _seed_exam_types(self):
         for name, weight, order, mid, end in EXAM_TYPES:
             _, created = ExamType.objects.update_or_create(
                 name=name,
                 defaults={
                     "weight": weight, "order": order,
-                    "counts_towards_midterm_rank": mid,
-                    "counts_towards_endterm_rank": end,
+                    "counts_towards_midterm_rank": mid, "counts_towards_endterm_rank": end,
                 },
             )
             self._bump("exam types", created)
@@ -475,124 +601,62 @@ class Command(BaseCommand):
             )
             self._bump("grading scales", created)
 
-    def _seed_fees(self, grades, term):
-        for form_name, items in FEES.items():
-            total = sum(Decimal(str(amount)) for _, amount in items)
+    def _seed_calendar(self):
+        terms = {}
+        for year_no, term_no, start, end, is_current in CALENDAR_2026:
+            year, y_created = AcademicYear.objects.update_or_create(
+                year=year_no,
+                defaults={"start_date": date(year_no, 1, 1), "end_date": date(year_no, 12, 31), "is_current": False},
+            )
+            self._bump("academic years", y_created)
+            term, t_created = Term.objects.update_or_create(
+                academic_year=year, term_number=term_no,
+                defaults={"start_date": start, "end_date": end, "is_current": is_current},
+            )
+            terms[(year_no, term_no)] = term
+            self._bump("terms", t_created)
+            if is_current:
+                AcademicYear.objects.filter(pk=year.pk).update(is_current=True)
+                AcademicYear.objects.exclude(pk=year.pk).update(is_current=False)
+
+        for year_no in {c[0] for c in CALENDAR_2026}:
+            year_terms = [t for (y, _), t in terms.items() if y == year_no]
+            AcademicYear.objects.filter(year=year_no).update(
+                start_date=min(t.start_date for t in year_terms),
+                end_date=max(t.end_date for t in year_terms),
+            )
+        return terms
+
+    def _seed_classrooms(self):
+        classrooms = {}
+        year = AcademicYear.objects.get(year=2026)
+        for grade_name, _admit_date, _prefix in CURRENT_CLASSES:
+            grade = self.grades[grade_name]
+            for stream_name in STREAMS:
+                classroom, created = ClassRoom.objects.get_or_create(
+                    grade_level=grade, stream=self.streams[stream_name], academic_year=year,
+                )
+                classrooms[(grade_name, stream_name)] = classroom
+                self._bump("classrooms", created)
+        return classrooms
+
+    def _seed_fee_structures(self):
+        structures = {}
+        term3 = self.terms[(2026, 3)]
+        for grade_name, items in TERM3_2026_FEE.items():
+            total = sum((Decimal(str(amount)) for _, amount in items), Decimal("0"))
             structure, created = FeeStructure.objects.update_or_create(
-                grade_level=grades[form_name], term=term,
-                defaults={"total_amount": total},
+                grade_level=self.grades[grade_name], term=term3, defaults={"total_amount": total},
             )
             structure.items.all().delete()
             FeeStructureItem.objects.bulk_create(
-                FeeStructureItem(fee_structure=structure, name=n, amount=Decimal(str(a)))
-                for n, a in items
+                FeeStructureItem(fee_structure=structure, name=name, amount=Decimal(str(amount)))
+                for name, amount in items
             )
+            structures[grade_name] = structure
             self._bump("fee structures", created)
+        return structures
 
-    # ------------------------------------------------------------------
-    # 7. students + parents + enrollments + subject selections
-    # ------------------------------------------------------------------
-    def _pick_electives(self):
-        """3-4 electives: >=1 of Biology/Physics, >=1 humanity, rest random. Never CRE+IRE."""
-        rng = self.rng
-        science = rng.choices(SCIENCE_ELECTIVES, weights=[65, 35])[0]
-        humanity = rng.choice(HUMANITY_ELECTIVES)
-        chosen = [science, humanity]
-
-        all_electives = [c for _, c, compulsory, _ in SUBJECTS if not compulsory]
-        pool = [c for c in all_electives if c not in chosen]
-        target = rng.randint(3, 4)
-        while len(chosen) < target and pool:
-            code = rng.choice(pool)
-            pool.remove(code)
-            if CONFLICTING.get(code) in chosen or CONFLICTING.get(humanity) == code:
-                continue
-            chosen.append(code)
-        return chosen
-
-    def _random_person(self, gender, surname):
-        first = self.rng.choice(MALE_NAMES if gender == "M" else FEMALE_NAMES)
-        return first, surname
-
-    def _seed_students(self, year, grades, streams, classrooms, subjects):
-        rng = self.rng
-        compulsory_codes = [c for _, c, compulsory, _ in SUBJECTS if compulsory]
-
-        for form in FORMS:
-            yy = form["admit_year"] % 100
-            seq = 0
-            for stream_name in STREAMS:
-                classroom = classrooms[(form["name"], stream_name)]
-                for _ in range(rng.randint(19, 24)):
-                    seq += 1
-                    admission_no = f"{yy}{seq:03d}"
-                    gender = rng.choice(["M", "F"])
-                    surname = rng.choice(SURNAMES)
-                    first, last = self._random_person(gender, surname)
-                    dob = date(form["dob_year"], 1, 1) + timedelta(days=rng.randint(0, 729))
-                    upi = "".join(rng.choices(string.ascii_uppercase + string.digits, k=8))
-                    electives = self._pick_electives()
-
-                    # ---- student ----
-                    user, _ = self._make_user(
-                        admission_no, User.Role.STUDENT, first, last,
-                    )
-                    profile, p_created = StudentProfile.objects.get_or_create(
-                        user=user,
-                        defaults={
-                            "admission_no": admission_no,
-                            "gender": gender,
-                            "date_of_birth": dob,
-                            "curriculum_type": CurriculumType.LEGACY_844,
-                            "date_admitted": date(form["admit_year"], 1, 15),
-                            "upi_number": upi,
-                        },
-                    )
-                    self._bump("student profiles", p_created)
-
-                    # ---- enrollment (+ subject selection when first created) ----
-                    enrollment, e_created = Enrollment.objects.get_or_create(
-                        student=profile, academic_year=year,
-                        defaults={"classroom": classroom, "status": Enrollment.Status.ACTIVE},
-                    )
-                    self._bump("enrollments", e_created)
-                    if e_created:
-                        StudentSubjectSelection.objects.bulk_create(
-                            [
-                                StudentSubjectSelection(enrollment=enrollment, subject=subjects[c])
-                                for c in compulsory_codes + electives
-                            ],
-                            ignore_conflicts=True,
-                        )
-
-                    # ---- parents (always a primary guardian, ~40% also a second one) ----
-                    primary_rel = rng.choice(["MOTHER", "FATHER"])
-                    self._seed_parent(admission_no, "", primary_rel, surname, profile)
-                    if rng.random() < 0.4:
-                        second_rel = "FATHER" if primary_rel == "MOTHER" else "MOTHER"
-                        self._seed_parent(admission_no, "b", second_rel, surname, profile)
-
-    def _seed_parent(self, admission_no, suffix, relationship, surname, student_profile):
-        gender = "F" if relationship == "MOTHER" else "M"
-        first, last = self._random_person(gender, surname)
-        username = f"parent{admission_no}{suffix}"
-        user, _ = self._make_user(
-            username, User.Role.PARENT, first, last,
-            email=f"{username}@example.com",
-            phone_number=self._phone(),
-            national_id=self._national_id(),
-        )
-        parent, p_created = ParentGuardianProfile.objects.get_or_create(user=user)
-        self._bump("parent profiles", p_created)
-        _, l_created = ParentStudentLink.objects.get_or_create(
-            parent=parent, student=student_profile,
-            defaults={"relationship": relationship},
-        )
-        self._bump("parent-student links", l_created)
-
-    # ------------------------------------------------------------------
-    # 8. licensing
-    # ------------------------------------------------------------------
     def _seed_packages(self):
         for tier, (price, order, features) in PACKAGES.items():
             limits = PLAN_DEFAULTS[tier]
@@ -611,16 +675,9 @@ class Command(BaseCommand):
             self._bump("subscription packages", created)
 
     def _seed_license(self, school, admin):
-        """
-        Seeds the school on the GO tier (300 students / 15 classes / 20 teachers) because the
-        seeded data (~90 students, 4 classes, 10 teachers) would already exceed the TRIAL limits.
-        """
         if License.objects.filter(school=school).exists():
             return
-        lic = License(
-            school=school, tier=PlanTier.GO,
-            valid_until=timezone.now() + timedelta(days=365),
-        )
+        lic = License(school=school, tier=PlanTier.GO, valid_until=timezone.now() + timedelta(days=365))
         lic.apply_tier_defaults()
         lic.save()
         LicenseAuditLog.objects.create(
@@ -629,9 +686,6 @@ class Command(BaseCommand):
         )
         self._bump("licenses", True)
 
-    # ------------------------------------------------------------------
-    # 9. expense categories
-    # ------------------------------------------------------------------
     def _seed_expense_categories(self):
         for name, code in EXPENSE_CATEGORIES:
             _, created = ExpenseCategory.objects.update_or_create(
@@ -640,6 +694,120 @@ class Command(BaseCommand):
             self._bump("expense categories", created)
 
     # ------------------------------------------------------------------
+    # STUDENTS, INVOICES, PAYMENTS
+    # ------------------------------------------------------------------
+    def _next_admission_no(self, prefix, seq_by_prefix):
+        seq_by_prefix[prefix] = seq_by_prefix.get(prefix, 0) + 1
+        return f"{prefix}{seq_by_prefix[prefix]:03d}"
+
+    def _process_student(self, row, seq_by_prefix):
+        grade_name = row["grade"]
+        stream_name = row["stream"]
+        if stream_name not in STREAMS:
+            raise CommandError(f"Unknown stream {stream_name!r}")
+
+        admit_date, prefix = next((d, p) for g, d, p in CURRENT_CLASSES if g == grade_name)
+        admission_no = (row.get("admission_no") or "").strip()
+        if not admission_no:
+            admission_no = self._next_admission_no(prefix, seq_by_prefix)
+        self.seeded_admission_nos.append(admission_no)
+
+        user, u_created = User.objects.get_or_create(
+            username=admission_no,
+            defaults=dict(
+                role=User.Role.STUDENT, first_name=row["first_name"],
+                last_name=row["last_name"], password=self.pw_hash,
+            ),
+        )
+        self._bump("users:STUDENT", u_created)
+
+        profile, p_created = StudentProfile.objects.update_or_create(
+            user=user,
+            defaults={
+                "admission_no": admission_no,
+                "gender": row["gender"],
+                "curriculum_type": CurriculumType.LEGACY_844,
+                "date_admitted": admit_date,
+                "is_active": True,
+            },
+        )
+        self._bump("student profiles", p_created)
+
+        classroom = self.classrooms[(grade_name, stream_name)]
+        enrollment, e_created = Enrollment.objects.update_or_create(
+            student=profile, academic_year=classroom.academic_year,
+            defaults={"classroom": classroom, "status": Enrollment.Status.ACTIVE},
+        )
+        self._bump("enrollments", e_created)
+
+        structure = self.fee_structures[grade_name]
+        term_fee = row["fee_override"] if row["fee_override"] is not None else structure.total_amount
+        brought_forward = row["bal_term2"]
+        amount_due = brought_forward + term_fee
+
+        # amount_paid is deliberately NOT in defaults: it is always synced
+        # from the Payment rows below, never overwritten from the report.
+        invoice, i_created = Invoice.objects.update_or_create(
+            enrollment=enrollment, fee_structure=structure,
+            defaults={"brought_forward": brought_forward, "amount_due": amount_due},
+        )
+        self._bump("invoices", i_created)
+
+        self._seed_payment(invoice, admission_no, row["pay"])
+
+    def _seed_payment(self, invoice, admission_no, pay):
+        """
+        ONE M-Pesa payment row = the student's 'Pay' figure from the report.
+        Then invoice.amount_paid is re-derived as the sum of ALL the
+        invoice's payments (seeded + anything Finance recorded later).
+        """
+        reference = f"SEED-{admission_no}"
+        paid_at = timezone.make_aware(datetime.combine(REPORT_DATE, time(12, 0)))
+        existing = Payment.objects.filter(invoice=invoice, reference=reference).first()
+
+        if pay <= 0:
+            if existing:
+                existing.delete()
+        elif existing:
+            existing.amount = pay
+            existing.method = Payment.Method.MPESA
+            existing.paid_at = paid_at
+            existing.save(update_fields=["amount", "method", "paid_at"])
+        else:
+            Payment.objects.create(
+                invoice=invoice, amount=pay, method=Payment.Method.MPESA,
+                reference=reference, recorded_by=self.admin,
+                receipt_no=services.generate_receipt_no(), paid_at=paid_at,
+            )
+            self._bump("payments", True)
+
+        total_paid = invoice.payments.aggregate(t=Sum("amount"))["t"] or Decimal("0")
+        if invoice.amount_paid != total_paid:
+            invoice.amount_paid = total_paid
+            invoice.save(update_fields=["amount_paid"])
+
+    # ------------------------------------------------------------------
+    # VERIFICATION + SUMMARY
+    # ------------------------------------------------------------------
+    def _verify_money(self):
+        """Fail loudly if Payment rows and invoices ever disagree, and print the totals every page should show."""
+        invoices = Invoice.objects.filter(enrollment__student__admission_no__in=self.seeded_admission_nos)
+        mismatches = 0
+        for inv in invoices.prefetch_related("payments"):
+            paid = sum((p.amount for p in inv.payments.all()), Decimal("0"))
+            if paid != inv.amount_paid:
+                mismatches += 1
+        if mismatches:
+            raise CommandError(f"{mismatches} invoice(s) have amount_paid != sum of their payments.")
+
+        ids = list(StudentProfile.objects.filter(
+            admission_no__in=self.seeded_admission_nos
+        ).values_list("id", flat=True))
+        ledger = services.get_ledger_totals_bulk(ids)
+        self.total_billed = sum((t["opening"] + t["charged"] for t in ledger.values()), Decimal("0"))
+        self.total_paid = sum((t["paid"] for t in ledger.values()), Decimal("0"))
+        self.total_balance = sum((t["balance"] for t in ledger.values()), Decimal("0"))
+
     def _print_summary(self):
         self.stdout.write(self.style.SUCCESS("\nDone. Newly created rows:"))
         if not self.counts:
@@ -647,14 +815,17 @@ class Command(BaseCommand):
         for key, n in sorted(self.counts.items()):
             self.stdout.write(f"  {key:<24} {n}")
 
-        first_form3 = StudentProfile.objects.filter(admission_no__startswith="24").order_by("admission_no").first()
-        first_form4 = StudentProfile.objects.filter(admission_no__startswith="23").order_by("admission_no").first()
-        self.stdout.write(self.style.MIGRATE_HEADING(f"\nLogins (password for ALL users: {DEFAULT_PASSWORD})"))
-        self.stdout.write("  Admins   : admin1 (super admin), admin2")
-        self.stdout.write("  Teachers : teacher1 ... teacher10")
-        if first_form3:
-            self.stdout.write(f"  Student  : {first_form3.admission_no} (Form 3 example)")
-        if first_form4:
-            self.stdout.write(f"  Student  : {first_form4.admission_no} (Form 4 example)")
-        if first_form3:
-            self.stdout.write(f"  Parent   : parent{first_form3.admission_no}")
+        self.stdout.write(self.style.MIGRATE_HEADING("\nMoney check (must match every finance page)"))
+        self.stdout.write(f"  Students seeded      {len(self.seeded_admission_nos)}")
+        self.stdout.write(f"  Total billed         KES {self.total_billed:,.2f}")
+        self.stdout.write(f"  Total paid           KES {self.total_paid:,.2f}")
+        self.stdout.write(f"  Total outstanding    KES {self.total_balance:,.2f}")
+
+        self.stdout.write(self.style.WARNING(
+            "\nREMINDER: 'Gerald Mganga' is on placeholder admission no. "
+            "'2742-TEMP' due to a clash with Nancy Mukami's real 2742 - fix "
+            "once you check the register."
+        ))
+        self.stdout.write(self.style.MIGRATE_HEADING(
+            f"\nLogin (password for every seeded account): {DEFAULT_PASSWORD}"
+        ))

@@ -35,7 +35,7 @@ export default function ForgotPassword() {
           <form onSubmit={handleSubmit}>
             <div className="mb-3">
               <label className="form-label" style={{ fontWeight: 600 }}>Admission Number</label>
-              <input className="form-control" value={admissionNo} maxLength={30} onChange={(e) => setAdmissionNo(e.target.value)} required placeholder="e.g., ADM-2024-001" />
+              <input className="form-control" value={admissionNo} maxLength={30} onChange={(e) => setAdmissionNo(e.target.value)} required placeholder="e.g.  11871" />
             </div>
             <button className="btn btn-primary w-100" type="submit" disabled={submitting}>
               {submitting ? "Sending..." : "Send Reset Link"}

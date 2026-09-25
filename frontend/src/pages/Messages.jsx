@@ -3,7 +3,7 @@ import { messagingApi } from "../services/api";
 import { useAuth } from "../hooks/useAuth";
 import Breadcrumb from "../components/Breadcrumb";
 
-const STAFF_ROLES = ["ADMIN", "TEACHER", "FINANCE"];
+const STAFF_ROLES = ["ADMIN", "TEACHER", "FINANCE", "PRINCIPAL", "SECRETARY"];
 
 const ROLE_BADGE = {
   STUDENT: "badge-blue",

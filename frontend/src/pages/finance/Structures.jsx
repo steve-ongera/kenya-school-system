@@ -236,7 +236,7 @@ export default function FinanceStructures() {
 
     const base64Logo = await getImageBase64(logoImage);
 
-    const schoolName = school?.name || "Junda High School";
+    const schoolName = school?.name || "Junda High School Shanzu";
     const generatedOn = new Date().toLocaleDateString("en-KE", {
       year: "numeric", month: "long", day: "numeric",
     });

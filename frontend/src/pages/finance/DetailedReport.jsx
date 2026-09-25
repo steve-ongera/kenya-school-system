@@ -273,7 +273,7 @@ export default function FinanceDetailedReport() {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(14);
       doc.setTextColor(15, 23, 42);
-      doc.text("Junda High School", base64Logo ? 28 : 12, 16);
+      doc.text("Junda High School Shanzu", base64Logo ? 28 : 12, 16);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(10);
@@ -400,7 +400,7 @@ export default function FinanceDetailedReport() {
             pageHeight - 6,
             { align: "right" }
           );
-          doc.text("Junda High School — Finance Department", 12, pageHeight - 6);
+          doc.text("Junda High School Shanzu — Finance Department", 12, pageHeight - 6);
         },
       });
 
@@ -480,7 +480,7 @@ export default function FinanceDetailedReport() {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(14);
       doc.setTextColor(15, 23, 42);
-      doc.text("Junda High School", base64Logo ? 28 : 12, 16);
+      doc.text("Junda High School Shanzu", base64Logo ? 28 : 12, 16);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(10);
@@ -607,7 +607,7 @@ export default function FinanceDetailedReport() {
             pageHeight - 6,
             { align: "right" }
           );
-          doc.text("Junda High School — Finance Department", 12, pageHeight - 6);
+          doc.text("Junda High School Shanzu — Finance Department", 12, pageHeight - 6);
         },
       });
 
@@ -633,7 +633,7 @@ export default function FinanceDetailedReport() {
 
     const base64Logo = await getImageBase64(logoImage);
     const logoTag = base64Logo
-      ? `<img src="${base64Logo}" alt="Junda High School" class="logo" />`
+      ? `<img src="${base64Logo}" alt="Junda High School Shanzu" class="logo" />`
       : "";
 
     const statusClass =
@@ -735,7 +735,7 @@ export default function FinanceDetailedReport() {
             <div class="header-left">
               ${logoTag}
               <div>
-                <p class="school-name">Junda High School</p>
+                <p class="school-name">Junda High School Shanzu</p>
                 <p class="subtitle">Student Fee Balance Statement</p>
               </div>
             </div>
@@ -777,7 +777,7 @@ export default function FinanceDetailedReport() {
           </div>
 
           <div class="footer">
-            <span>Junda High School — Finance Department</span>
+            <span>Junda High School Shanzu — Finance Department</span>
             <span>Official fee balance statement</span>
           </div>
         </body>

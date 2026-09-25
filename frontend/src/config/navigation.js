@@ -42,7 +42,7 @@ export const NAV_BY_ROLE = {
         { to: "/admin/verify-receipt", icon: "bi-qr-code-scan", label: "Verify Receipt" },
         { to: "/admin/finance-reports/collections", icon: "bi-graph-up-arrow", label: "Collections Report" },
         { to: "/admin/finance-reports/class-analysis", icon: "bi-bar-chart-steps", label: "Class Analysis" },
-        { to: "/admin/finance-reports/detailed", icon: "bi-table", label: "Detailed Report" },
+        { to: "/admin/finance-reports/detailed", icon: "bi-table", label: "Student Balance & Reports" },
       ],
     },
     {
@@ -67,6 +67,117 @@ export const NAV_BY_ROLE = {
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
         { to: "/admin/license", icon: "bi-key-fill", label: "License" },
+        { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
+        { to: "/contact-developer", icon: "bi-headset", label: "Contact Developer" },
+      ],
+    },
+  ],
+
+  // -----------------------------------------------------------------
+  // PRINCIPAL — oversight role: academics, staffing, results, reports.
+  // Reuses the same page components as ADMIN (via /principal/* routes
+  // in App.jsx) rather than duplicating pages — the Principal just gets
+  // a narrower, read/oversight-leaning slice of the same tools.
+  // -----------------------------------------------------------------
+  PRINCIPAL: [
+    {
+      items: [
+        { to: "/principal", icon: "bi-speedometer2", label: "Dashboard" },
+        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
+        { to: "/notifications", icon: "bi-bell", label: "Notifications" },
+      ],
+    },
+    {
+      label: "Academics",
+      items: [
+        { to: "/principal/classrooms", icon: "bi-door-open", label: "Classes & Streams" },
+        { to: "/principal/exams", icon: "bi-pencil-square", label: "Exams" },
+        { to: "/principal/rankings", icon: "bi-bar-chart-line", label: "Rankings" },
+        { to: "/principal/promotions", icon: "bi-arrow-up-circle", label: "Promotions" },
+        { to: "/principal/clearance", icon: "bi-patch-check", label: "Student Clearance" },
+      ],
+    },
+    {
+      label: "People",
+      items: [
+        { to: "/principal/students", icon: "bi-people", label: "Students" },
+        { to: "/principal/teachers", icon: "bi-person-workspace", label: "Teacher Allocation" },
+      ],
+    },
+    {
+      label: "Reports",
+      items: [
+        { to: "/principal/reports", icon: "bi-graph-up", label: "Reports & Analytics" },
+      ],
+    },
+    {
+      label: "Communication",
+      items: [
+        { to: "/principal/communications", icon: "bi-megaphone", label: "Announcements" },
+      ],
+    },
+    {
+      label: "Account",
+      items: [
+        { to: "/profile", icon: "bi-person", label: "My Profile" },
+        { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
+        { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
+        { to: "/contact-developer", icon: "bi-headset", label: "Contact Developer" },
+      ],
+    },
+  ],
+
+  // -----------------------------------------------------------------
+  // SECRETARY — front-office role: admitting/managing student records,
+  // guardians, clearance desk, timetable & teacher-allocation reference,
+  // a working slice of Finance (expenses, invoices, Student Balance & Reports),
+  // announcements and letters. Reuses the ADMIN page components (and,
+  // for Invoices, the FINANCE page component), under /secretary/* routes.
+  // -----------------------------------------------------------------
+  SECRETARY: [
+    {
+      items: [
+        { to: "/secretary", icon: "bi-speedometer2", label: "Dashboard" },
+        { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
+        { to: "/notifications", icon: "bi-bell", label: "Notifications" },
+      ],
+    },
+    {
+      label: "Student Records",
+      items: [
+        { to: "/secretary/students", icon: "bi-people", label: "Students (Admit & Mng)" },
+        { to: "/secretary/parents", icon: "bi-person-hearts", label: "Parents & Guardians" },
+        { to: "/secretary/clearance", icon: "bi-patch-check", label: "Student Clearance" },
+      ],
+    },
+    {
+      label: "Academics & Staffing",
+      items: [
+        { to: "/secretary/classrooms", icon: "bi-door-open", label: "Classes & Streams" },
+        { to: "/secretary/timetable", icon: "bi-grid-3x3", label: "Timetable Management" },
+        { to: "/secretary/teachers", icon: "bi-person-workspace", label: "Teacher Allocation" },
+      ],
+    },
+    {
+      label: "Finance",
+      items: [
+        { to: "/secretary/expenses", icon: "bi-wallet2", label: "Expenses" },
+        { to: "/secretary/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
+        { to: "/secretary/finance-reports/detailed", icon: "bi-table", label: "Student Balance & Reports" },
+      ],
+    },
+    {
+      label: "Communication",
+      items: [
+        { to: "/secretary/communications", icon: "bi-megaphone", label: "Announcements" },
+        { to: "/secretary/letters", icon: "bi-envelope-paper", label: "Letters & Documents" },
+      ],
+    },
+    {
+      label: "Account",
+      items: [
+        { to: "/profile", icon: "bi-person", label: "My Profile" },
+        { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
         { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
         { to: "/contact-developer", icon: "bi-headset", label: "Contact Developer" },
       ],
@@ -138,7 +249,7 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
-       
+
       ],
     },
   ],
@@ -206,7 +317,7 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/finance/reports/collections", icon: "bi-graph-up-arrow", label: "Collections Report" },
         { to: "/finance/reports/class-analysis", icon: "bi-bar-chart-steps", label: "Class Analysis" },
-        { to: "/finance/reports/detailed", icon: "bi-table", label: "Detailed Report" },
+        { to: "/finance/reports/detailed", icon: "bi-table", label: "Student Balance & Reports" },
       ],
     },
     {

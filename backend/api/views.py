@@ -4,18 +4,19 @@ Business logic lives in services.py; views stay thin: parse request,
 call a service (or query the ORM directly for simple reads), return a
 Response. Permission classes are defined in utils.py.
 """
+# Standard library
 import logging
 from datetime import date
 from decimal import Decimal
-from django.http import JsonResponse
-import django_filters
 
+# Third-party
+import django_filters
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.db import transaction
 from django.db.models import Avg, Count, ExpressionWrapper, F, FloatField, Q, Sum
 from django.db.models.functions import TruncMonth, TruncYear
-from django.db.models.functions import TruncMonth, TruncYear, TruncDate
+from django.http import JsonResponse
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, generics, status, viewsets
@@ -26,14 +27,18 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+# Local
 from . import models, serializers, services, utils
 
 logger = logging.getLogger(__name__)
 
 
-
+# ---------------------------------------------------------------------------
+# ERROR HANDLERS (wired up in urls.py as handler404 / handler500)
+# ---------------------------------------------------------------------------
 def custom_404(request, exception=None):
     return JsonResponse({"detail": "Not found."}, status=404)
+
 
 def custom_500(request):
     return JsonResponse({"detail": "Server error."}, status=500)
@@ -232,7 +237,7 @@ class UserPagination(PageNumberPagination):
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = models.User.objects.all().order_by("first_name")
-    permission_classes = [utils.IsAdmin]
+    permission_classes = [utils.IsAdminOrSecretary]
     pagination_class = UserPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["role"]
@@ -733,14 +738,12 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
         high-school scale (A/A-/B+.../E) whenever nothing is configured -
         so grade_letter/points are never null on a report card.
 
-        FEE BALANCE: computed as sum(amount_due - brought_forward) -
-        sum(amount_paid) = lifetime charges minus lifetime payments.
-        Positive = owes, negative = prepaid credit, 0 = cleared, None = no
-        invoice ever raised. Deliberately differs from
-        services.get_outstanding_balance(), which does sum(amount_due) -
-        sum(amount_paid); since amount_due already contains
-        brought_forward, that version re-counts arrears once per later
-        invoice and overstates the balance.
+        FEE BALANCE: services.get_ledger_totals_bulk - opening balance
+        (earliest invoice's brought_forward) + each invoice's own term
+        charge - everything paid. Positive = owes, negative = prepaid
+        credit, 0 = cleared, None = no invoice ever raised. Identical to
+        services.get_outstanding_balance, the student portal and the
+        Student Balances report.
 
         VERIFICATION: each row carries `verification_token` - a signed,
         stateless token (services.generate_report_card_token) encoding
@@ -805,32 +808,22 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             else classroom.enrollments.none()
         )
 
-        # ---- fee balances: ONE aggregate query for the whole class ----
+        # ---- fee balances: ONE ledger query for the whole class ----
+        # Uses the same ledger as the student portal and finance pages:
+        # balance = opening balance + term charges - payments.
         student_ids = [e.student_id for e in enrollments] + [e.student_id for e in left_enrollments]
-        fee_rows = (
-            models.Invoice.objects.filter(enrollment__student_id__in=student_ids)
-            .values("enrollment__student_id")
-            .annotate(
-                charged=Sum(F("amount_due") - F("brought_forward")),
-                paid=Sum("amount_paid"),
-            )
-        )
-        fees_by_student = {
-            row["enrollment__student_id"]: {
-                "charged": float(row["charged"] or 0),
-                "paid": float(row["paid"] or 0),
-            }
-            for row in fee_rows
-        }
+        ledger = services.get_ledger_totals_bulk(student_ids)
 
         def fee_block(student_id):
-            row = fees_by_student.get(student_id)
-            if not row:
+            t = ledger.get(student_id)
+            if not t:
                 return {"fee_total_charged": None, "fee_total_paid": None, "fee_balance": None}
+            charged = float(t["opening"] + t["charged"])
+            paid = float(t["paid"])
             return {
-                "fee_total_charged": round(row["charged"], 2),
-                "fee_total_paid": round(row["paid"], 2),
-                "fee_balance": round(row["charged"] - row["paid"], 2),
+                "fee_total_charged": round(charged, 2),
+                "fee_total_paid": round(paid, 2),
+                "fee_balance": round(float(t["balance"]), 2),
             }
 
         offered_subject_ids = set(
@@ -1119,7 +1112,7 @@ class StudentProfileViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelVie
     """Deleting a student is guarded: requires IsSuperAdmin in addition to IsAdmin (see utils.py and get_permissions below)."""
 
     queryset = models.StudentProfile.objects.select_related("user").order_by("-user__date_joined")
-    permission_classes = [utils.IsAdminOrTeacher]
+    permission_classes = [utils.IsAdminOrSecretary]
     pagination_class = StudentPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["curriculum_type", "is_active", "gender"]
@@ -1176,7 +1169,7 @@ class StudentProfileViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelVie
 
 class AdmitStudentView(generics.CreateAPIView):
     serializer_class = serializers.StudentEnrollSerializer
-    permission_classes = [utils.IsAdmin]
+    permission_classes = [utils.IsAdminOrSecretary]
 
     def create(self, request, *args, **kwargs):
         school = models.School.objects.first()
@@ -1377,7 +1370,7 @@ class StudentSubjectSelectionView(APIView):
 class TeacherSubjectAllocationViewSet(viewsets.ModelViewSet):
     queryset = models.TeacherSubjectAllocation.objects.select_related("teacher", "subject", "classroom").all()
     serializer_class = serializers.TeacherSubjectAllocationSerializer
-    permission_classes = [utils.IsAdmin]
+    permission_classes = [utils.IsSecretaryOrAdmin]
     filterset_fields = ["teacher", "classroom", "academic_year", "subject"]
     filter_backends = [DjangoFilterBackend]
 
@@ -1425,7 +1418,7 @@ class TimetableEntryViewSet(viewsets.ModelViewSet):
         "allocation__teacher", "allocation__subject",
     ).all()
     serializer_class = serializers.TimetableEntrySerializer
-    permission_classes = [utils.IsAdmin]
+    permission_classes = [utils.IsAdminOrSecretary]
     filterset_fields = ["term", "classroom"]
     filter_backends = [DjangoFilterBackend]
 
@@ -1693,6 +1686,7 @@ class StudentExamSummaryView(APIView):
 
         return Response(summary)
 
+
 def _portal_student(request):
     """
     The StudentProfile the logged-in user is looking at:
@@ -1788,7 +1782,9 @@ class StudentFeeStructuresView(APIView):
                 "admission_no": student.admission_no,
             },
             "enrollments": payload,
-        })    
+        })
+
+
 # ---------------------------------------------------------------------------
 # PROMOTION RULES
 # ---------------------------------------------------------------------------
@@ -1824,7 +1820,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         "fee_structure__term",
     ).order_by("-issued_at")
     serializer_class = serializers.InvoiceSerializer
-    permission_classes = [utils.IsAdminOrFinance]
+    permission_classes = [utils.IsSchoolOffice]
     pagination_class = InvoicePagination
     filterset_fields = ["enrollment", "fee_structure", "enrollment__academic_year"]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
@@ -1880,6 +1876,7 @@ def _receipt_group(payment):
             "id",
         )
     )
+
 
 class PaymentFilter(django_filters.FilterSet):
     """
@@ -2072,6 +2069,7 @@ def _can_access_invoice(user, invoice):
         return models.ParentStudentLink.objects.filter(parent__user=user, student=student).exists()
     return False
 
+
 def _resolve_paying_student(user, student_id=None):
     student = getattr(user, "student_profile", None)
     if student:
@@ -2088,51 +2086,82 @@ class InitiatePaymentView(APIView):
     POST { phone_number, amount }               -> general payment, split oldest-first
     POST { invoice_id, phone_number, amount }   -> pay that single invoice (Finance/legacy)
     Overpaying is fine; the surplus becomes credit for the next term.
+
+    --------------------------------------------------------------------------
+    ONLINE PAYMENTS TEMPORARILY DISABLED — manual M-Pesa Paybill/Till workflow
+    --------------------------------------------------------------------------
+    This school does not yet have an M-Pesa Paybill/Till wired into the
+    system. Until that integration exists, self-service STK push is
+    switched off HERE, at the entry point, rather than by hiding the
+    button client-side only — a request straight to this endpoint (e.g.
+    via curl/Postman) must not be able to trigger a real STK push or a
+    DEBUG-bypassed "COMPLETED" payment while nobody is reconciling it.
+
+    Students/parents are instructed (see the student portal) to pay
+    directly via the school's Paybill/Till and forward the M-Pesa
+    confirmation SMS, their admission number and full name to the
+    school's phone number. Finance then records that payment manually
+    via PaymentViewSet.pay_balance (or the Payment admin) — that path is
+    completely untouched and keeps working normally.
+
+    To re-enable self-service payment once Paybill/Till is integrated:
+    delete the early `return` below and uncomment the original body.
+    --------------------------------------------------------------------------
     """
 
     permission_classes = [IsAuthenticated]
 
+    ONLINE_PAYMENTS_DISABLED_MESSAGE = (
+        "Online fee payment isn't available yet. Please pay via the school's M-Pesa "
+        "Paybill/Till, then forward your M-Pesa confirmation message, your admission "
+        "number and your full name to the school on 0757790687. Finance will update "
+        "your balance once it's recorded."
+    )
+
     def post(self, request):
-        serializer = serializers.InitiatePaymentSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
+        return Response({"detail": self.ONLINE_PAYMENTS_DISABLED_MESSAGE}, status=503)
 
-        general = not data.get("invoice_id")
-        if general:
-            student = _resolve_paying_student(request.user, data.get("student_id"))
-            if not student:
-                return Response({"detail": "invoice_id is required for this account."}, status=400)
-            invoice = services.get_payment_anchor_invoice(student)
-            if not invoice:
-                return Response({"detail": "There are no fee statements to pay against yet."}, status=400)
-        else:
-            invoice = generics.get_object_or_404(models.Invoice, pk=data["invoice_id"])
-
-        if not _can_access_invoice(request.user, invoice):
-            return Response({"detail": "You cannot pay this invoice."}, status=403)
-
-        try:
-            result = services.initiate_payment(
-                invoice, data["phone_number"], data["amount"],
-                initiated_by=request.user, general=general,
-            )
-        except ValueError as exc:
-            return Response({"detail": str(exc)}, status=400)
-
-        if result["status"] == "COMPLETED":
-            return Response(
-                {
-                    "status": "COMPLETED",
-                    "payment": serializers.PaymentSerializer(result["payment"]).data,
-                    "payments": serializers.PaymentSerializer(result["payments"], many=True).data,
-                },
-                status=201,
-            )
-
-        return Response(
-            {"status": "PENDING", "checkout_request_id": result["stk_request"].checkout_request_id},
-            status=202,
-        )
+        # ---- ORIGINAL LOGIC — restore this when Paybill/Till is integrated ----
+        # serializer = serializers.InitiatePaymentSerializer(data=request.data)
+        # serializer.is_valid(raise_exception=True)
+        # data = serializer.validated_data
+        #
+        # general = not data.get("invoice_id")
+        # if general:
+        #     student = _resolve_paying_student(request.user, data.get("student_id"))
+        #     if not student:
+        #         return Response({"detail": "invoice_id is required for this account."}, status=400)
+        #     invoice = services.get_payment_anchor_invoice(student)
+        #     if not invoice:
+        #         return Response({"detail": "There are no fee statements to pay against yet."}, status=400)
+        # else:
+        #     invoice = generics.get_object_or_404(models.Invoice, pk=data["invoice_id"])
+        #
+        # if not _can_access_invoice(request.user, invoice):
+        #     return Response({"detail": "You cannot pay this invoice."}, status=403)
+        #
+        # try:
+        #     result = services.initiate_payment(
+        #         invoice, data["phone_number"], data["amount"],
+        #         initiated_by=request.user, general=general,
+        #     )
+        # except ValueError as exc:
+        #     return Response({"detail": str(exc)}, status=400)
+        #
+        # if result["status"] == "COMPLETED":
+        #     return Response(
+        #         {
+        #             "status": "COMPLETED",
+        #             "payment": serializers.PaymentSerializer(result["payment"]).data,
+        #             "payments": serializers.PaymentSerializer(result["payments"], many=True).data,
+        #         },
+        #         status=201,
+        #     )
+        #
+        # return Response(
+        #     {"status": "PENDING", "checkout_request_id": result["stk_request"].checkout_request_id},
+        #     status=202,
+        # )
 
 
 class PaymentStatusView(APIView):
@@ -2167,15 +2196,21 @@ class PaymentStatusView(APIView):
 
 
 class MpesaCallbackView(APIView):
-    """Webhook Safaricom calls once the customer completes (or cancels) the STK push. Not used while DEBUG=True."""
+    """Webhook Safaricom calls once the customer completes (or cancels) the STK push."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
 
     def post(self, request):
-        services.handle_mpesa_callback(request.data)
-        # Safaricom just needs a 200 + this exact shape to stop retrying.
-        return Response({"ResultCode": 0, "ResultDesc": "Accepted"})
+        # Online payments are disabled (manual Paybill/Till flow) — see
+        # InitiatePaymentView. No STK request can exist to match a
+        # callback right now, so refuse instead of even attempting to
+        # process an unsolicited callback payload.
+        return Response({"ResultCode": 1, "ResultDesc": "Online payments are currently disabled."})
+
+        # ---- ORIGINAL LOGIC — restore alongside InitiatePaymentView ----
+        # services.handle_mpesa_callback(request.data)
+        # return Response({"ResultCode": 0, "ResultDesc": "Accepted"})
 
 
 class ReceiptView(APIView):
@@ -2394,7 +2429,7 @@ class ReportsOverviewView(APIView):
     fee collection by grade, curriculum split, subject performance,
     pass rates by grade, and enrollment trend across academic years.
     """
-    permission_classes = [utils.IsAdmin]
+    permission_classes = [utils.IsAdminOrPrincipal]
 
     def get(self, request):
         current_year = models.AcademicYear.objects.filter(is_current=True).first()
@@ -2939,7 +2974,7 @@ class FinanceDetailedReportView(APIView):
     term-wise summary and a top-10 debtors list.
     """
 
-    permission_classes = [utils.IsAdminOrFinance]
+    permission_classes = [utils.IsSchoolOffice]
     pagination_class = FinanceReportPagination
 
     def get(self, request):
@@ -3086,6 +3121,12 @@ class FinanceStudentBalancesReportView(APIView):
     to FinanceDetailedReportView which is per-invoice. Only currently
     active students are listed; the class/grade/stream filters look at
     their CURRENT enrollment only, but the balance itself is lifetime.
+
+    Money comes from services.get_ledger_totals_bulk - the SAME ledger
+    used by the student portal, receipts and clearance - so this page
+    can never disagree with them:
+        total_due = opening balance + all term charges
+        balance   = total_due - total_paid
     """
 
     permission_classes = [utils.IsAdminOrFinance]
@@ -3107,13 +3148,6 @@ class FinanceStudentBalancesReportView(APIView):
             if stream_id:
                 enrollment_filter &= Q(enrollments__classroom__stream_id=stream_id)
 
-            # Resolved in a SEPARATE query, then filter `students` by
-            # id__in - chaining .filter(enrollment_filter) directly onto
-            # `students` would reuse the same `enrollments` JOIN the
-            # total_due/total_paid annotate below also uses, silently
-            # restricting the Sum() to only the ACTIVE (current-year)
-            # enrollment's invoices instead of the student's full
-            # lifetime ledger.
             matching_ids = (
                 models.StudentProfile.objects.filter(enrollment_filter)
                 .distinct()
@@ -3129,21 +3163,15 @@ class FinanceStudentBalancesReportView(APIView):
                 | Q(user__last_name__icontains=search)
             )
 
-        students = students.annotate(
-            total_due=Sum(
-                ExpressionWrapper(
-                    F("enrollments__invoices__amount_due") - F("enrollments__invoices__brought_forward"),
-                    output_field=FloatField(),
-                )
-            ),
-            total_paid=Sum("enrollments__invoices__amount_paid"),
-        )
+        students = list(students)
+        ledger = services.get_ledger_totals_bulk([s.id for s in students])
 
         rows = []
         for s in students:
-            due = float(s.total_due or 0)
-            paid = float(s.total_paid or 0)
-            balance = due - paid
+            t = ledger.get(s.id)
+            due = float(t["opening"] + t["charged"]) if t else 0.0
+            paid = float(t["paid"]) if t else 0.0
+            balance = float(t["balance"]) if t else 0.0
             enrollment = s.current_enrollment
             status_label = "paid" if balance <= 0 else ("partial" if paid > 0 else "unpaid")
             rows.append({
@@ -3515,8 +3543,7 @@ class ExpenseViewSet(viewsets.ModelViewSet):
                 {"month": r["month"].strftime("%Y-%m"), "total": float(r["total"] or 0)} for r in by_month
             ],
         })
-        
-        
+
 
 # ---------------------------------------------------------------------------
 # STUDENT CLEARANCE
@@ -3525,28 +3552,28 @@ class ClearancePagination(PageNumberPagination):
     page_size = 25
     page_size_query_param = "page_size"
     max_page_size = 200
- 
- 
+
+
 class StudentClearanceView(APIView):
     """
     GET  /api/v1/my-clearance/   -> eligibility, fee balance, and the student's application (if any)
     POST /api/v1/my-clearance/   -> apply (or apply again after "Not Cleared")   body: { student_remarks? }
     Students only.
     """
- 
+
     permission_classes = [IsAuthenticated]
- 
+
     def _student(self, request):
         if request.user.role != models.User.Role.STUDENT:
             return None
         return getattr(request.user, "student_profile", None)
- 
+
     def get(self, request):
         student = self._student(request)
         if not student:
             return Response({"detail": "Only students can use this page."}, status=403)
         return Response(services.get_student_clearance_state(student))
- 
+
     def post(self, request):
         student = self._student(request)
         if not student:
@@ -3557,8 +3584,8 @@ class StudentClearanceView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
         return Response(services.get_student_clearance_state(student), status=201)
- 
- 
+
+
 class ClearanceApplicationViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Admin: every clearance application, with review actions.
@@ -3569,20 +3596,20 @@ class ClearanceApplicationViewSet(viewsets.ReadOnlyModelViewSet):
       POST /clearance/{id}/reopen/          back to Pending
       POST /clearance/{id}/mark_collected/  certificate collected in person
     """
- 
+
     queryset = models.ClearanceApplication.objects.select_related(
         "student__user", "enrollment__classroom__grade_level", "enrollment__classroom__stream",
         "enrollment__academic_year", "reviewed_by", "collected_recorded_by",
     ).order_by("-submitted_at")
     serializer_class = serializers.ClearanceApplicationSerializer
-    permission_classes = [utils.IsAdmin]
+    permission_classes = [utils.IsSchoolOffice]
     pagination_class = ClearancePagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["status", "enrollment__academic_year"]
     search_fields = [
         "student__admission_no", "student__user__first_name", "student__user__last_name", "clearance_no",
     ]
- 
+
     @action(detail=False, methods=["get"])
     def summary(self, request):
         Status = models.ClearanceApplication.Status
@@ -3600,7 +3627,7 @@ class ClearanceApplicationViewSet(viewsets.ReadOnlyModelViewSet):
             "collected": collected,
             "rejected": counts.get(Status.REJECTED, 0),
         })
- 
+
     def _respond(self, application, fn, *args, **kwargs):
         try:
             fn(application, *args, **kwargs)
@@ -3608,7 +3635,7 @@ class ClearanceApplicationViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({"detail": str(exc)}, status=400)
         application.refresh_from_db()
         return Response(serializers.ClearanceApplicationSerializer(application).data)
- 
+
     @action(detail=True, methods=["post"])
     def clear(self, request, pk=None):
         return self._respond(
@@ -3616,22 +3643,21 @@ class ClearanceApplicationViewSet(viewsets.ReadOnlyModelViewSet):
             remarks=str(request.data.get("remarks", "")),
             force=bool(request.data.get("force", False)),
         )
- 
+
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
         return self._respond(
             self.get_object(), services.review_clearance, request.user, "REJECT",
             remarks=str(request.data.get("remarks", "")),
         )
- 
+
     @action(detail=True, methods=["post"])
     def reopen(self, request, pk=None):
         return self._respond(self.get_object(), services.reopen_clearance)
- 
+
     @action(detail=True, methods=["post"])
     def mark_collected(self, request, pk=None):
         return self._respond(self.get_object(), services.mark_clearance_collected, request.user)
- 
 
 
 class MyClassTeacherClassroomsView(APIView):
@@ -3652,3 +3678,219 @@ class MyClassTeacherClassroomsView(APIView):
             .order_by("-academic_year__year", "grade_level__level_order", "stream__name")
         )
         return Response(serializers.ClassRoomSerializer(classrooms, many=True).data)
+
+
+# ---------------------------------------------------------------------------
+# PRINCIPAL & SECRETARY DASHBOARDS
+# ---------------------------------------------------------------------------
+class PrincipalDashboardStatsView(APIView):
+    """
+    GET /api/v1/dashboard/principal-stats/
+
+    Academic-focused overview for the Principal's dashboard:
+      - 5 stat cards (students, teachers, classes, overall average %,
+        overall pass rate %)
+      - admission_trend: 5-year admissions (line chart)
+      - class_population_by_grade: current-year headcount per grade (bar)
+      - curriculum_split: CBC vs 8-4-4 active students (donut)
+      - top_classrooms: top 5 classrooms by current-term average (table)
+    """
+    permission_classes = [utils.IsPrincipalOrAdmin]
+
+    def get(self, request):
+        current_year = models.AcademicYear.objects.filter(is_current=True).first()
+        current_term = models.Term.objects.filter(is_current=True).first()
+
+        total_students = models.StudentProfile.objects.filter(is_active=True).count()
+        total_teachers = models.User.objects.filter(
+            role=models.User.Role.TEACHER, is_active_staff=True
+        ).count()
+        total_classes = (
+            models.ClassRoom.objects.filter(academic_year=current_year).count() if current_year else 0
+        )
+
+        current_results = (
+            models.ExamResult.objects.filter(
+                is_absent=False, marks_obtained__isnull=False, max_marks__gt=0,
+                exam__term=current_term,
+            )
+            if current_term else models.ExamResult.objects.none()
+        )
+
+        pct_expr = ExpressionWrapper(F("marks_obtained") * 100.0 / F("max_marks"), output_field=FloatField())
+        overall_average = current_results.aggregate(avg=Avg(pct_expr))["avg"] or 0
+
+        pass_marks_by_grade = {
+            pr.grade_level_id: float(pr.pass_mark_percentage)
+            for pr in models.PromotionRule.objects.all()
+        }
+        total_results, passed_results = 0, 0
+        for r in current_results.select_related("enrollment__classroom__grade_level").iterator():
+            total_results += 1
+            pass_mark = pass_marks_by_grade.get(r.enrollment.classroom.grade_level_id, 30.0)
+            if r.percentage is not None and r.percentage >= pass_mark:
+                passed_results += 1
+        overall_pass_rate = round(passed_results / total_results * 100, 1) if total_results else 0
+
+        stat_cards = {
+            "total_students": total_students,
+            "total_teachers": total_teachers,
+            "total_classes": total_classes,
+            "overall_average": round(overall_average, 1),
+            "overall_pass_rate": overall_pass_rate,
+        }
+
+        this_calendar_year = date.today().year
+        raw_admissions = (
+            models.StudentProfile.objects.filter(date_admitted__year__gte=this_calendar_year - 4)
+            .annotate(year=TruncYear("date_admitted"))
+            .values("year")
+            .annotate(count=Count("id"))
+        )
+        admissions_by_year = {r["year"].year: r["count"] for r in raw_admissions}
+        admission_trend = [
+            {"year": y, "count": admissions_by_year.get(y, 0)}
+            for y in range(this_calendar_year - 4, this_calendar_year + 1)
+        ]
+
+        raw_class_pop = (
+            models.Enrollment.objects.filter(
+                academic_year=current_year, status=models.Enrollment.Status.ACTIVE
+            )
+            .values("classroom__grade_level__name")
+            .annotate(count=Count("id"))
+            .order_by("classroom__grade_level__name")
+            if current_year else models.Enrollment.objects.none()
+        )
+        class_population_by_grade = [
+            {"grade": r["classroom__grade_level__name"], "count": r["count"]} for r in raw_class_pop
+        ]
+
+        raw_curriculum = (
+            models.StudentProfile.objects.filter(is_active=True)
+            .values("curriculum_type")
+            .annotate(count=Count("id"))
+        )
+        curriculum_split = [
+            {
+                "curriculum": dict(models.CurriculumType.choices).get(r["curriculum_type"], r["curriculum_type"]),
+                "count": r["count"],
+            }
+            for r in raw_curriculum
+        ]
+
+        top_classrooms = []
+        if current_term and current_year:
+            classrooms = models.ClassRoom.objects.filter(academic_year=current_year).select_related(
+                "grade_level", "stream"
+            )
+            for classroom in classrooms:
+                qs = current_results.filter(enrollment__classroom=classroom)
+                if qs.exists():
+                    avg = qs.aggregate(avg=Avg(pct_expr))["avg"] or 0
+                    top_classrooms.append({"classroom": str(classroom), "average": round(avg, 1)})
+            top_classrooms.sort(key=lambda c: c["average"], reverse=True)
+            top_classrooms = top_classrooms[:5]
+
+        return Response({
+            "stat_cards": stat_cards,
+            "admission_trend": admission_trend,
+            "class_population_by_grade": class_population_by_grade,
+            "curriculum_split": curriculum_split,
+            "top_classrooms": top_classrooms,
+        })
+
+
+class SecretaryDashboardStatsView(APIView):
+    """
+    GET /api/v1/dashboard/secretary-stats/
+
+    Front-office overview for the Secretary's dashboard:
+      - 5 stat cards (students, guardians, classes, admissions this
+        month, pending clearance applications)
+      - admission_monthly_trend: last 12 months of admissions (line chart)
+      - admissions_by_grade: this year's admissions per grade (bar)
+      - gender_split: active-student gender split (donut)
+      - recent_admissions: last 10 admitted students (table)
+    """
+    permission_classes = [utils.IsSecretaryOrAdmin]
+
+    def get(self, request):
+        current_year = models.AcademicYear.objects.filter(is_current=True).first()
+        today = date.today()
+
+        total_students = models.StudentProfile.objects.filter(is_active=True).count()
+        total_guardians = models.ParentGuardianProfile.objects.count()
+        total_classes = (
+            models.ClassRoom.objects.filter(academic_year=current_year).count() if current_year else 0
+        )
+        admissions_this_month = models.StudentProfile.objects.filter(
+            date_admitted__year=today.year, date_admitted__month=today.month
+        ).count()
+        pending_clearance = models.ClearanceApplication.objects.filter(
+            status=models.ClearanceApplication.Status.PENDING
+        ).count()
+
+        stat_cards = {
+            "total_students": total_students,
+            "total_guardians": total_guardians,
+            "total_classes": total_classes,
+            "admissions_this_month": admissions_this_month,
+            "pending_clearance": pending_clearance,
+        }
+
+        month_starts = _months_back(12)
+        raw_admissions = (
+            models.StudentProfile.objects.filter(date_admitted__gte=month_starts[0])
+            .annotate(month=TruncMonth("date_admitted"))
+            .values("month")
+            .annotate(count=Count("id"))
+        )
+        admissions_by_month = {r["month"].strftime("%Y-%m"): r["count"] for r in raw_admissions}
+        admission_monthly_trend = [
+            {
+                "month": d.strftime("%Y-%m"),
+                "label": d.strftime("%b %Y"),
+                "count": admissions_by_month.get(d.strftime("%Y-%m"), 0),
+            }
+            for d in month_starts
+        ]
+
+        raw_grade_admissions = (
+            models.Enrollment.objects.filter(
+                academic_year=current_year, student__date_admitted__year=today.year,
+            )
+            .values("classroom__grade_level__name")
+            .annotate(count=Count("id"))
+            .order_by("classroom__grade_level__name")
+            if current_year else models.Enrollment.objects.none()
+        )
+        admissions_by_grade = [
+            {"grade": r["classroom__grade_level__name"], "count": r["count"]} for r in raw_grade_admissions
+        ]
+
+        raw_gender = models.StudentProfile.objects.filter(is_active=True).values("gender").annotate(count=Count("id"))
+        gender_labels = dict(models.StudentProfile.Gender.choices)
+        gender_split = [
+            {"gender": gender_labels.get(r["gender"], r["gender"]), "count": r["count"]} for r in raw_gender
+        ]
+
+        recent = models.StudentProfile.objects.select_related("user").order_by("-date_admitted")[:10]
+        recent_admissions = []
+        for s in recent:
+            enr = s.current_enrollment
+            recent_admissions.append({
+                "id": s.id,
+                "admission_no": s.admission_no,
+                "name": s.user.get_full_name(),
+                "classroom": str(enr.classroom) if enr else "-",
+                "date_admitted": s.date_admitted,
+            })
+
+        return Response({
+            "stat_cards": stat_cards,
+            "admission_monthly_trend": admission_monthly_trend,
+            "admissions_by_grade": admissions_by_grade,
+            "gender_split": gender_split,
+            "recent_admissions": recent_admissions,
+        })

@@ -18,7 +18,7 @@ export default function ReceiptCard({ receipt, showQr = true }) {
       <div className="text-center mb-3">
         <img
           src={logoImage}
-          alt="Junda High School"
+          alt="Junda High School Shanzu"
           style={{
             width: 56,
             height: 56,
@@ -180,7 +180,7 @@ export default function ReceiptCard({ receipt, showQr = true }) {
         className="text-center mt-3"
         style={{ fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}
       >
-        Junda High School — Finance Department
+        Junda High School Shanzu — Finance Department
       </div>
     </div>
   );

@@ -228,7 +228,7 @@ export default function AdminRankings() {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(11);
       doc.setTextColor(15, 23, 42);
-      doc.text("Junda High School", base64Logo ? 21 : 8, 12);
+      doc.text("Junda High School Shanzu", base64Logo ? 21 : 8, 12);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(8);
@@ -377,7 +377,7 @@ export default function AdminRankings() {
             pageHeight - 4,
             { align: "right" }
           );
-          doc.text("Junda High School — Academics Office", 8, pageHeight - 4);
+          doc.text("Junda High School Shanzu — Academics Office", 8, pageHeight - 4);
         },
       });
 
@@ -431,7 +431,7 @@ export default function AdminRankings() {
         <div className="d-flex align-items-center gap-3">
           <img
             src={logoImage}
-            alt="Junda High School"
+            alt="Junda High School Shanzu"
             style={{ width: 48, height: 48, objectFit: "contain" }}
           />
           <div>

@@ -249,7 +249,7 @@ export default function FinancePayments() {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(11);
     doc.setTextColor(15, 23, 42);
-    doc.text("Masomo School", textX, 12.5);
+    doc.text("Junda High School Shanzu", textX, 12.5);
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7.5);
@@ -427,7 +427,7 @@ export default function FinancePayments() {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(6);
     doc.setTextColor(51, 65, 85);
-    doc.text(`© ${year} Masomo School. All rights reserved.`, marginX, footerLineY + 4);
+    doc.text(`© ${year} Junda High School Shanzu. All rights reserved.`, marginX, footerLineY + 4);
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(5.5);
@@ -454,7 +454,7 @@ export default function FinancePayments() {
 
       const base64Logo = await getImageBase64(logoImage);
       const logoTag = base64Logo
-        ? `<img src="${base64Logo}" alt="Masomo School" class="logo" />`
+        ? `<img src="${base64Logo}" alt="Junda High School Shanzu" class="logo" />`
         : "";
 
       const generatedOn = new Date().toLocaleDateString("en-KE", {
@@ -599,7 +599,7 @@ export default function FinancePayments() {
                   <div class="header-left">
                     ${logoTag}
                     <div>
-                      <p class="school-name">Masomo School</p>
+                      <p class="school-name">Junda High School Shanzu</p>
                       <p class="subtitle">Official Payment Receipt</p>
                     </div>
                   </div>
@@ -660,7 +660,7 @@ export default function FinancePayments() {
               </div>
 
               <div class="copyright">
-                <strong>© ${year} Masomo School. All rights reserved.</strong><br />
+                <strong>© ${year} Junda High School Shanzu. All rights reserved.</strong><br />
                 This is an official payment receipt. Duplication or unauthorized reproduction is prohibited.
               </div>
             </div>
@@ -879,7 +879,7 @@ export default function FinancePayments() {
         doc.setFont("helvetica", "bold");
         doc.setFontSize(14);
         doc.setTextColor(...NAVY);
-        doc.text("Masomo School", textX, 14);
+        doc.text("Junda High School Shanzu", textX, 14);
 
         doc.setFont("helvetica", "normal");
         doc.setFontSize(9);
@@ -913,7 +913,7 @@ export default function FinancePayments() {
         doc.setFont("helvetica", "bold");
         doc.setFontSize(7.5);
         doc.setTextColor(...SLATE);
-        doc.text(`© ${year} Masomo School. All rights reserved.`, marginX, footerY);
+        doc.text(`© ${year} Junda High School Shanzu. All rights reserved.`, marginX, footerY);
 
         doc.setFont("helvetica", "normal");
         doc.text("Finance Department — Confidential", pageWidth / 2, footerY, { align: "center" });

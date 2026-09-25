@@ -382,7 +382,7 @@ export default function TeacherMarkEntry() {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(15);
       doc.setTextColor(15, 23, 42);
-      doc.text("Junda High School", base64Logo ? 30 : 12, 17);
+      doc.text("Junda High School Shanzu", base64Logo ? 30 : 12, 17);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(10);
@@ -510,7 +510,7 @@ export default function TeacherMarkEntry() {
             pageHeight - 6,
             { align: "right" }
           );
-          doc.text("Junda High School — Academics Office", 12, pageHeight - 6);
+          doc.text("Junda High School Shanzu — Academics Office", 12, pageHeight - 6);
         },
       });
 
@@ -570,7 +570,7 @@ export default function TeacherMarkEntry() {
         <div className="d-flex align-items-center gap-3">
           <img
             src={logoImage}
-            alt="Junda High School"
+            alt="Junda High School Shanzu"
             style={{ width: 48, height: 48, objectFit: "contain" }}
           />
           <div>

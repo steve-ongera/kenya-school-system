@@ -427,7 +427,7 @@ export default function AdminClassrooms() {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(14);
       doc.setTextColor(15, 23, 42);
-      doc.text("Junda High School", base64Logo ? 28 : 12, 16);
+      doc.text("Junda High School Shanzu", base64Logo ? 28 : 12, 16);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(10);
@@ -540,7 +540,7 @@ export default function AdminClassrooms() {
             pageHeight - 6,
             { align: "right" }
           );
-          doc.text("Junda High School — Academics Office", 12, pageHeight - 6);
+          doc.text("Junda High School Shanzu — Academics Office", 12, pageHeight - 6);
         },
       });
 
@@ -598,7 +598,7 @@ export default function AdminClassrooms() {
   //   - a summary strip: total marks / average % / overall grade / points
   //   - a stamp box for the official school stamp
   //   - class teacher & principal signature lines at the very bottom
-  //   - a copyright / anti-duplication footer for Junda High School
+  //   - a copyright / anti-duplication footer for Junda High School Shanzu
   // ================================================================
   const drawReportCardPage = (
     doc,
@@ -617,7 +617,7 @@ export default function AdminClassrooms() {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(12);
     doc.setTextColor(...black);
-    doc.text("Junda High School", logoBase64 ? 28 : 14, 15);
+    doc.text("Junda High School Shanzu", logoBase64 ? 28 : 14, 15);
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7.5);
@@ -884,7 +884,7 @@ export default function AdminClassrooms() {
     doc.setFontSize(5.5);
     doc.setTextColor(...black);
     doc.text(
-      "© Junda High School. All rights reserved.",
+      "© Junda High School Shanzu. All rights reserved.",
       14,
       footerTextY
     );
@@ -892,7 +892,7 @@ export default function AdminClassrooms() {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(4.8);
     doc.text(
-      "This document is the property of Junda High School. Parents/guardians should keep it safe. Duplication or unauthorized printing is prohibited.",
+      "This document is the property of Junda High School Shanzu. Parents/guardians should keep it safe. Duplication or unauthorized printing is prohibited.",
       14,
       footerTextY + 3
     );
@@ -1561,7 +1561,7 @@ export default function AdminClassrooms() {
               <div className="d-flex align-items-center gap-3">
                 <img
                   src={logoImage}
-                  alt="Junda High School"
+                  alt="Junda High School Shanzu"
                   style={{ width: 44, height: 44, objectFit: "contain" }}
                 />
                 <div>

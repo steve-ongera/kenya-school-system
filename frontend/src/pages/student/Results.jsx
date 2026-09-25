@@ -55,7 +55,7 @@ const getImageBase64 = (url) =>
   });
 
 // Printed on the PDF header and footer
-const SCHOOL_NAME = "Junda High School";
+const SCHOOL_NAME = "Junda High School Shanzu";
 const DOC_COPY_NOTE = "This is a computer-generated document copy. Scan the QR code to verify its authenticity.";
 
 // "#3 of 42" or "-" when there is no position

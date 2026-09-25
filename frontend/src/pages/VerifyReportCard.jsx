@@ -81,7 +81,7 @@ export default function VerifyReportCard() {
               "This document could not be verified against our records. It may be a forgery, or the link may have expired."}
           </p>
           <p className="verify-hint">
-            If you believe this is a mistake, please contact the Academics Office at Junda High School.
+            If you believe this is a mistake, please contact the Academics Office at Junda High School Shanzu.
           </p>
           <Link to="/" className="btn btn-outline-primary btn-sm mt-2">
             <i className="bi bi-house me-1"></i> Return Home
@@ -97,9 +97,9 @@ export default function VerifyReportCard() {
       <div className="verify-card verify-card--valid">
         {/* Header */}
         <div className="verify-header">
-          <img src={logoImage} alt="Junda High School" className="verify-logo" />
+          <img src={logoImage} alt="Junda High School Shanzu" className="verify-logo" />
           <div>
-            <div className="verify-school">Junda High School</div>
+            <div className="verify-school">Junda High School Shanzu</div>
             <div className="verify-subtitle">Report Card Verification</div>
           </div>
         </div>
@@ -194,7 +194,7 @@ export default function VerifyReportCard() {
             day: "numeric",
           })}
           {" · "}
-          © Junda High School — Academics Office
+          © Junda High School Shanzu — Academics Office
         </div>
       </div>
     </div>

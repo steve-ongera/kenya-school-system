@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { studentsApi, academicsApi } from "../../services/api";
+import { studentsApi, academicsApi, authApi } from "../../services/api";
 import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
 import Pagination from "../../components/Pagination";
@@ -47,6 +47,17 @@ export default function AdminStudents() {
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("info");
 
+  // ---- Current logged-in user's role — controls which action icons show
+  // (e.g. only an Admin gets the Edit pencil). Backend permissions are
+  // the real enforcement; this just keeps the UI honest for non-admins.
+  const [currentUserRole, setCurrentUserRole] = useState(null);
+
+  useEffect(() => {
+    authApi.me().then(({ data }) => setCurrentUserRole(data.role)).catch(() => {});
+  }, []);
+
+  const isAdmin = currentUserRole === "ADMIN";
+
   // ---- Add modal ----
   const [showAddModal, setShowAddModal] = useState(false);
   const [addForm, setAddForm] = useState(emptyAddForm);
@@ -62,11 +73,6 @@ export default function AdminStudents() {
   const [editTarget, setEditTarget] = useState(null); // { id, admission_no, username }
   const [editForm, setEditForm] = useState(emptyEditForm);
   const [editSaving, setEditSaving] = useState(false);
-
-  // ---- Delete modal ----
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState(null);
-  const [deleteSaving, setDeleteSaving] = useState(false);
 
   // ---- Reset password modal ----
   const [showResetModal, setShowResetModal] = useState(false);
@@ -337,30 +343,6 @@ export default function AdminStudents() {
     }
   };
 
-  // ---------------- DELETE ----------------
-  const openDelete = (student) => {
-    setDeleteTarget(student);
-    setShowDeleteModal(true);
-  };
-
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
-    setDeleteSaving(true);
-    try {
-      await studentsApi.remove(deleteTarget.id);
-      setMessage(`${deleteTarget.full_name} was removed.`);
-      setMessageType("success");
-      setShowDeleteModal(false);
-      setDeleteTarget(null);
-      await loadStudents();
-    } catch (err) {
-      setMessage(err.response?.data?.detail || "Could not delete student.");
-      setMessageType("danger");
-    } finally {
-      setDeleteSaving(false);
-    }
-  };
-
   // ---------------- RESET PASSWORD ----------------
   const openReset = (student) => {
     setResetTarget(student);
@@ -415,13 +397,15 @@ export default function AdminStudents() {
 
       <div className="table-wrap">
         <div className="table-wrap__header" style={{ flexDirection: "column", alignItems: "stretch", gap: "0.75rem" }}>
+          {/* All filters + search share one row. Options are kept short so
+              everything fits without wrapping on a normal desktop width. */}
           <div className="d-flex flex-wrap gap-2" style={{ width: "100%" }}>
-            <div style={{ flex: 1, minWidth: "200px", position: "relative" }}>
+            <div style={{ flex: "1 1 180px", minWidth: "160px", position: "relative" }}>
               <i className="bi bi-search" style={{ position: "absolute", left: "0.85rem", top: "50%", transform: "translateY(-50%)", color: "var(--ink-400)" }}></i>
               <input
                 type="text"
                 className="form-control"
-                placeholder="Search by name or admission no..."
+                placeholder="Search name / adm no..."
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 style={{ paddingLeft: "2.4rem" }}
@@ -431,9 +415,9 @@ export default function AdminStudents() {
               className="form-select"
               value={filters.gender}
               onChange={(e) => updateFilter({ gender: e.target.value })}
-              style={{ width: "auto", minWidth: "130px" }}
+              style={{ width: "auto", minWidth: "100px" }}
             >
-              <option value="">All Genders</option>
+              <option value="">Gender</option>
               <option value="M">Male</option>
               <option value="F">Female</option>
             </select>
@@ -441,9 +425,9 @@ export default function AdminStudents() {
               className="form-select"
               value={filters.curriculum_type}
               onChange={(e) => updateFilter({ curriculum_type: e.target.value })}
-              style={{ width: "auto", minWidth: "140px" }}
+              style={{ width: "auto", minWidth: "110px" }}
             >
-              <option value="">All Curriculums</option>
+              <option value="">Curriculum</option>
               <option value="CBC">CBC</option>
               <option value="8-4-4">8-4-4</option>
             </select>
@@ -451,27 +435,19 @@ export default function AdminStudents() {
               className="form-select"
               value={filters.status}
               onChange={(e) => updateFilter({ status: e.target.value })}
-              style={{ width: "auto", minWidth: "120px" }}
+              style={{ width: "auto", minWidth: "100px" }}
             >
-              <option value="">All Status</option>
+              <option value="">Status</option>
               <option value="active">Active</option>
               <option value="inactive">Inactive</option>
             </select>
-            {hasActiveFilters && (
-              <button className="btn btn-sm btn-light" onClick={clearFilters}>
-                <i className="bi bi-x-lg"></i> Clear
-              </button>
-            )}
-          </div>
-
-          <div className="d-flex flex-wrap gap-2" style={{ width: "100%" }}>
             <select
               className="form-select"
               value={filters.academic_year}
               onChange={(e) => updateFilter({ academic_year: e.target.value })}
-              style={{ width: "auto", minWidth: "150px" }}
+              style={{ width: "auto", minWidth: "100px" }}
             >
-              <option value="">All Academic Years</option>
+              <option value="">Year</option>
               {academicYearOptions.map((year) => (
                 <option key={year} value={year}>{year}</option>
               ))}
@@ -480,9 +456,9 @@ export default function AdminStudents() {
               className="form-select"
               value={filters.grade_level}
               onChange={(e) => updateFilter({ grade_level: e.target.value })}
-              style={{ width: "auto", minWidth: "160px" }}
+              style={{ width: "auto", minWidth: "110px" }}
             >
-              <option value="">All Grades / Forms</option>
+              <option value="">Grade</option>
               {gradeLevelOptions.map(([id, name]) => (
                 <option key={id} value={id}>{name}</option>
               ))}
@@ -491,15 +467,20 @@ export default function AdminStudents() {
               className="form-select"
               value={filters.classroom_id}
               onChange={(e) => updateFilter({ classroom_id: e.target.value })}
-              style={{ width: "auto", minWidth: "180px" }}
+              style={{ width: "auto", minWidth: "110px" }}
             >
-              <option value="">All Classes</option>
+              <option value="">Class</option>
               {classroomOptions.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.grade_level_name} {c.stream_name} ({c.academic_year_year})
+                  {c.grade_level_name} {c.stream_name}
                 </option>
               ))}
             </select>
+            {hasActiveFilters && (
+              <button className="btn btn-sm btn-light" onClick={clearFilters}>
+                <i className="bi bi-x-lg"></i> Clear
+              </button>
+            )}
           </div>
 
           {hasActiveFilters && (
@@ -581,7 +562,7 @@ export default function AdminStudents() {
                   <th>Curriculum</th>
                   <th>Current Class</th>
                   <th>Status</th>
-                  <th style={{ width: "150px" }}>Actions</th>
+                  <th style={{ width: "120px" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -620,14 +601,13 @@ export default function AdminStudents() {
                         <button className="btn btn-sm btn-outline-primary btn-icon" title="View" onClick={() => openView(s)}>
                           <i className="bi bi-eye"></i>
                         </button>
-                        <button className="btn btn-sm btn-outline-secondary btn-icon" title="Edit" onClick={() => openEdit(s)}>
-                          <i className="bi bi-pencil"></i>
-                        </button>
+                        {isAdmin && (
+                          <button className="btn btn-sm btn-outline-secondary btn-icon" title="Edit" onClick={() => openEdit(s)}>
+                            <i className="bi bi-pencil"></i>
+                          </button>
+                        )}
                         <button className="btn btn-sm btn-outline-warning btn-icon" title="Reset Password" onClick={() => openReset(s)}>
                           <i className="bi bi-key"></i>
-                        </button>
-                        <button className="btn btn-sm btn-outline-danger btn-icon" title="Delete" onClick={() => openDelete(s)}>
-                          <i className="bi bi-trash"></i>
                         </button>
                       </div>
                     </td>
@@ -995,25 +975,6 @@ export default function AdminStudents() {
               </button>
             </div>
           </form>
-        )}
-      </Modal>
-
-      {/* ---------------- DELETE MODAL ---------------- */}
-      <Modal show={showDeleteModal} onClose={() => setShowDeleteModal(false)} title="Delete Student">
-        {deleteTarget && (
-          <>
-            <p>
-              This permanently deletes <strong>{deleteTarget.full_name}</strong> ({deleteTarget.admission_no})
-              and their login account, and cannot be undone. Historical records (results, invoices) are kept
-              on file but this profile's access is removed.
-            </p>
-            <div className="d-flex gap-2 justify-content-end">
-              <button className="btn btn-secondary" onClick={() => setShowDeleteModal(false)}>Cancel</button>
-              <button className="btn btn-danger" onClick={handleDelete} disabled={deleteSaving}>
-                {deleteSaving ? "Deleting..." : "Delete Student"}
-              </button>
-            </div>
-          </>
         )}
       </Modal>
 

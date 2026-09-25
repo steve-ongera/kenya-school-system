@@ -9,6 +9,8 @@ const HOME_BY_ROLE = {
   STUDENT: "/student",
   PARENT: "/parent",
   FINANCE: "/finance",
+  PRINCIPAL: "/principal", 
+  SECRETARY: "/secretary",
 };
 
 const USERNAME_MAX_LENGTH = 30;
@@ -74,12 +76,12 @@ export default function Login() {
     <div className="login-page" style={{ background: "#ffffff", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
       <div className="login-card" style={{ maxWidth: "420px", width: "100%", padding: "2.5rem", background: "#ffffff", borderRadius: "var(--radius-lg)", boxShadow: "0 8px 40px rgba(11, 37, 69, 0.08)", border: "1px solid var(--border-color)" }}>
         <div style={{ display: "flex", justifyContent: "center", marginBottom: "1.75rem" }}>
-          <img src={logo} alt="Junda High School Logo" style={{ width: "150px", height: "150px", objectFit: "contain", borderRadius: "var(--radius-md)" }} />
+          <img src={logo} alt="Junda High School Shanzu Logo" style={{ width: "150px", height: "150px", objectFit: "contain", borderRadius: "var(--radius-md)" }} />
         </div>
 
         <div style={{ marginBottom: "0.5rem", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center" }}>
           <h1 style={{ fontSize: "1.5rem", fontWeight: 700, color: "var(--blue-900)", margin: 0, fontFamily: "var(--font-display)" }}>
-            Junda High School
+            Junda High School Shanzu
           </h1>
           <p style={{ fontSize: "0.72rem", color: "var(--ink-400)", margin: "0.2rem 0 0 0", letterSpacing: "0.06em", textTransform: "uppercase" }}>
             Masomo Portal
@@ -104,7 +106,7 @@ export default function Login() {
                 <i className="bi bi-person input-icon-leading"></i>
                 <input
                   className="form-control"
-                  placeholder="e.g., ADM-2024-001"
+                  placeholder="e.g. 11871"
                   value={username}
                   maxLength={USERNAME_MAX_LENGTH}
                   onChange={(e) => setUsername(e.target.value)}
@@ -200,7 +202,7 @@ export default function Login() {
         )}
 
         <div style={{ marginTop: "1.5rem", textAlign: "center", fontSize: "var(--fs-xs)", color: "var(--ink-400)" }}>
-          <span>Junda High School © {new Date().getFullYear()} Steve Ongera. All rights reserved.</span>
+          <span>Junda High School Shanzu © {new Date().getFullYear()} Steve Ongera. All rights reserved.</span>
         </div>
       </div>
     </div>

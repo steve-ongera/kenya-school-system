@@ -4,7 +4,7 @@ import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
 import Pagination from "../../components/Pagination";
 
-const ROLE_OPTIONS = ["ADMIN", "TEACHER", "PARENT", "FINANCE"]; // students are created via Admit Student
+const ROLE_OPTIONS = ["ADMIN", "TEACHER", "PARENT", "FINANCE" , "PRINCIPAL", "SECRETARY"]; // students are created via Admit Student
 
 const ROLE_BADGE_COLORS = {
   ADMIN: "badge-danger",
@@ -41,6 +41,38 @@ function errorText(err, fallback) {
       .join(" | ");
   }
   return fallback;
+}
+
+// ===========================================================================
+// Password input with eye toggle
+// ===========================================================================
+function PasswordInput({ value, onChange, required, placeholder }) {
+  const [show, setShow] = useState(false);
+
+  return (
+    <div className="input-group">
+      <input
+        type={show ? "text" : "password"}
+        className="form-control"
+        required={required}
+        placeholder={placeholder}
+        value={value}
+        onChange={onChange}
+        style={{ borderRight: "none" }}
+      />
+      <button
+        type="button"
+        className="btn btn-outline-secondary"
+        onClick={() => setShow((s) => !s)}
+        tabIndex={-1}
+        aria-label={show ? "Hide password" : "Show password"}
+        title={show ? "Hide password" : "Show password"}
+        style={{ borderLeft: "none" }}
+      >
+        <i className={`bi ${show ? "bi-eye-slash" : "bi-eye"}`}></i>
+      </button>
+    </div>
+  );
 }
 
 // ===========================================================================
@@ -361,8 +393,12 @@ export default function AdminUsers() {
           </div>
           <div className="col-md-4">
             <label className="form-label">Password</label>
-            <input type="password" className="form-control" required value={form.password}
-              onChange={(e) => setForm({ ...form, password: e.target.value })} />
+            <PasswordInput
+              required
+              value={form.password}
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+              placeholder="Enter password"
+            />
           </div>
         </div>
         <div className="mt-3 d-flex gap-2">

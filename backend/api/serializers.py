@@ -1,11 +1,11 @@
-from django.contrib.auth import password_validation
-from rest_framework import serializers
 from decimal import Decimal
-from django.db.models import Count
-from django.db import transaction
 
-from . import utils
-from . import models, services
+from django.contrib.auth import password_validation
+from django.db import transaction
+from django.db.models import Count
+from rest_framework import serializers
+
+from . import models, services, utils
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ class ProfileUpdateSerializer(serializers.Serializer):
     email = serializers.EmailField(required=False, allow_blank=True)
     phone_number = serializers.CharField(required=False, allow_blank=True, max_length=20)
     national_id = serializers.CharField(required=False, allow_blank=True, max_length=20)
-    # only meaningful for students - service layer ignores these for other roles
+    # Only meaningful for students - service layer ignores these for other roles.
     gender = serializers.ChoiceField(choices=models.StudentProfile.Gender.choices, required=False)
     date_of_birth = serializers.DateField(required=False, allow_null=True)
 
@@ -105,8 +105,8 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 
 class LoginRequestSerializer(serializers.Serializer):
-    # hard length cap rejects the "600-character garbage username" case
-    # before it ever touches the database
+    # Hard length cap rejects the "600-character garbage username" case
+    # before it ever touches the database.
     username = serializers.CharField(max_length=utils.USERNAME_MAX_LENGTH, trim_whitespace=True)
     password = serializers.CharField(max_length=128, trim_whitespace=False)
 
@@ -266,12 +266,12 @@ class StudentEnrollSerializer(serializers.Serializer):
     admission_no = serializers.CharField(
         required=False, allow_blank=True, max_length=30,
         help_text="Leave blank to auto-generate. Provide one only when migrating an "
-                   "already-admitted student from a previous system.",
+                  "already-admitted student from a previous system.",
     )
     date_admitted = serializers.DateField(
         required=False, allow_null=True,
         help_text="Leave blank to default to today. Provide the original admission date "
-                   "when migrating an already-admitted student.",
+                  "when migrating an already-admitted student.",
     )
 
     parent_name = serializers.CharField(required=False, allow_blank=True)
@@ -334,7 +334,9 @@ class StudentEnrollSerializer(serializers.Serializer):
             national_id=validated_data.get("national_id") or None,
             role=models.User.Role.STUDENT,
         )
-        user.set_password("password123")
+        # The student's initial login password is their own admission
+        # number, not a shared default.
+        user.set_password(admission_no)
         user.save()
 
         profile_kwargs = dict(
@@ -451,8 +453,10 @@ class StudentUserSerializer(serializers.ModelSerializer):
 
 
 class StudentProfileDetailSerializer(serializers.ModelSerializer):
-    """Powers the Student View/Edit modals and the reset-password action.
-    Does not replace StudentProfileSerializer, which still powers the list view."""
+    """
+    Powers the Student View/Edit modals and the reset-password action.
+    Does not replace StudentProfileSerializer, which still powers the list view.
+    """
 
     user = StudentUserSerializer()
     full_name = serializers.CharField(source="user.get_full_name", read_only=True)
@@ -464,7 +468,7 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True,
         help_text="Reassigns the student's CURRENT enrollment to this classroom. "
-                   "Does not create a new enrollment/history row - use Promote for that.",
+                  "Does not create a new enrollment/history row - use Promote for that.",
     )
 
     guardian = serializers.SerializerMethodField()
@@ -555,9 +559,15 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
                     student=instance, classroom=new_classroom, academic_year=new_classroom.academic_year,
                 )
 
-        guardian_phone = validated_data.pop("guardian_phone", "").strip() if "guardian_phone" in validated_data else ""
-        guardian_name = validated_data.pop("guardian_name", "").strip() if "guardian_name" in validated_data else ""
-        guardian_email = validated_data.pop("guardian_email", "").strip() if "guardian_email" in validated_data else ""
+        guardian_phone = (
+            validated_data.pop("guardian_phone", "").strip() if "guardian_phone" in validated_data else ""
+        )
+        guardian_name = (
+            validated_data.pop("guardian_name", "").strip() if "guardian_name" in validated_data else ""
+        )
+        guardian_email = (
+            validated_data.pop("guardian_email", "").strip() if "guardian_email" in validated_data else ""
+        )
         guardian_relationship = validated_data.pop(
             "guardian_relationship", models.ParentStudentLink.Relationship.GUARDIAN
         )
@@ -591,6 +601,7 @@ class BulkCreateClassroomsSerializer(serializers.Serializer):
     POST body: { "academic_year": 4, "grade_level_ids": [1,2,3,4], "stream_ids": [1,2,3,4] }
     Creates the cross-product of grades x streams for that year in one call.
     """
+
     academic_year = serializers.PrimaryKeyRelatedField(queryset=models.AcademicYear.objects.all())
     grade_level_ids = serializers.PrimaryKeyRelatedField(
         queryset=models.GradeLevel.objects.all(), many=True
@@ -940,6 +951,7 @@ class BulkPaymentSerializer(serializers.Serializer):
     services.record_bulk_payment() splits it across their unpaid
     invoices automatically (oldest first).
     """
+
     admission_no = serializers.CharField(max_length=30)
     amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("1"))
     method = serializers.ChoiceField(choices=models.Payment.Method.choices)
@@ -960,7 +972,7 @@ class ReceiptSerializer(serializers.Serializer):
     classroom = serializers.CharField(required=False)
     recorded_by_name = serializers.CharField(required=False)
     qr_code_base64 = serializers.CharField(required=False)
-    
+
 
 class PaymentListSerializer(serializers.ModelSerializer):
     """
@@ -1079,13 +1091,23 @@ class CommunicationCreateSerializer(serializers.Serializer):
 
     subject = serializers.CharField(max_length=150)
     body = serializers.CharField()
-    category = serializers.ChoiceField(choices=models.Communication.Category.choices, default=models.Communication.Category.GENERAL)
+    category = serializers.ChoiceField(
+        choices=models.Communication.Category.choices, default=models.Communication.Category.GENERAL
+    )
 
     audience_type = serializers.ChoiceField(choices=models.Communication.AudienceType.choices)
-    target_roles = serializers.ListField(child=serializers.ChoiceField(choices=models.User.Role.choices), required=False, default=list)
-    academic_year_id = serializers.PrimaryKeyRelatedField(queryset=models.AcademicYear.objects.all(), required=False, allow_null=True)
-    grade_level_id = serializers.PrimaryKeyRelatedField(queryset=models.GradeLevel.objects.all(), required=False, allow_null=True)
-    classroom_id = serializers.PrimaryKeyRelatedField(queryset=models.ClassRoom.objects.all(), required=False, allow_null=True)
+    target_roles = serializers.ListField(
+        child=serializers.ChoiceField(choices=models.User.Role.choices), required=False, default=list
+    )
+    academic_year_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.AcademicYear.objects.all(), required=False, allow_null=True
+    )
+    grade_level_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.GradeLevel.objects.all(), required=False, allow_null=True
+    )
+    classroom_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.ClassRoom.objects.all(), required=False, allow_null=True
+    )
     target_student_ids = serializers.PrimaryKeyRelatedField(
         queryset=models.StudentProfile.objects.all(), many=True, required=False, default=list
     )
@@ -1218,7 +1240,11 @@ class ConversationSerializer(serializers.ModelSerializer):
         last = obj.messages.order_by("-created_at").first()
         if not last:
             return None
-        return {"body": last.body, "sender_name": last.sender.get_full_name() if last.sender else "", "created_at": last.created_at}
+        return {
+            "body": last.body,
+            "sender_name": last.sender.get_full_name() if last.sender else "",
+            "created_at": last.created_at,
+        }
 
     def get_unread_count(self, obj):
         request = self.context.get("request")
@@ -1231,7 +1257,9 @@ class ConversationCreateSerializer(serializers.Serializer):
     """POST { recipient_id, student_id?, body } - starts a thread and sends the first message in one call."""
 
     recipient_id = serializers.PrimaryKeyRelatedField(queryset=models.User.objects.all())
-    student_id = serializers.PrimaryKeyRelatedField(queryset=models.StudentProfile.objects.all(), required=False, allow_null=True)
+    student_id = serializers.PrimaryKeyRelatedField(
+        queryset=models.StudentProfile.objects.all(), required=False, allow_null=True
+    )
     body = serializers.CharField()
 
     def validate(self, attrs):
@@ -1262,7 +1290,9 @@ class ConversationCreateSerializer(serializers.Serializer):
         if not existing:
             conversation.participants.set([sender, recipient])
 
-        message = models.DirectMessage.objects.create(conversation=conversation, sender=sender, body=validated_data["body"])
+        message = models.DirectMessage.objects.create(
+            conversation=conversation, sender=sender, body=validated_data["body"]
+        )
         message.read_by.add(sender)
         return conversation
 
@@ -1278,6 +1308,7 @@ class PeriodSlotSerializer(serializers.ModelSerializer):
 
 class PeriodSlotBulkItemSerializer(serializers.Serializer):
     """One row of the structure-builder form."""
+
     day = serializers.ChoiceField(choices=models.PeriodSlot.Day.choices)
     order = serializers.IntegerField(min_value=1)
     slot_type = serializers.ChoiceField(choices=models.PeriodSlot.SlotType.choices)
@@ -1308,6 +1339,7 @@ class PeriodSlotBulkSetSerializer(serializers.Serializer):
     structure change (e.g. removing a period) can't be reconciled row by
     row without leaving stale slots (and their TimetableEntries) behind.
     """
+
     slots = PeriodSlotBulkItemSerializer(many=True)
 
     def validate_slots(self, value):
@@ -1379,9 +1411,8 @@ class TimetableGridQuerySerializer(serializers.Serializer):
 
 class AutoGenerateTimetableSerializer(serializers.Serializer):
     term = serializers.PrimaryKeyRelatedField(queryset=models.Term.objects.all())
-    
-    
-    
+
+
 # ---------------------------------------------------------------------------
 # STUDENT CLEARANCE
 # ---------------------------------------------------------------------------
@@ -1399,7 +1430,7 @@ class ClearanceApplicationSerializer(serializers.ModelSerializer):
     )
     is_collected = serializers.SerializerMethodField()
     current_balance = serializers.SerializerMethodField()
- 
+
     class Meta:
         model = models.ClearanceApplication
         fields = [
@@ -1411,11 +1442,10 @@ class ClearanceApplicationSerializer(serializers.ModelSerializer):
             "reviewed_by_name", "reviewed_at",
             "is_collected", "collected_at", "collected_by_name",
         ]
- 
+
     def get_is_collected(self, obj):
         return obj.collected_at is not None
- 
+
     def get_current_balance(self, obj):
-        # live figure (positive = owes, negative = prepaid), not the snapshot from when they applied
+        # Live figure (positive = owes, negative = prepaid), not the snapshot from when they applied.
         return float(services.get_outstanding_balance(obj.student))
- 

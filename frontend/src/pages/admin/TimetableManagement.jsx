@@ -568,7 +568,7 @@ function TimetableGrid() {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(15);
       doc.setTextColor(15, 23, 42);
-      doc.text("Junda High School", base64Logo ? 30 : 12, 17);
+      doc.text("Junda High School Shanzu", base64Logo ? 30 : 12, 17);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(10);
@@ -681,7 +681,7 @@ function TimetableGrid() {
           doc.setFont("helvetica", "normal");
           doc.setFontSize(7);
           doc.setTextColor(148, 163, 184);
-          doc.text("Junda High School — Timetable Office", 12, footerY);
+          doc.text("Junda High School Shanzu — Timetable Office", 12, footerY);
           doc.text(
             `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
             pageWidth - 12,
@@ -729,7 +729,7 @@ function TimetableGrid() {
       doc.setFontSize(6.5);
       doc.setTextColor(148, 163, 184);
       doc.text(
-        "© Junda High School. All rights reserved. Duplication or unauthorized printing is prohibited.",
+        "© Junda High School Shanzu. All rights reserved. Duplication or unauthorized printing is prohibited.",
         12,
         copyrightY
       );

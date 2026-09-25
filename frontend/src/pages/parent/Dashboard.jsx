@@ -66,7 +66,7 @@ export default function ParentDashboard() {
             </div>
             <div>
               <h1 className="page-title" style={{ marginBottom: "0.1rem" }}>
-                {getGreeting()}, {user?.first_name || "Parent"}! 👋
+                {getGreeting()}, {user?.first_name || "Parent"}! 
               </h1>
               <p className="page-subtitle" style={{ marginBottom: "0" }}>
                 Welcome to your parent portal

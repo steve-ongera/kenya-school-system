@@ -1,23 +1,18 @@
 import { useEffect, useState } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import { financeApi, paymentsApi } from "../../services/api";
+import { financeApi, paymentsApi, profileApi } from "../../services/api";
 import ReceiptCard from "../../components/Receiptcard";
 import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
 import logoImage from "../../assets/junda_high_logo.png";
 
+const POLL_INTERVAL_MS = 3000;
+const POLL_MAX_TRIES = 20; // ~1 minute
+
 // Printed on receipts and the fee statement
 const SCHOOL_NAME = "Junda High School Shanzu";
 const DOC_COPY_NOTE = "This is a computer-generated document copy.";
-
-// Manual M-Pesa flow (no Paybill/Till integration yet) - fill these in
-// with the school's real details. Once the school gets an integrated
-// Paybill/Till and self-service payment is re-enabled on the backend,
-// this note (and these constants) can be removed along with it.
-const SCHOOL_PAYBILL_NUMBER = "XXXXXX"; // TODO: school's Paybill number
-const SCHOOL_TILL_NUMBER = "XXXXXX"; // TODO: school's Till number, if used
-const FEES_FORWARD_PHONE = "0757790687";
 
 const currency = (v) => Number(v || 0).toLocaleString();
 
@@ -36,6 +31,10 @@ const termOrder = (inv) => {
 
 // Brought-forward wording: positive = arrears, negative = credit from earlier terms
 const bfText = (v) => (Number(v) < 0 ? `KES ${currency(Math.abs(Number(v)))} credit` : `KES ${currency(v)}`);
+
+// A payment response may carry one payment (`payment`) or several (`payments`)
+const paymentsFrom = (data) =>
+  data.payments?.length ? data.payments : data.payment ? [data.payment] : [];
 
 // Load an image URL as base64 (used for embedding the logo into print docs)
 const getImageBase64 = (url) =>
@@ -56,8 +55,17 @@ const getImageBase64 = (url) =>
 
 export default function StudentFees() {
   const [invoices, setInvoices] = useState([]);
+  const [defaultPhone, setDefaultPhone] = useState("");
   const [loading, setLoading] = useState(true);
   const [feeStatus, setFeeStatus] = useState(null);
+
+  // pay modal state (ONE general payment - the backend splits it across invoices, oldest term first)
+  const [showPayModal, setShowPayModal] = useState(false);
+  const [phone, setPhone] = useState("");
+  const [amount, setAmount] = useState("");
+  const [payError, setPayError] = useState("");
+  const [payStatus, setPayStatus] = useState(""); // "", "SUBMITTING", "PENDING", "COMPLETED", "FAILED"
+  const [paidPayments, setPaidPayments] = useState([]); // one row per invoice the payment was split into
 
   // receipt viewer state
   const [receipt, setReceipt] = useState(null);
@@ -86,34 +94,108 @@ export default function StudentFees() {
 
   useEffect(() => {
     loadInvoices();
+    profileApi.me().then(({ data }) => setDefaultPhone(data.phone_number || ""));
     financeApi.status().then(({ data }) => setFeeStatus(data)).catch(() => {});
   }, []);
 
   // ---- Balance calculation --------------------------------------------
-  // Same ledger as the backend (services.get_ledger_totals_bulk):
-  //   balance = opening + sum(term charges) - sum(paid)
-  // opening = brought_forward of the EARLIEST invoice (arrears/credit from
-  // before the system had any invoice for this student). Later invoices'
-  // brought_forward is just the previous balance rolled forward, so it must
-  // NOT be added again. term_charge (amount_due - brought_forward) is each
-  // invoice's own fee, so summing it never double-counts.
+  // IMPORTANT: use term_charge (amount_due - brought_forward), NOT raw
+  // amount_due, when summing across invoices. Each invoice's amount_due
+  // already folds in every prior term's unpaid balance via
+  // brought_forward (see Invoice.brought_forward / services.generate_invoice
+  // on the backend). Summing amount_due directly re-adds the same arrears
+  // once per later invoice and overstates the balance - term_charge is
+  // each invoice's OWN fee for that term alone, so summing that avoids
+  // double-counting. (Per-invoice display below still shows amount_due /
+  // balance as-is, which is correct at the row level.)
+  const totalDue = invoices.reduce((s, i) => s + Number(i.term_charge), 0);
+  const totalPaid = invoices.reduce((s, i) => s + Number(i.amount_paid), 0);
+  const netBalance = totalDue - totalPaid;
+  const prepaidAmount = netBalance < 0 ? Math.abs(netBalance) : 0;
 
-  // Oldest -> newest
+  // Oldest -> newest, for the statement and the "latest term" figures
   const chronological = [...invoices].sort((a, b) => {
     const ka = termOrder(a);
     const kb = termOrder(b);
     if (ka !== null && kb !== null && ka !== kb) return ka - kb;
     return new Date(a.issued_at) - new Date(b.issued_at);
   });
-  const firstInvoice = chronological[0] || null;
   const latestInvoice = chronological[chronological.length - 1] || null;
+  // what was carried INTO the latest term from earlier terms (+ arrears, - credit)
+  const latestBroughtForward = latestInvoice ? Number(latestInvoice.brought_forward) : 0;
 
-  const openingBalance = firstInvoice ? Number(firstInvoice.brought_forward) : 0;
-  const termChargesTotal = invoices.reduce((s, i) => s + Number(i.term_charge), 0);
-  const totalDue = openingBalance + termChargesTotal; // "Total Fees Charged"
-  const totalPaid = invoices.reduce((s, i) => s + Number(i.amount_paid), 0);
-  const netBalance = totalDue - totalPaid;
-  const prepaidAmount = netBalance < 0 ? Math.abs(netBalance) : 0;
+  // ---- General payment (one button, backend splits across invoices) ----
+  const openPayModal = () => {
+    setPhone(defaultPhone);
+    setAmount(netBalance > 0 ? String(Math.ceil(netBalance)) : "");
+    setPayError("");
+    setPayStatus("");
+    setPaidPayments([]);
+    setShowPayModal(true);
+  };
+
+  const closePayModal = () => {
+    setShowPayModal(false);
+    setPayStatus("");
+    setPayError("");
+    setPaidPayments([]);
+  };
+
+  // Called once the payment is confirmed: refresh invoices, then show which term(s) it landed on
+  const finishPayment = async (payments) => {
+    const list = await loadInvoices();
+    const termByInvoice = Object.fromEntries(list.map((i) => [i.id, i.term_label]));
+    setPaidPayments(payments.map((p) => ({ ...p, term_label: termByInvoice[p.invoice] || "-" })));
+    setPayStatus("COMPLETED");
+    // A single payment can open its receipt straight away; several are listed in the success screen
+    if (payments.length === 1) await viewReceipt(payments[0].id);
+  };
+
+  const pollStatus = async (checkoutRequestId, triesLeft) => {
+    if (triesLeft <= 0) {
+      setPayStatus("FAILED");
+      setPayError("We didn't get a confirmation in time. If you completed the M-Pesa prompt, your balance will update shortly - check back on this page.");
+      return;
+    }
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    try {
+      const { data } = await paymentsApi.status(checkoutRequestId);
+      if (data.status === "COMPLETED") {
+        await finishPayment(paymentsFrom(data));
+      } else if (data.status === "FAILED" || data.status === "CANCELLED") {
+        setPayStatus("FAILED");
+        setPayError(data.result_description || "Payment was not completed.");
+      } else {
+        pollStatus(checkoutRequestId, triesLeft - 1);
+      }
+    } catch {
+      pollStatus(checkoutRequestId, triesLeft - 1);
+    }
+  };
+
+  const submitPayment = async (e) => {
+    e.preventDefault();
+    setPayError("");
+    setPayStatus("SUBMITTING");
+    try {
+      // No invoice_id -> the backend treats this as a general payment
+      // and splits it across invoices, oldest term first.
+      const { data } = await paymentsApi.initiate({
+        phone_number: phone,
+        amount: Number(amount),
+      });
+      if (data.status === "COMPLETED") {
+        await finishPayment(paymentsFrom(data));
+      } else {
+        setPayStatus("PENDING");
+        pollStatus(data.checkout_request_id, POLL_MAX_TRIES);
+      }
+    } catch (err) {
+      setPayStatus("FAILED");
+      const detail = err.response?.data?.detail || err.response?.data;
+      setPayError(typeof detail === "object" ? Object.values(detail).flat().join(" ") : (detail || "Could not start payment."));
+    }
+  };
 
   const viewReceipt = async (paymentId) => {
     setReceiptLoading(true);
@@ -210,11 +292,11 @@ export default function StudentFees() {
       autoTable(doc, {
         startY: doc.lastAutoTable.finalY + 3,
         theme: "grid",
-        head: [["Total Fees Charged", "Total Paid", "Brought Forward (opening)", balanceLabel]],
+        head: [["Total Fees Charged", "Total Paid", "Brought Forward (latest term)", balanceLabel]],
         body: [[
           `KES ${currency(totalDue)}`,
           `KES ${currency(totalPaid)}`,
-          bfText(openingBalance),
+          bfText(latestBroughtForward),
           `KES ${currency(Math.abs(netBalance))}`,
         ]],
         styles: {
@@ -227,8 +309,8 @@ export default function StudentFees() {
         },
         didParseCell: (data) => {
           if (data.section !== "body") return;
-          if (data.column.index === 2 && openingBalance !== 0) {
-            data.cell.styles.textColor = openingBalance > 0 ? RED : GREEN;
+          if (data.column.index === 2 && latestBroughtForward !== 0) {
+            data.cell.styles.textColor = latestBroughtForward > 0 ? RED : GREEN;
           }
           if (data.column.index === 3) {
             data.cell.styles.textColor = netBalance > 0 ? RED : GREEN;
@@ -267,7 +349,7 @@ export default function StudentFees() {
           rowStatus(Number(inv.balance)),
         ]),
         foot: [[
-          "Total", "", currency(termChargesTotal), "-", "-", currency(totalPaid), currency(netBalance),
+          "Total", "", currency(totalDue), "-", "-", currency(totalPaid), currency(netBalance),
           rowStatus(netBalance),
         ]],
         showFoot: "lastPage",
@@ -609,6 +691,15 @@ export default function StudentFees() {
           </a>
           <button
             type="button"
+            className="btn btn-sm btn-primary"
+            onClick={openPayModal}
+            disabled={loading || invoices.length === 0}
+          >
+            <i className="bi bi-phone me-1"></i>
+            {netBalance > 0 ? "Pay Fees" : "Pay in Advance"}
+          </button>
+          <button
+            type="button"
             className="btn btn-sm btn-outline-primary"
             onClick={handleDownloadStatement}
             disabled={loading || downloadingStatement || invoices.length === 0}
@@ -653,6 +744,9 @@ export default function StudentFees() {
             your fee statements. You don't need to pay it all at once — partial payments are accepted and
             are applied to your oldest unpaid term first.
           </span>
+          <button className="btn btn-sm btn-primary ms-auto" onClick={openPayModal}>
+            <i className="bi bi-phone me-1"></i>Pay Now
+          </button>
         </div>
       )}
       {!loading && netBalance < 0 && (
@@ -667,36 +761,6 @@ export default function StudentFees() {
             You have prepaid <strong>KES {Math.abs(netBalance).toLocaleString()}</strong>. This credit will be
             applied automatically to your next term's fees.
           </span>
-        </div>
-      )}
-
-      {/* How to pay - manual M-Pesa Paybill/Till flow. Self-service online
-          payment isn't available yet, so this replaces the old Pay Fees
-          button/modal until the school's Paybill/Till is integrated. */}
-      {!loading && invoices.length > 0 && (
-        <div className="alert alert-info mb-4" style={{ display: "flex", gap: "0.75rem", alignItems: "flex-start" }}>
-          <i className="bi bi-info-circle" style={{ fontSize: "1.2rem", marginTop: "0.1rem" }}></i>
-          <div>
-            <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>How to pay your school fees</div>
-            <div className="text-muted-soft" style={{ fontSize: "var(--fs-sm)" }}>
-              Online payment on this page isn't available yet. Please pay via M-Pesa:
-            </div>
-            <ol style={{ fontSize: "var(--fs-sm)", marginTop: "0.5rem", marginBottom: "0.5rem", paddingLeft: "1.1rem" }}>
-              <li>
-                Pay via <strong>Paybill {SCHOOL_PAYBILL_NUMBER}</strong>, Account Number ={" "}
-                <strong>your Admission Number</strong> (or Till {SCHOOL_TILL_NUMBER}, if the school uses a
-                Buy Goods till).
-              </li>
-              <li>
-                Once you get the M-Pesa confirmation SMS, <strong>forward that exact message</strong> to the
-                school on <strong>{FEES_FORWARD_PHONE}</strong>.
-              </li>
-              <li>Include your <strong>full name</strong> and <strong>admission number</strong> in the same message.</li>
-            </ol>
-            <div className="text-muted-soft" style={{ fontSize: "var(--fs-xs)" }}>
-              Finance will confirm and update your balance here once the payment is recorded.
-            </div>
-          </div>
         </div>
       )}
 
@@ -718,18 +782,18 @@ export default function StudentFees() {
                   className="stat-card__value"
                   style={{
                     fontSize: "1.2rem",
-                    color: openingBalance > 0 ? "var(--danger-600)" : openingBalance < 0 ? "var(--success-600)" : undefined,
+                    color: latestBroughtForward > 0 ? "var(--danger-600)" : latestBroughtForward < 0 ? "var(--success-600)" : undefined,
                   }}
                 >
-                  {bfText(openingBalance)}
+                  {bfText(latestBroughtForward)}
                 </div>
                 <div className="stat-card__label">
-                  Brought Forward{firstInvoice ? ` (${firstInvoice.term_label})` : ""}
+                  Brought Forward{latestInvoice ? ` (${latestInvoice.term_label})` : ""}
                 </div>
                 <div className="stat-card__label" style={{ fontSize: "0.7rem" }}>
-                  {openingBalance > 0
+                  {latestBroughtForward > 0
                     ? "Unpaid from earlier terms"
-                    : openingBalance < 0
+                    : latestBroughtForward < 0
                       ? "Credit from earlier terms"
                       : "Nothing carried in"}
                 </div>
@@ -915,6 +979,141 @@ export default function StudentFees() {
             </div>
           </div>
         </>
+      )}
+
+      {/* Payment Modal - one general payment, split across terms automatically */}
+      {showPayModal && (
+        <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }} tabIndex="-1" role="dialog">
+          <div className="modal-dialog modal-dialog-centered" role="document">
+            <div className="modal-content">
+              {payStatus === "COMPLETED" ? (
+                <div className="modal-body text-center py-4">
+                  <i className="bi bi-check-circle-fill text-success" style={{ fontSize: "3rem" }}></i>
+                  <h5 className="mt-3" style={{ fontWeight: 700 }}>Payment Successful</h5>
+                  <p className="text-muted">Your payment was applied to your fee statements:</p>
+                  {paidPayments.length > 0 && (
+                    <table className="table table-sm text-start mb-3">
+                      <tbody>
+                        {paidPayments.map((p) => (
+                          <tr key={p.id}>
+                            <td>{p.term_label}</td>
+                            <td className="text-end fw-bold text-success">KES {currency(p.amount)}</td>
+                            <td className="text-end">
+                              <button className="btn btn-sm btn-outline-primary" onClick={() => viewReceipt(p.id)}>
+                                <i className="bi bi-receipt me-1"></i>Receipt
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  <button className="btn btn-primary" onClick={closePayModal}>
+                    <i className="bi bi-check2 me-2"></i>Close
+                  </button>
+                </div>
+              ) : payStatus === "FAILED" ? (
+                <div className="modal-body text-center py-4">
+                  <i className="bi bi-x-circle-fill text-danger" style={{ fontSize: "3rem" }}></i>
+                  <h5 className="mt-3" style={{ fontWeight: 700 }}>Payment Failed</h5>
+                  <p className="text-danger">{payError}</p>
+                  <button className="btn btn-primary" onClick={() => setPayStatus("")}>
+                    <i className="bi bi-arrow-repeat me-2"></i>Try Again
+                  </button>
+                </div>
+              ) : payStatus === "PENDING" ? (
+                <div className="modal-body text-center py-4">
+                  <div className="spinner-border text-primary mb-3" role="status" style={{ width: "3rem", height: "3rem" }}></div>
+                  <h5 style={{ fontWeight: 700 }}>Check your phone</h5>
+                  <p className="text-muted">
+                    An M-Pesa prompt has been sent to <strong>{phone}</strong>. Enter your PIN to
+                    complete the payment of <strong>KES {currency(amount)}</strong>.
+                  </p>
+                  <div className="text-muted small">
+                    <i className="bi bi-clock me-1"></i>
+                    Waiting for confirmation...
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="modal-header">
+                    <h5 className="modal-title" style={{ fontWeight: 700, color: "var(--ink-900)" }}>
+                      <i className="bi bi-credit-card me-2" style={{ color: "var(--blue-700)" }}></i>
+                      Pay School Fees
+                    </h5>
+                    <button type="button" className="btn-close" onClick={closePayModal}></button>
+                  </div>
+                  <form onSubmit={submitPayment}>
+                    <div className="modal-body">
+                      <div className="alert alert-light border small py-2 mb-3">
+                        {netBalance > 0 ? (
+                          <>Total outstanding: <strong>KES {currency(netBalance)}</strong>. </>
+                        ) : (
+                          <>Your account is settled. Anything you pay now is kept as credit for your next term. </>
+                        )}
+                        Your payment is applied automatically to your oldest unpaid term first, then the next,
+                        and so on. Partial payments are fine.
+                      </div>
+
+                      {payError && (
+                        <div className="alert alert-danger py-2">
+                          <i className="bi bi-exclamation-circle me-2"></i>
+                          {payError}
+                        </div>
+                      )}
+
+                      <div className="mb-3">
+                        <label className="form-label">Amount (KES)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          className="form-control"
+                          required
+                          value={amount}
+                          onChange={(e) => setAmount(e.target.value)}
+                          placeholder="Enter amount to pay"
+                        />
+                      </div>
+
+                      <div className="mb-3">
+                        <label className="form-label">
+                          <i className="bi bi-phone me-1" style={{ color: "var(--blue-700)" }}></i>
+                          M-Pesa Phone Number
+                        </label>
+                        <input
+                          className="form-control"
+                          required
+                          placeholder="07XXXXXXXX"
+                          value={phone}
+                          onChange={(e) => setPhone(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <div className="modal-footer">
+                      <button type="button" className="btn btn-outline-secondary" onClick={closePayModal}>
+                        Cancel
+                      </button>
+                      <button type="submit" className="btn btn-primary" disabled={payStatus === "SUBMITTING"}>
+                        {payStatus === "SUBMITTING" ? (
+                          <>
+                            <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                            Sending...
+                          </>
+                        ) : (
+                          <>
+                            <i className="bi bi-send me-2"></i>
+                            Pay with M-Pesa
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Receipt Modal - Bootstrap Modal */}

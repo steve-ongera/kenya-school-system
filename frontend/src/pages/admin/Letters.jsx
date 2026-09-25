@@ -23,7 +23,7 @@ const thisYear = String(new Date().getFullYear());
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
 const DEFAULT_LH = {
-  schoolName: "Junda High School",
+  schoolName: "Junda High School Shanzu",
   schoolAddress: "",
   schoolPhone: "",
   schoolEmail: "",
@@ -1563,7 +1563,7 @@ export default function Letters() {
         </div>
         <div className="row g-2">
           {[
-            ["schoolName", "School name", "col-md-6", "Junda High School"],
+            ["schoolName", "School name", "col-md-6", "Junda High School Shanzu"],
             ["schoolAddress", "Address", "col-md-6", "e.g. P.O. Box 123-40100, Kisumu"],
             ["schoolPhone", "Phone", "col-md-4", "e.g. 0712 345 678"],
             ["schoolEmail", "Email", "col-md-4", "e.g. info@jundahigh.sc.ke"],

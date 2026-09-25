@@ -9,6 +9,12 @@ import {
 
 const PIE_COLORS = ["#1d4ed8", "#d97706", "#16a34a", "#7c3aed", "#dc2626"];
 
+// "Term 1 - 2026" -> sortable number (20261). null if the label isn't in that shape.
+const termOrder = (inv) => {
+  const m = /Term\s+(\d+)\s*-\s*(\d{4})/i.exec(inv.term_label || "");
+  return m ? Number(m[2]) * 10 + Number(m[1]) : null;
+};
+
 export default function StudentDashboard() {
   const { user } = useAuth();
   const [enrollment, setEnrollment] = useState(null);
@@ -40,7 +46,7 @@ export default function StudentDashboard() {
       }
     })();
 
-    financeApi.invoices()
+    financeApi.invoices({ page_size: 200 })
       .then(({ data }) => {
         const list = data.results ?? data;
         // Use term_charge (amount_due - brought_forward), NOT raw
@@ -51,20 +57,19 @@ export default function StudentDashboard() {
         // directly re-adds the same arrears once per later invoice and
         // overstates the balance - term_charge is each invoice's OWN fee
         // for that term alone, so summing that avoids double-counting.
-        const totalDue = list.reduce((s, i) => s + Number(i.term_charge), 0);
+        const chronological = [...list].sort((a, b) => {
+          const ka = termOrder(a);
+          const kb = termOrder(b);
+          if (ka !== null && kb !== null && ka !== kb) return ka - kb;
+          return new Date(a.issued_at) - new Date(b.issued_at);
+        });
+        const opening = chronological.length ? Number(chronological[0].brought_forward) : 0;
+        const termCharges = list.reduce((s, i) => s + Number(i.term_charge), 0);
         const totalPaid = list.reduce((s, i) => s + Number(i.amount_paid), 0);
-        setNetBalance(totalDue - totalPaid);
+        setNetBalance(opening + termCharges - totalPaid);
       })
       .catch((error) => console.error("Failed to load fee balance:", error))
       .finally(() => setFeeLoading(false));
-
-    performanceApi.dashboard()
-      .then(({ data }) => {
-        setPerformance(data);
-        setTrendYear(String(data.selected_academic_year_id ?? ""));
-      })
-      .catch((error) => console.error("Failed to load performance dashboard:", error))
-      .finally(() => setPerformanceLoading(false));
   }, []);
 
   const handleTrendYearChange = async (e) => {
@@ -126,7 +131,7 @@ export default function StudentDashboard() {
             </div>
             <div>
               <h1 className="page-title" style={{ marginBottom: "0.1rem" }}>
-                {getGreeting()}, {user?.first_name || "Student"}! 👋
+                {getGreeting()}, {user?.first_name || "Student"}! 
               </h1>
               <p className="page-subtitle" style={{ marginBottom: "0" }}>
                 Welcome to your student dashboard

@@ -1,9 +1,9 @@
 """
 Small, reusable helpers: RBAC permission classes + misc utility functions.
 """
-from rest_framework.permissions import BasePermission, SAFE_METHODS
 import re
-from rest_framework.permissions import BasePermission
+
+from rest_framework.permissions import BasePermission, SAFE_METHODS
 
 from . import models
 
@@ -52,6 +52,110 @@ class IsAdminOrFinance(IsRole):
     allowed_roles = (models.User.Role.ADMIN, models.User.Role.FINANCE)
 
 
+class IsPrincipal(BasePermission):
+    """Principal-only."""
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role == models.User.Role.PRINCIPAL
+        )
+
+
+class IsSecretary(BasePermission):
+    """Secretary-only."""
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role == models.User.Role.SECRETARY
+        )
+
+
+class IsPrincipalOrAdmin(BasePermission):
+    """Principal's own dashboard, plus lets Admin preview it."""
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in (models.User.Role.PRINCIPAL, models.User.Role.ADMIN)
+        )
+
+
+class IsSecretaryOrAdmin(BasePermission):
+    """Secretary's own dashboard, plus lets Admin preview it."""
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in (models.User.Role.SECRETARY, models.User.Role.ADMIN)
+        )
+
+
+class IsAdminOrSecretary(BasePermission):
+    """
+    Student records, guardians, and the clearance desk — Secretary's
+    core front-office job. Used on AdmitStudentView,
+    StudentProfileViewSet (retrieve/update/reset_password),
+    ParentGuardianProfileViewSet, ParentStudentLinkViewSet, and
+    ClearanceApplicationViewSet.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in (models.User.Role.ADMIN, models.User.Role.SECRETARY)
+        )
+
+
+class IsAdminOrPrincipal(BasePermission):
+    """
+    Oversight views — reports and promotion previews. Used on
+    ReportsOverviewView and ClassRoomViewSet.promotion_preview.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in (models.User.Role.ADMIN, models.User.Role.PRINCIPAL)
+        )
+
+
+class IsSchoolOffice(BasePermission):
+    """
+    Admin, Principal, Secretary, Finance — everyone allowed to broadcast
+    a Communication. Used on CommunicationViewSet.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in (
+                models.User.Role.ADMIN, models.User.Role.PRINCIPAL,
+                models.User.Role.SECRETARY, models.User.Role.FINANCE,
+            )
+        )
+
+
+class IsStaffMember(BasePermission):
+    """
+    ADMIN, PRINCIPAL, SECRETARY, TEACHER, or FINANCE - used to gate
+    starting a new conversation, searching students (Communications'
+    "Specific Students" picker, StudentProfileViewSet.list), and
+    creating bulk Communications.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in (
+                models.User.Role.ADMIN, models.User.Role.PRINCIPAL,
+                models.User.Role.SECRETARY, models.User.Role.TEACHER,
+                models.User.Role.FINANCE,
+            )
+        )
+
+
 class ReadOnlyOrAdmin(BasePermission):
     """Anyone authenticated can read; only ADMIN can write."""
 
@@ -61,6 +165,26 @@ class ReadOnlyOrAdmin(BasePermission):
         if request.method in SAFE_METHODS:
             return True
         return request.user.role == models.User.Role.ADMIN
+
+
+class IsAdminOnly(BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated and request.user.role == "ADMIN")
+
+
+class IsSuperAdmin(BasePermission):
+    """
+    Extra gate for destructive actions. Being authenticated as role=ADMIN
+    (or even Django's is_superuser) is NOT enough on its own — the user's
+    is_super_admin flag must also be True. This flag is only ever set via
+    Django Admin/shell, never through the app's own API, so an ordinary
+    Admin can't grant it to themselves or anyone else.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated and request.user.is_super_admin
+        )
 
 
 class IsAllocatedTeacherForClassroom(BasePermission):
@@ -82,6 +206,27 @@ class IsAllocatedTeacherForClassroom(BasePermission):
             teacher=user, subject=obj.subject, classroom=classroom,
             academic_year=classroom.academic_year,
         ).exists()
+
+
+# ---------------------------------------------------------------------------
+# Permission mixins
+# ---------------------------------------------------------------------------
+class BlockDestructiveDeleteMixin:
+    """
+    Mix into any ViewSet whose destroy() cascades into fee, exam, or
+    enrollment history - deleting a StudentProfile, ClassRoom, Term,
+    AcademicYear, GradeLevel, or Subject can silently wipe invoices,
+    payments, exam results, or a student's whole record. This adds
+    IsSuperAdmin ON TOP of whatever permission the ViewSet already
+    enforces, and ONLY for the destroy action - list/create/update are
+    untouched.
+    """
+
+    def get_permissions(self):
+        perms = super().get_permissions()
+        if self.action == "destroy":
+            perms.append(IsSuperAdmin())
+        return perms
 
 
 # ---------------------------------------------------------------------------
@@ -111,23 +256,6 @@ def student_guardians(student_profile):
     return [link.parent.user for link in models.ParentStudentLink.objects.filter(student=student_profile)]
 
 
-# ===========================================================================
-# Add to utils.py.
-# ===========================================================================
-from rest_framework.permissions import BasePermission
-from . import models
-
-
-class IsStaffMember(BasePermission):
-    """ADMIN, TEACHER, or FINANCE - used to gate starting a new conversation and creating bulk Communications."""
-
-    def has_permission(self, request, view):
-        return bool(
-            request.user and request.user.is_authenticated
-            and request.user.role in (models.User.Role.ADMIN, models.User.Role.TEACHER, models.User.Role.FINANCE)
-        )
-
-
 def teacher_can_message_student(user, student):
     """
     True if `user` (a TEACHER) is the class teacher of `student`'s current
@@ -141,13 +269,6 @@ def teacher_can_message_student(user, student):
     if classroom.class_teacher_id == user.id:
         return True
     return models.TeacherSubjectAllocation.objects.filter(teacher=user, classroom=classroom).exists()
-
-
-
-
-USERNAME_MAX_LENGTH = 30
-# letters, numbers, - _ . / only, 3-30 chars — rejects the "garbage string" case entirely
-USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._\-/]{3,30}$")
 
 
 def get_client_ip(request):
@@ -165,39 +286,6 @@ def mask_contact(user):
     return "your registered contact"
 
 
-class IsAdminOnly(BasePermission):
-    def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated and request.user.role == "ADMIN")
-    
-    
-class IsSuperAdmin(BasePermission):
-    """
-    Extra gate for destructive actions. Being authenticated as role=ADMIN
-    (or even Django's is_superuser) is NOT enough on its own — the user's
-    is_super_admin flag must also be True. This flag is only ever set via
-    Django Admin/shell, never through the app's own API, so an ordinary
-    Admin can't grant it to themselves or anyone else.
-    """
-
-    def has_permission(self, request, view):
-        return bool(
-            request.user and request.user.is_authenticated and request.user.is_super_admin
-        )
-
-
-class BlockDestructiveDeleteMixin:
-    """
-    Mix into any ViewSet whose destroy() cascades into fee, exam, or
-    enrollment history - deleting a StudentProfile, ClassRoom, Term,
-    AcademicYear, GradeLevel, or Subject can silently wipe invoices,
-    payments, exam results, or a student's whole record. This adds
-    IsSuperAdmin ON TOP of whatever permission the ViewSet already
-    enforces, and ONLY for the destroy action - list/create/update are
-    untouched.
-    """
-
-    def get_permissions(self):
-        perms = super().get_permissions()
-        if self.action == "destroy":
-            perms.append(IsSuperAdmin())
-        return perms
+USERNAME_MAX_LENGTH = 30
+# letters, numbers, - _ . / only, 3-30 chars — rejects the "garbage string" case entirely
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._\-/]{3,30}$")

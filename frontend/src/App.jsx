@@ -56,6 +56,15 @@ const AdminFinanceCollections = lazy(() => import("./pages/admin/finance/Collect
 const AdminFinanceClassAnalysis = lazy(() => import("./pages/admin/finance/ClassAnalysis"));
 const AdminFinanceDetailedReport = lazy(() => import("./pages/admin/finance/DetailedReport"));
 
+// principal — own dashboard only; everywhere else it reuses the Admin
+// page components above (imported once, mounted under /principal/*)
+const PrincipalDashboard = lazy(() => import("./pages/principal/Dashboard"));
+
+// secretary — own dashboard only; everywhere else it reuses the Admin
+// (and, for Invoices, the Finance) page components imported above,
+// mounted under /secretary/*
+const SecretaryDashboard = lazy(() => import("./pages/secretary/Dashboard"));
+
 // finance
 const FinanceDashboard = lazy(() => import("./pages/finance/Dashboard"));
 const FinanceStructures = lazy(() => import("./pages/finance/Structures"));
@@ -133,7 +142,7 @@ export default function App() {
             <Route
               path="/user-manual"
               element={
-                <Guarded roles={["ADMIN", "TEACHER", "FINANCE", "STUDENT"]}>
+                <Guarded roles={["ADMIN", "TEACHER", "FINANCE", "STUDENT", "PRINCIPAL", "SECRETARY"]}>
                   <UserManual />
                 </Guarded>
               }
@@ -141,7 +150,7 @@ export default function App() {
             <Route
               path="/contact-developer"
               element={
-                <Guarded roles={["ADMIN", "TEACHER", "FINANCE", "STUDENT"]}>
+                <Guarded roles={["ADMIN", "TEACHER", "FINANCE", "STUDENT", "PRINCIPAL", "SECRETARY"]}>
                   <ContactDeveloper />
                 </Guarded>
               }
@@ -175,6 +184,53 @@ export default function App() {
             <Route path="/admin/finance-reports/collections" element={<RoleSection role="ADMIN"><AdminFinanceCollections /></RoleSection>} />
             <Route path="/admin/finance-reports/class-analysis" element={<RoleSection role="ADMIN"><AdminFinanceClassAnalysis /></RoleSection>} />
             <Route path="/admin/finance-reports/detailed" element={<RoleSection role="ADMIN"><AdminFinanceDetailedReport /></RoleSection>} />
+
+            {/* PRINCIPAL — own dashboard, plus the same Admin page
+                components reused for oversight (read-leaning: classes,
+                exams, rankings, promotion previews, calendar, clearance,
+                students, teacher allocation, reports, announcements).
+                Requires the backend permission_classes swaps in
+                08/09_*_patch.py so these endpoints actually let a
+                PRINCIPAL account through. */}
+            <Route path="/principal" element={<RoleSection role="PRINCIPAL"><PrincipalDashboard /></RoleSection>} />
+            <Route path="/principal/students" element={<RoleSection role="PRINCIPAL"><AdminStudents /></RoleSection>} />
+            <Route path="/principal/classrooms" element={<RoleSection role="PRINCIPAL"><AdminClassrooms /></RoleSection>} />
+            <Route path="/principal/teachers" element={<RoleSection role="PRINCIPAL"><AdminTeacherAllocation /></RoleSection>} />
+            <Route path="/principal/exams" element={<RoleSection role="PRINCIPAL"><AdminExams /></RoleSection>} />
+            <Route path="/principal/rankings" element={<RoleSection role="PRINCIPAL"><AdminRankings /></RoleSection>} />
+            <Route path="/principal/promotions" element={<RoleSection role="PRINCIPAL"><AdminPromotions /></RoleSection>} />
+            <Route path="/principal/reports" element={<RoleSection role="PRINCIPAL"><AdminReports /></RoleSection>} />
+            <Route path="/principal/calendar" element={<RoleSection role="PRINCIPAL"><AdminCalendar /></RoleSection>} />
+            <Route path="/principal/clearance" element={<RoleSection role="PRINCIPAL"><AdminClearance /></RoleSection>} />
+            <Route path="/principal/communications" element={<RoleSection role="PRINCIPAL"><Communications /></RoleSection>} />
+
+            {/* SECRETARY — own dashboard, plus the front-office slice of
+                the Admin tools: admitting/managing student records,
+                guardians, the clearance desk, classes/calendar for
+                reference, announcements and letters — plus, now,
+                Timetable Management, Teacher Allocation, Expenses,
+                Invoices (reusing the Finance page component) and the
+                Detailed finance report.
+                NOTE: several of these endpoints (Timetable, Teacher
+                Allocation, Expenses, Invoices, Detailed Report) are
+                currently permissioned IsAdmin / IsAdminOrFinance on the
+                backend (see utils.py / views.py). The pages will render
+                for a SECRETARY account, but API calls will 403 until the
+                matching permission classes are widened to include
+                SECRETARY, the same way the PRINCIPAL patch above did. */}
+            <Route path="/secretary" element={<RoleSection role="SECRETARY"><SecretaryDashboard /></RoleSection>} />
+            <Route path="/secretary/students" element={<RoleSection role="SECRETARY"><AdminStudents /></RoleSection>} />
+            <Route path="/secretary/parents" element={<RoleSection role="SECRETARY"><AdminParents /></RoleSection>} />
+            <Route path="/secretary/classrooms" element={<RoleSection role="SECRETARY"><AdminClassrooms /></RoleSection>} />
+            <Route path="/secretary/clearance" element={<RoleSection role="SECRETARY"><AdminClearance /></RoleSection>} />
+            <Route path="/secretary/calendar" element={<RoleSection role="SECRETARY"><AdminCalendar /></RoleSection>} />
+            <Route path="/secretary/communications" element={<RoleSection role="SECRETARY"><Communications /></RoleSection>} />
+            <Route path="/secretary/letters" element={<RoleSection role="SECRETARY"><AdminLetters /></RoleSection>} />
+            <Route path="/secretary/timetable" element={<RoleSection role="SECRETARY"><AdminTimetableManagement /></RoleSection>} />
+            <Route path="/secretary/teachers" element={<RoleSection role="SECRETARY"><AdminTeacherAllocation /></RoleSection>} />
+            <Route path="/secretary/expenses" element={<RoleSection role="SECRETARY"><AdminExpenses /></RoleSection>} />
+            <Route path="/secretary/invoices" element={<RoleSection role="SECRETARY"><FinanceInvoices /></RoleSection>} />
+            <Route path="/secretary/finance-reports/detailed" element={<RoleSection role="SECRETARY"><AdminFinanceDetailedReport /></RoleSection>} />
 
             {/* TEACHER */}
             <Route path="/teacher" element={<RoleSection role="TEACHER"><TeacherDashboard /></RoleSection>} />
@@ -210,7 +266,9 @@ export default function App() {
             <Route path="/finance/reports/class-analysis" element={<RoleSection role="FINANCE"><FinanceClassAnalysis /></RoleSection>} />
             <Route path="/finance/reports/detailed" element={<RoleSection role="FINANCE"><FinanceDetailedReport /></RoleSection>} />
 
-            {/* COMMUNICATIONS - Admin and Finance can both broadcast; each keeps its own path so the sidebar entry sits naturally in its own role group */}
+            {/* COMMUNICATIONS - Admin, Finance, Principal and Secretary can
+                all broadcast; each keeps its own path so the sidebar entry
+                sits naturally in its own role group */}
             <Route path="/admin/communications" element={<RoleSection role="ADMIN"><Communications /></RoleSection>} />
             <Route path="/finance/communications" element={<RoleSection role="FINANCE"><Communications /></RoleSection>} />
 

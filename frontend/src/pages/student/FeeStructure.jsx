@@ -6,7 +6,7 @@ import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
 import logoImage from "../../assets/junda_high_logo.png";
 
-const SCHOOL_NAME = "Junda High School";
+const SCHOOL_NAME = "Junda High School Shanzu";
 const DOC_COPY_NOTE = "This is a computer-generated document copy.";
 
 const money = (v) => Number(v || 0).toLocaleString("en-KE", { maximumFractionDigits: 2 });

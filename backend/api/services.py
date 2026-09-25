@@ -32,34 +32,34 @@ _signer = TimestampSigner(salt="2fa-login-challenge")
 # ---------------------------------------------------------------------------
 def generate_admission_no(year: int) -> str:
     """
-    Generates a sequential admission number, e.g. ADM00001, ADM00081,
-    ADM11871.
+    Generates a sequential admission number, e.g. 2673, 2674, 2675.
 
-    Admission numbers are independent of the User.id (UUID) and are
-    short, sequential and human-readable.
+    Admission numbers are independent of User.id (UUID) and are
+    sequential across all years.
 
-    The `year` argument is retained for backwards compatibility but does
-    not affect the sequence. Admission numbers are sequential across
-    all years.
+    The `year` argument is retained for backwards compatibility
+    but does not affect the sequence.
 
     Format:
-        ADM + 5-digit zero-padded sequence
+        Plain sequential number (no "ADM" prefix, no zero-padding)
     """
+
     last = (
         models.StudentProfile.objects
-        .filter(admission_no__regex=r"^ADM\d+$")
+        .filter(admission_no__regex=r"^\d+$")
         .order_by("-admission_no")
         .first()
     )
 
     next_seq = 1
+
     if last:
         try:
-            next_seq = int(last.admission_no[3:]) + 1
+            next_seq = int(last.admission_no) + 1
         except (ValueError, TypeError):
             pass
 
-    return f"ADM{next_seq:05d}"
+    return str(next_seq)
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +149,7 @@ def register_failed_login(user, ip_address, result):
         )
         notify_admins_account_locked(user)
     elif user.failed_login_attempts == settings.ACCOUNT_LOCKOUT_MAX_ATTEMPTS - 1:
-        # warn admins one attempt before lockout, not on every single failure
+        # Warn admins one attempt before lockout, not on every single failure.
         notify_admins_suspicious_activity(user)
 
     return locked_now
@@ -175,7 +175,7 @@ def generate_and_send_otp(user):
     user.save(update_fields=["otp_code", "otp_expires_at"])
 
     if settings.DEBUG:
-        # dev convenience only - never do this in production
+        # Dev convenience only - never do this in production.
         print(f"[DEV OTP] {user.username} -> {code}")
     else:
         _dispatch_otp(user, code)
@@ -365,8 +365,11 @@ def validate_subject_selection(
         allowed_group_ids = {r.group_id for r in track.group_rules.all()}
         chosen_subjects = models.Subject.objects.filter(id__in=chosen_optional).select_related("elective_group")
 
-        # any optional subject with a group must belong to a group this track allows
-        stray = [s.name for s in chosen_subjects if s.elective_group_id and s.elective_group_id not in allowed_group_ids]
+        # Any optional subject with a group must belong to a group this track allows.
+        stray = [
+            s.name for s in chosen_subjects
+            if s.elective_group_id and s.elective_group_id not in allowed_group_ids
+        ]
         if stray:
             raise ValueError(f"These subjects don't belong to the '{track.name}' track: {', '.join(stray)}")
 
@@ -531,8 +534,8 @@ def get_report_card_verification(token: str) -> dict:
     if payload.get("exam_id"):
         exam = models.Exam.objects.filter(pk=payload["exam_id"]).first()
         if not exam:
-            # don't silently fall back to a combined-term view for an
-            # exam-specific report card whose exam has been deleted
+            # Don't silently fall back to a combined-term view for an
+            # exam-specific report card whose exam has been deleted.
             return {"valid": False, "detail": "This report card no longer exists."}
 
     classroom = enrollment.classroom
@@ -651,7 +654,7 @@ def rank_classroom(term: models.Term, classroom: models.ClassRoom, checkpoint: s
         average = float(weighted_sum / weighted_max * 100) if weighted_max else 0
         scored.append({"enrollment": enrollment, "total": weighted_sum, "average": round(average, 2)})
 
-    # class position: rank by average, descending, ties share a rank (1,2,2,4 style)
+    # Class position: rank by average, descending, ties share a rank (1,2,2,4 style).
     scored.sort(key=lambda x: x["average"], reverse=True)
     with transaction.atomic():
         prev_avg, rank = None, 0
@@ -727,7 +730,7 @@ def get_student_exam_summary(enrollment: models.Enrollment, exam: models.Exam) -
     curriculum_type = grade_level.curriculum_type
     is_844 = curriculum_type == models.CurriculumType.LEGACY_844
 
-    # everyone in the same grade (all streams) for that academic year
+    # Everyone in the same grade (all streams) for that academic year.
     classroom_by_enrollment = dict(
         models.Enrollment.objects.filter(
             classroom__grade_level=grade_level,
@@ -801,6 +804,8 @@ def get_student_exam_summary(enrollment: models.Enrollment, exam: models.Exam) -
         "grade_position": grade_ranks.get(enrollment.id),
         "grade_size": len(grade_ranks),
     }
+
+
 # ---------------------------------------------------------------------------
 # PROMOTION
 # ---------------------------------------------------------------------------
@@ -954,22 +959,66 @@ def bulk_promote_classroom_auto(source_classroom: models.ClassRoom, force: bool 
 # ---------------------------------------------------------------------------
 # FEES - carry-forward ledger, STK push (with DEBUG bypass), receipts
 # ---------------------------------------------------------------------------
+def get_ledger_totals_bulk(student_ids):
+    """
+    THE single source of truth for student money. Every page (student
+    portal, finance reports, receipts, clearance, fee reminders) must go
+    through this so they all show the same number.
+
+        balance = opening + charged - paid
+
+      opening = brought_forward of the student's EARLIEST invoice
+                (arrears from before the system had any invoice for them;
+                 negative = credit). Later invoices' brought_forward is
+                already just the previous invoice's balance rolled
+                forward, so only the first one is genuine opening money.
+      charged = sum(amount_due - brought_forward) over all invoices
+                (each term's own fee, so nothing is double-counted)
+      paid    = sum(amount_paid) over all invoices
+
+    Returns {student_id: {"opening", "charged", "paid", "balance"}} as
+    Decimals, in ONE query. Students with no invoices are absent.
+    Positive balance = owes, negative = prepaid credit.
+    """
+    rows = (
+        models.Invoice.objects.filter(enrollment__student_id__in=list(student_ids))
+        .order_by(
+            "enrollment__student_id",
+            "fee_structure__term__academic_year__year",
+            "fee_structure__term__term_number",
+            "id",
+        )
+        .values("enrollment__student_id", "brought_forward", "amount_due", "amount_paid")
+    )
+
+    out = {}
+    for r in rows:
+        student_id = r["enrollment__student_id"]
+        t = out.get(student_id)
+        if t is None:
+            # Rows are ordered oldest-first, so the first one per student
+            # is their earliest invoice.
+            t = out[student_id] = {
+                "opening": r["brought_forward"],
+                "charged": Decimal("0"),
+                "paid": Decimal("0"),
+            }
+        t["charged"] += r["amount_due"] - r["brought_forward"]
+        t["paid"] += r["amount_paid"]
+
+    for t in out.values():
+        t["balance"] = t["opening"] + t["charged"] - t["paid"]
+    return out
+
+
 def get_outstanding_balance(student: models.StudentProfile) -> Decimal:
     """
-    Sums each invoice's OWN term charge (amount_due minus whatever was
-    already brought forward into it) minus everything ever paid.
-
-    Summing amount_due directly double-counts arrears, since invoice N's
-    amount_due already includes invoice N-1's unpaid balance via
-    brought_forward - summing raw amount_due across invoices re-adds that
-    same arrears again for every later invoice. See Invoice.term_charge.
+    Total fee balance for one student. Positive = owes, negative =
+    prepaid credit. Uses get_ledger_totals_bulk so it always agrees with
+    the finance reports and the invoice pages.
     """
-    invoices = models.Invoice.objects.filter(enrollment__student=student)
-    total_charged = invoices.aggregate(
-        s=Sum(F("amount_due") - F("brought_forward"))
-    )["s"] or Decimal("0")
-    total_paid = invoices.aggregate(s=Sum("amount_paid"))["s"] or Decimal("0")
-    return total_charged - total_paid
+    t = get_ledger_totals_bulk([student.id]).get(student.id)
+    return t["balance"] if t else Decimal("0")
 
 
 def generate_invoice(enrollment: models.Enrollment, term: models.Term) -> models.Invoice:
@@ -1023,27 +1072,28 @@ def recalculate_student_invoice_chain(student: models.StudentProfile):
     never trusting the stale snapshot Invoice.brought_forward normally
     holds.
 
-    This is what fixes the "phantom balance" bug: if an older term's
-    invoice gets paid off directly, AFTER a newer invoice had already
-    baked that old unpaid amount in as its brought_forward, the newer
-    invoice's amount_due never used to shrink to reflect it - leaving a
-    balance that could never be cleared no matter what you paid.
+    Two things are deliberately PRESERVED (both were silently destroyed
+    by the old version):
+      1. The OPENING balance: the earliest invoice's brought_forward is
+         genuine arrears/credit from before the system existed, so the
+         running balance starts from it instead of 0.
+      2. Each invoice's own term charge (amount_due - brought_forward),
+         instead of re-reading FeeStructure.total_amount, so per-student
+         fee overrides (e.g. a mid-term joiner on a reduced fee) survive.
 
-    Call this after EVERY payment (any invoice, any student) - see
-    record_payment() below - so the chain is always self-correcting
-    instead of drifting further out of sync over time.
+    Call this after EVERY payment - see record_payment().
     """
     invoices = list(
         models.Invoice.objects.filter(enrollment__student=student)
         .select_related("fee_structure")
-        .order_by("fee_structure__term__academic_year__year", "fee_structure__term__term_number")
+        .order_by("fee_structure__term__academic_year__year", "fee_structure__term__term_number", "id")
     )
 
-    running_balance = Decimal("0")  # unpaid (or credit, if negative) carried into the NEXT invoice
+    running_balance = invoices[0].brought_forward if invoices else Decimal("0")  # opening balance
     changed_ids = []
 
     for invoice in invoices:
-        own_charge = invoice.fee_structure.total_amount
+        own_charge = invoice.amount_due - invoice.brought_forward  # stored term charge (overrides survive)
         correct_brought_forward = running_balance
         correct_amount_due = own_charge + correct_brought_forward
 
@@ -1053,8 +1103,8 @@ def recalculate_student_invoice_chain(student: models.StudentProfile):
             invoice.save(update_fields=["brought_forward", "amount_due"])
             changed_ids.append(invoice.id)
 
-        # what carries into the NEXT invoice: this invoice's own balance
-        # (negative = this invoice is itself in credit)
+        # What carries into the NEXT invoice: this invoice's own balance
+        # (negative = this invoice is itself in credit).
         running_balance = correct_amount_due - invoice.amount_paid
 
     return changed_ids
@@ -1150,7 +1200,6 @@ def initiate_payment(invoice, phone_number, amount, initiated_by, general=False)
     return {"status": "PENDING", "stk_request": stk_request, "raw_response": data}
 
 
-
 @transaction.atomic
 def handle_mpesa_callback(payload: dict):
     """
@@ -1239,9 +1288,9 @@ def record_bulk_payment(student: models.StudentProfile, amount: Decimal, method:
         remaining -= pay_amount
 
     if remaining > 0:
-        # every invoice fully settled but money's left over - park it as
+        # Every invoice fully settled but money's left over - park it as
         # credit on the most recent invoice, same as an ordinary
-        # single-invoice overpayment
+        # single-invoice overpayment.
         target = (
             models.Invoice.objects.filter(enrollment__student=student)
             .order_by("-fee_structure__term__academic_year__year", "-fee_structure__term__term_number")
@@ -1348,7 +1397,7 @@ def generate_invoices_for_term(term: "models.Term", enrollments=None) -> dict:
             missing_fee_structures[grade_level.name] = len(grade_enrollments)
             continue
 
-        # this grade/term is fully configured this run - clear any stale alert
+        # This grade/term is fully configured this run - clear any stale alert.
         _resolve_fee_structure_alert(grade_level, term)
 
         for enrollment in grade_enrollments:
@@ -1420,12 +1469,12 @@ def run_daily_invoice_generation() -> dict:
 # PARENTS / GUARDIANS
 # ---------------------------------------------------------------------------
 def attach_guardian(
-        student: models.StudentProfile,
-        full_name: str,
-        phone_number: str,
-        relationship: str,
-        email: str = "",
-    ):
+    student: models.StudentProfile,
+    full_name: str,
+    phone_number: str,
+    relationship: str,
+    email: str = "",
+):
     """
     Links a parent/guardian to a newly admitted student.
 
@@ -1450,7 +1499,7 @@ def attach_guardian(
             user=existing_user
         )
 
-        # Add email to existing parent if they don't already have one
+        # Add email to existing parent if they don't already have one.
         if email and not existing_user.email:
             existing_user.email = email
             existing_user.save(update_fields=["email"])
@@ -1479,7 +1528,9 @@ def attach_guardian(
             role=models.User.Role.PARENT,
         )
 
-        guardian_user.set_password("password123")
+        # The parent's initial login password is their own phone number,
+        # not a shared default.
+        guardian_user.set_password(phone_number)
         guardian_user.save()
 
         guardian_profile = models.ParentGuardianProfile.objects.create(
@@ -1647,7 +1698,7 @@ def resolve_communication_audience(communication):
         )
         for link in links:
             guardian_user = link.parent.user
-            # keep the first linked student as the "primary" context for
+            # Keep the first linked student as the "primary" context for
             # this guardian; _personalize_fee_body below still lists ALL
             # of the guardian's targeted children, not just this one.
             pairs.setdefault(guardian_user.id, (guardian_user, link.student))
@@ -1656,7 +1707,10 @@ def resolve_communication_audience(communication):
 
 
 def _personalize_fee_body(communication, user, primary_student):
-    """For FEE_REMINDER communications, append each relevant student's live outstanding balance. Falls back to the plain body for every other category."""
+    """
+    For FEE_REMINDER communications, append each relevant student's live
+    outstanding balance. Falls back to the plain body for every other category.
+    """
     if communication.category != models.Communication.Category.FEE_REMINDER:
         return communication.body
 
@@ -1709,12 +1763,16 @@ def send_communication(communication):
                 recipient.sent_at = timezone.now()
             elif channel == models.CommunicationRecipient.Channel.SMS:
                 ok, err = send_sms_notification(user.phone_number, body)
-                recipient.status = models.CommunicationRecipient.Status.SENT if ok else models.CommunicationRecipient.Status.FAILED
+                recipient.status = (
+                    models.CommunicationRecipient.Status.SENT if ok else models.CommunicationRecipient.Status.FAILED
+                )
                 recipient.error_message = err
                 recipient.sent_at = timezone.now() if ok else None
             elif channel == models.CommunicationRecipient.Channel.EMAIL:
                 ok, err = send_email_notification(user.email, communication.subject, body)
-                recipient.status = models.CommunicationRecipient.Status.SENT if ok else models.CommunicationRecipient.Status.FAILED
+                recipient.status = (
+                    models.CommunicationRecipient.Status.SENT if ok else models.CommunicationRecipient.Status.FAILED
+                )
                 recipient.error_message = err
                 recipient.sent_at = timezone.now() if ok else None
             recipient.save()
@@ -1856,7 +1914,7 @@ def auto_generate_timetable(term):
         "grade_level", "stream"
     ).order_by("grade_level__level_order", "stream__name")
 
-    # wipe only the auto-generated entries for this term - manual edits survive
+    # Wipe only the auto-generated entries for this term - manual edits survive.
     models.TimetableEntry.objects.filter(term=term, auto_generated=True).delete()
 
     # period_slot_id -> teacher_id -> [(subject_id, grade_level_id, classroom_id), ...]
@@ -1897,7 +1955,7 @@ def auto_generate_timetable(term):
             else:
                 queue += [(alloc, 1)] * periods
 
-        # interleave so the same subject isn't queued back-to-back
+        # Interleave so the same subject isn't queued back-to-back.
         by_subject = defaultdict(list)
         for item in queue:
             by_subject[item[0].subject_id].append(item)
@@ -1911,7 +1969,7 @@ def auto_generate_timetable(term):
         day_cycle = cycle(days)
         subjects_placed_today = defaultdict(set)  # day -> {subject_id, ...}
 
-        # occupied slots for THIS classroom, refreshed as we place entries
+        # Occupied slots for THIS classroom, refreshed as we place entries.
         classroom_occupied = set(
             models.TimetableEntry.objects.filter(classroom=classroom, term=term).values_list(
                 "period_slot_id", flat=True
@@ -2266,7 +2324,6 @@ def get_student_status_label(student: models.StudentProfile) -> str:
     return terminal_labels.get(enrollment.status, str(enrollment.classroom))
 
 
-
 # ---------------------------------------------------------------------------
 # STUDENT CLEARANCE
 # ---------------------------------------------------------------------------
@@ -2285,8 +2342,8 @@ def generate_clearance_no() -> str:
         except ValueError:
             pass
     return f"{prefix}{next_seq:05d}"
- 
- 
+
+
 def clearance_eligibility(student: models.StudentProfile) -> dict:
     """
     A student may apply for clearance once they have finished their final year:
@@ -2304,7 +2361,7 @@ def clearance_eligibility(student: models.StudentProfile) -> dict:
     )
     if not enrollment:
         return {"eligible": False, "reason": "You have no enrollment record yet.", "enrollment": None}
- 
+
     grade = enrollment.classroom.grade_level
     if grade.next_grade_id is not None:
         return {
@@ -2312,7 +2369,7 @@ def clearance_eligibility(student: models.StudentProfile) -> dict:
             "reason": f"Clearance is for students who have finished their final year. You are currently in {grade.name}.",
             "enrollment": enrollment,
         }
- 
+
     allowed = (models.Enrollment.Status.ACTIVE, models.Enrollment.Status.GRADUATED)
     if enrollment.status not in allowed:
         return {
@@ -2321,7 +2378,7 @@ def clearance_eligibility(student: models.StudentProfile) -> dict:
                       "isn't available. Please see the school office.",
             "enrollment": enrollment,
         }
- 
+
     if enrollment.status == models.Enrollment.Status.ACTIVE:
         final_term = (
             models.Term.objects.filter(academic_year=enrollment.academic_year).order_by("-term_number").first()
@@ -2338,10 +2395,10 @@ def clearance_eligibility(student: models.StudentProfile) -> dict:
                 "reason": f"Clearance opens when your final term starts on {final_term.start_date:%d %b %Y}.",
                 "enrollment": enrollment,
             }
- 
+
     return {"eligible": True, "reason": "", "enrollment": enrollment}
- 
- 
+
+
 def _notify_student(student, sender, subject, body):
     """In-app notification for one student, via the existing Communication system."""
     comm = models.Communication.objects.create(
@@ -2358,8 +2415,8 @@ def _notify_student(student, sender, subject, body):
     )
     comm.target_students.set([student])
     send_communication(comm)
- 
- 
+
+
 def get_student_clearance_state(student: models.StudentProfile) -> dict:
     """Everything the student's Clearance page needs in one payload."""
     info = clearance_eligibility(student)
@@ -2371,7 +2428,7 @@ def get_student_clearance_state(student: models.StudentProfile) -> dict:
     )
     enrollment = info["enrollment"]
     balance = get_outstanding_balance(student)  # positive = owes, negative = prepaid
- 
+
     return {
         "student": {"name": student.user.get_full_name(), "admission_no": student.admission_no},
         "eligible": info["eligible"],
@@ -2384,24 +2441,24 @@ def get_student_clearance_state(student: models.StudentProfile) -> dict:
         ),
         "application": serializers.ClearanceApplicationSerializer(application).data if application else None,
     }
- 
- 
+
+
 @transaction.atomic
 def submit_clearance_application(student: models.StudentProfile, remarks: str = ""):
     """Create the application, or reopen a REJECTED one. Notifies every admin."""
     info = clearance_eligibility(student)
     if not info["eligible"]:
         raise ValueError(info["reason"])
- 
+
     Status = models.ClearanceApplication.Status
     existing = models.ClearanceApplication.objects.select_for_update().filter(student=student).first()
     if existing and existing.status == Status.PENDING:
         raise ValueError("Your application is already with the administration.")
     if existing and existing.status == Status.CLEARED:
         raise ValueError("You have already been cleared.")
- 
+
     balance = get_outstanding_balance(student)
- 
+
     if existing:  # re-applying after being marked Not Cleared
         application = existing
         application.enrollment = info["enrollment"]
@@ -2422,15 +2479,15 @@ def submit_clearance_application(student: models.StudentProfile, remarks: str = 
             student=student, enrollment=info["enrollment"], student_remarks=remarks,
             balance_at_submission=balance,
         )
- 
+
     _notify_admins(
         subject=f"Clearance application: {student.user.get_full_name()}",
         body=f"{student.user.get_full_name()} ({student.admission_no}, {info['enrollment'].classroom}) "
              "has applied for clearance. Review it under Student Clearance.",
     )
     return application
- 
- 
+
+
 @transaction.atomic
 def review_clearance(application, reviewer, decision: str, remarks: str = "", force: bool = False):
     """
@@ -2442,10 +2499,10 @@ def review_clearance(application, reviewer, decision: str, remarks: str = "", fo
     Status = models.ClearanceApplication.Status
     if application.status != Status.PENDING:
         raise ValueError("Only pending applications can be reviewed.")
- 
+
     remarks = (remarks or "").strip()
     balance = get_outstanding_balance(application.student)
- 
+
     if decision == "CLEAR":
         if balance > 0 and not force:
             raise ValueError(
@@ -2461,12 +2518,12 @@ def review_clearance(application, reviewer, decision: str, remarks: str = "", fo
         application.status = Status.REJECTED
     else:
         raise ValueError("Unknown decision.")
- 
+
     application.reviewed_by = reviewer
     application.reviewed_at = timezone.now()
     application.admin_remarks = remarks
     application.save()
- 
+
     if decision == "CLEAR":
         _notify_student(
             application.student, reviewer,
@@ -2483,8 +2540,8 @@ def review_clearance(application, reviewer, decision: str, remarks: str = "", fo
                  "Please sort this out and apply again from the Clearance page.",
         )
     return application
- 
- 
+
+
 @transaction.atomic
 def reopen_clearance(application):
     """Send a CLEARED (not yet collected) or REJECTED application back to PENDING, e.g. after a mistake."""
@@ -2493,7 +2550,7 @@ def reopen_clearance(application):
         raise ValueError("This application is already pending.")
     if application.collected_at:
         raise ValueError("The certificate has already been collected, so this clearance can't be reopened.")
- 
+
     application.status = Status.PENDING
     application.clearance_no = None
     application.cleared_with_balance = False
@@ -2502,8 +2559,8 @@ def reopen_clearance(application):
     application.admin_remarks = ""
     application.save()
     return application
- 
- 
+
+
 @transaction.atomic
 def mark_clearance_collected(application, recorded_by):
     """Stamped by the admin when the student comes in person for their certificate."""
@@ -2524,8 +2581,8 @@ def get_payment_anchor_invoice(student):
         .order_by("-fee_structure__term__academic_year__year", "-fee_structure__term__term_number")
         .first()
     )
-    
-    
+
+
 def _record_payment_shared_receipt(invoice, amount, method, reference, recorded_by, receipt_no):
     """Same steps as record_payment(), but with a receipt number supplied by the caller."""
     payment = models.Payment.objects.create(
@@ -2572,7 +2629,7 @@ def record_finance_payment(student, amount, method, reference, recorded_by):
         remaining -= pay_amount
 
     if remaining > 0:
-        # everything settled and money left over -> prepaid credit on the latest invoice
+        # Everything settled and money left over -> prepaid credit on the latest invoice.
         target = (
             models.Invoice.objects.filter(enrollment__student=student)
             .order_by("-fee_structure__term__academic_year__year", "-fee_structure__term__term_number")
@@ -2587,7 +2644,7 @@ def record_finance_payment(student, amount, method, reference, recorded_by):
     if not payments:
         raise ValueError("This student has no invoices yet - nothing to pay against.")
 
-    # Safety check: recorded must equal received, otherwise the transaction rolls back
+    # Safety check: recorded must equal received, otherwise the transaction rolls back.
     if sum(p.amount for p in payments) != amount:
         raise ValueError("Payment allocation mismatch - nothing was recorded. Please try again.")
 
