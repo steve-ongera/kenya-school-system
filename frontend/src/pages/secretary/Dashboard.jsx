@@ -1,4 +1,5 @@
 // src/pages/secretary/Dashboard.jsx
+// src/pages/secretary/Dashboard.jsx
 import { useEffect, useState } from "react";
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
@@ -87,7 +88,7 @@ export default function SecretaryDashboard() {
 
   const {
     stat_cards, admission_monthly_trend, admissions_by_grade,
-    gender_split, recent_admissions,
+    gender_split, recent_admissions, payment_trend_30_days,
   } = data;
 
   return (
@@ -128,6 +129,33 @@ export default function SecretaryDashboard() {
         </div>
         <div className="col-12 col-md-6 col-xl">
           <StatCard label="Pending Clearance" value={stat_cards.pending_clearance} icon="bi-hourglass-split" tone="red" />
+        </div>
+      </div>
+
+      {/* Payments Trend — full width, directly below stat cards */}
+      <div className="row g-3 mb-3">
+        <div className="col-12">
+          <ChartCard title="Payments Received (Last 30 Days)" icon="bi-cash-coin">
+            <ResponsiveContainer width="100%" height={280}>
+              <LineChart data={payment_trend_30_days}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={2} />
+                <YAxis
+                  tick={{ fontSize: 12 }}
+                  tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`}
+                />
+                <Tooltip formatter={(value) => [`KES ${Number(value).toLocaleString()}`, "Amount"]} />
+                <Line
+                  type="monotone"
+                  dataKey="amount"
+                  name="Amount (KES)"
+                  stroke="#10b981"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </ChartCard>
         </div>
       </div>
 

@@ -15,7 +15,7 @@ from django.conf import settings
 from django.contrib.auth import authenticate
 from django.db import transaction
 from django.db.models import Avg, Count, ExpressionWrapper, F, FloatField, Q, Sum
-from django.db.models.functions import TruncMonth, TruncYear
+from django.db.models.functions import TruncDate, TruncMonth, TruncYear
 from django.http import JsonResponse
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
@@ -3842,6 +3842,8 @@ class SecretaryDashboardStatsView(APIView):
     Front-office overview for the Secretary's dashboard:
       - 5 stat cards (students, guardians, classes, admissions this
         month, pending clearance applications)
+      - payment_trend_30_days: daily payments received over the last
+        30 days (line chart, sits right below the stat cards)
       - admission_monthly_trend: last 12 months of admissions (line chart)
       - admissions_by_grade: this year's admissions per grade (bar)
       - gender_split: active-student gender split (donut)
@@ -3872,6 +3874,26 @@ class SecretaryDashboardStatsView(APIView):
             "admissions_this_month": admissions_this_month,
             "pending_clearance": pending_clearance,
         }
+
+        # ---- Payments received, last 30 days ----
+        thirty_days_start = today - timezone.timedelta(days=29)
+        raw_payment_trend = (
+            models.Payment.objects.filter(paid_at__date__gte=thirty_days_start)
+            .annotate(day=TruncDate("paid_at"))
+            .values("day")
+            .annotate(total=Sum("amount"))
+        )
+        payment_by_day = {r["day"].strftime("%Y-%m-%d"): float(r["total"]) for r in raw_payment_trend}
+        payment_trend_30_days = [
+            {
+                "date": (thirty_days_start + timezone.timedelta(days=i)).strftime("%Y-%m-%d"),
+                "label": (thirty_days_start + timezone.timedelta(days=i)).strftime("%d %b"),
+                "amount": payment_by_day.get(
+                    (thirty_days_start + timezone.timedelta(days=i)).strftime("%Y-%m-%d"), 0
+                ),
+            }
+            for i in range(30)
+        ]
 
         month_starts = _months_back(12)
         raw_admissions = (
@@ -3923,6 +3945,7 @@ class SecretaryDashboardStatsView(APIView):
 
         return Response({
             "stat_cards": stat_cards,
+            "payment_trend_30_days": payment_trend_30_days,
             "admission_monthly_trend": admission_monthly_trend,
             "admissions_by_grade": admissions_by_grade,
             "gender_split": gender_split,
