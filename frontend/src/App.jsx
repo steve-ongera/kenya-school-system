@@ -61,8 +61,8 @@ const AdminFinanceDetailedReport = lazy(() => import("./pages/admin/finance/Deta
 const PrincipalDashboard = lazy(() => import("./pages/principal/Dashboard"));
 
 // secretary — own dashboard only; everywhere else it reuses the Admin
-// (and, for Invoices, the Finance) page components imported above,
-// mounted under /secretary/*
+// (and, for Invoices/Payments/Verify Receipt, the Finance) page
+// components imported above, mounted under /secretary/*
 const SecretaryDashboard = lazy(() => import("./pages/secretary/Dashboard"));
 
 // finance
@@ -207,15 +207,20 @@ export default function App() {
             {/* SECRETARY — own dashboard, plus the front-office slice of
                 the Admin tools: admitting/managing student records,
                 guardians, the clearance desk, classes/calendar for
-                reference, announcements and letters — plus, now,
-                Timetable Management, Teacher Allocation, Expenses,
-                Invoices (reusing the Finance page component) and the
-                Detailed finance report.
+                reference, announcements and letters — plus Timetable
+                Management, Teacher Allocation, Mark Entry, Exams,
+                Rankings, Promotions (all reusing the matching Admin page
+                components), and a full Finance slice: Expenses,
+                Invoices, Payments, Verify Receipt and the Detailed
+                finance report (reusing the Finance/Admin page
+                components).
                 NOTE: several of these endpoints (Timetable, Teacher
-                Allocation, Expenses, Invoices, Detailed Report) are
-                currently permissioned IsAdmin / IsAdminOrFinance on the
-                backend (see utils.py / views.py). The pages will render
-                for a SECRETARY account, but API calls will 403 until the
+                Allocation, Mark Entry, Exams, Rankings, Promotions,
+                Expenses, Invoices, Payments, Verify Receipt, Detailed
+                Report) are currently permissioned IsAdmin /
+                IsAdminOrFinance on the backend
+                (see utils.py / views.py). The pages will render for a
+                SECRETARY account, but API calls will 403 until the
                 matching permission classes are widened to include
                 SECRETARY, the same way the PRINCIPAL patch above did. */}
             <Route path="/secretary" element={<RoleSection role="SECRETARY"><SecretaryDashboard /></RoleSection>} />
@@ -228,8 +233,14 @@ export default function App() {
             <Route path="/secretary/letters" element={<RoleSection role="SECRETARY"><AdminLetters /></RoleSection>} />
             <Route path="/secretary/timetable" element={<RoleSection role="SECRETARY"><AdminTimetableManagement /></RoleSection>} />
             <Route path="/secretary/teachers" element={<RoleSection role="SECRETARY"><AdminTeacherAllocation /></RoleSection>} />
+            <Route path="/secretary/mark-entry" element={<RoleSection role="SECRETARY"><AdminMarkEntry /></RoleSection>} />
+            <Route path="/secretary/exams" element={<RoleSection role="SECRETARY"><AdminExams /></RoleSection>} />
+            <Route path="/secretary/rankings" element={<RoleSection role="SECRETARY"><AdminRankings /></RoleSection>} />
+            <Route path="/secretary/promotions" element={<RoleSection role="SECRETARY"><AdminPromotions /></RoleSection>} />
             <Route path="/secretary/expenses" element={<RoleSection role="SECRETARY"><AdminExpenses /></RoleSection>} />
             <Route path="/secretary/invoices" element={<RoleSection role="SECRETARY"><FinanceInvoices /></RoleSection>} />
+            <Route path="/secretary/payments" element={<RoleSection role="SECRETARY"><FinancePayments /></RoleSection>} />
+            <Route path="/secretary/verify-receipt" element={<RoleSection role="SECRETARY"><FinanceVerifyReceipt /></RoleSection>} />
             <Route path="/secretary/finance-reports/detailed" element={<RoleSection role="SECRETARY"><AdminFinanceDetailedReport /></RoleSection>} />
 
             {/* TEACHER */}

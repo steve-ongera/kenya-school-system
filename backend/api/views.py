@@ -968,7 +968,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             ],
         })
 
-    @action(detail=True, methods=["get"], url_path="promotion_preview", permission_classes=[utils.IsAdmin])
+    @action(detail=True, methods=["get"], url_path="promotion_preview", permission_classes=[utils.IsAdminOrSecretary])
     def promotion_preview(self, request, pk=None):
         """
         GET /classrooms/{id}/promotion_preview/
@@ -976,6 +976,9 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
         active student in it, unpaginated. Returns already_promoted
         instead if a ClassroomPromotion record already exists. Works the
         same for CBC and legacy 8-4-4 - see services.resolve_next_classroom_target.
+
+        Permission widened from IsAdmin to IsAdminOrSecretary so the
+        front-office Secretary role can review/prepare promotions.
         """
         classroom = self.get_object()
 
@@ -1038,9 +1041,14 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             "students": students_data,
         })
 
-    @action(detail=True, methods=["post"], url_path="bulk_promote", permission_classes=[utils.IsAdmin])
+    @action(detail=True, methods=["post"], url_path="bulk_promote", permission_classes=[utils.IsAdminOrSecretary])
     def bulk_promote(self, request, pk=None):
-        """POST /classrooms/{id}/bulk_promote/  body: { force?: bool }"""
+        """
+        POST /classrooms/{id}/bulk_promote/  body: { force?: bool }
+
+        Permission widened from IsAdmin to IsAdminOrSecretary so the
+        front-office Secretary role can carry out bulk promotions.
+        """
         classroom = self.get_object()
         force = bool(request.data.get("force", False))
         try:
@@ -1049,9 +1057,15 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             return Response({"detail": str(exc)}, status=400)
         return Response(result)
 
-    @action(detail=True, methods=["get"], url_path="exam_spreadsheet", permission_classes=[utils.IsAdmin])
+    @action(detail=True, methods=["get"], url_path="exam_spreadsheet", permission_classes=[utils.IsAdminOrSecretary])
     def exam_spreadsheet(self, request, pk=None):
-        """GET /classrooms/{id}/exam_spreadsheet/?exam=<Exam id>"""
+        """
+        GET /classrooms/{id}/exam_spreadsheet/?exam=<Exam id>
+
+        Permission widened from IsAdmin to IsAdminOrSecretary so the
+        front-office Secretary role can view/enter marks via the Mark
+        Entry (All Subjects) page.
+        """
         classroom = self.get_object()
         exam_id = request.query_params.get("exam")
         if not exam_id:
@@ -1059,9 +1073,15 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
         exam = generics.get_object_or_404(models.Exam, pk=exam_id)
         return Response(services.get_admin_exam_spreadsheet(classroom, exam))
 
-    @action(detail=True, methods=["post"], url_path="save_exam_spreadsheet", permission_classes=[utils.IsAdmin])
+    @action(detail=True, methods=["post"], url_path="save_exam_spreadsheet", permission_classes=[utils.IsAdminOrSecretary])
     def save_exam_spreadsheet(self, request, pk=None):
-        """POST /classrooms/{id}/save_exam_spreadsheet/  body: { exam_id, entries: [...] }"""
+        """
+        POST /classrooms/{id}/save_exam_spreadsheet/  body: { exam_id, entries: [...] }
+
+        Permission widened from IsAdmin to IsAdminOrSecretary so the
+        front-office Secretary role can save marks via the Mark Entry
+        (All Subjects) page.
+        """
         self.get_object()  # 404s early if classroom doesn't exist
         exam = generics.get_object_or_404(models.Exam, pk=request.data.get("exam_id"))
         entries = request.data.get("entries", [])
@@ -1215,8 +1235,9 @@ class EnrollmentViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         return super().get_permissions()
 
-    @action(detail=True, methods=["post"], permission_classes=[utils.IsAdmin])
+    @action(detail=True, methods=["post"], permission_classes=[utils.IsAdminOrSecretary])
     def promote(self, request, pk=None):
+        """Permission widened from IsAdmin to IsAdminOrSecretary so Secretary can promote individual students."""
         enrollment = self.get_object()
         serializer = serializers.PromoteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1230,8 +1251,9 @@ class EnrollmentViewSet(viewsets.ModelViewSet):
             return Response({"detail": str(exc)}, status=400)
         return Response(serializers.EnrollmentSerializer(new_enrollment).data, status=201)
 
-    @action(detail=False, methods=["post"], permission_classes=[utils.IsAdmin])
+    @action(detail=False, methods=["post"], permission_classes=[utils.IsAdminOrSecretary])
     def bulk_promote(self, request):
+        """Permission widened from IsAdmin to IsAdminOrSecretary so Secretary can bulk-promote a class."""
         serializer = serializers.BulkPromoteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         result = services.bulk_promote_classroom(
@@ -1902,7 +1924,18 @@ class PaymentFilter(django_filters.FilterSet):
 
 
 class PaymentViewSet(viewsets.ModelViewSet):
-    """Direct/manual payment recording, used by Finance for cash/bank/cheque. Students/parents use InitiatePaymentView instead."""
+    """
+    Direct/manual payment recording, used by Finance (and now the front-
+    office Secretary desk) for cash/bank/cheque. Students/parents use
+    InitiatePaymentView instead.
+
+    Permission widened from IsAdminOrFinance to IsSchoolOffice (the same
+    class already used by InvoiceViewSet / ClearanceApplicationViewSet /
+    FinanceDetailedReportView) so the Secretary role can record and view
+    payments alongside Admin and Finance. pay_balance, finance_receipt
+    and verify below have no permission_classes override, so they inherit
+    this same widened access.
+    """
 
     queryset = models.Payment.objects.select_related(
         "invoice__enrollment__student__user",
@@ -1912,7 +1945,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
         "invoice__fee_structure__term",
         "recorded_by",
     ).order_by("-paid_at")
-    permission_classes = [utils.IsAdminOrFinance]
+    permission_classes = [utils.IsSchoolOffice]
     pagination_class = PaymentPagination
     filterset_class = PaymentFilter
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
@@ -1942,11 +1975,11 @@ class PaymentViewSet(viewsets.ModelViewSet):
     def pay_balance(self, request):
         """
         POST /payments/pay_balance/  body: { admission_no, amount, method, reference? }
-        FINANCE DESK ONLY. Records ONE payment against a student's TOTAL
-        outstanding balance, splitting it across their unpaid invoices
-        oldest-first. All split pieces share one receipt number, and the
-        whole operation is atomic. The student portal does not use this
-        endpoint (it uses InitiatePaymentView).
+        FINANCE / SECRETARY DESK. Records ONE payment against a student's
+        TOTAL outstanding balance, splitting it across their unpaid
+        invoices oldest-first. All split pieces share one receipt number,
+        and the whole operation is atomic. The student portal does not
+        use this endpoint (it uses InitiatePaymentView).
         """
         serializer = serializers.BulkPaymentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -2007,12 +2040,13 @@ class PaymentViewSet(viewsets.ModelViewSet):
     def verify(self, request, receipt_no=None):
         """
         GET /payments/verify/<receipt_no>/
-        FINANCE/ADMIN ONLY (inherits IsAdminOrFinance from this viewset).
-        Powers the Verify Receipt page that the receipt QR code links to.
-        Returns the FULL amount of the receipt (every split piece sharing
-        the receipt number), who recorded it, and the student's current
-        balance, so staff can compare it against the paper receipt.
-        The portal's public /receipts/verify/<no>/ endpoint is unchanged.
+        FINANCE / ADMIN / SECRETARY (inherits IsSchoolOffice from this
+        viewset). Powers the Verify Receipt page that the receipt QR
+        code links to. Returns the FULL amount of the receipt (every
+        split piece sharing the receipt number), who recorded it, and
+        the student's current balance, so staff can compare it against
+        the paper receipt. The portal's public /receipts/verify/<no>/
+        endpoint is unchanged.
         """
         receipt_no = (receipt_no or "").strip().upper()
         payment = (
@@ -3399,7 +3433,7 @@ class ClassroomPromotionViewSet(viewsets.ReadOnlyModelViewSet):
         "source_classroom", "target_classroom", "promoted_by"
     ).order_by("-promoted_at")
     serializer_class = serializers.ClassroomPromotionSerializer
-    permission_classes = [utils.IsAdmin]
+    permission_classes = [utils.IsAdminOrSecretary]
 
     @action(detail=True, methods=["delete"], url_path="undo")
     def undo(self, request, pk=None):

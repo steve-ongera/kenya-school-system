@@ -130,9 +130,10 @@ export const NAV_BY_ROLE = {
   // -----------------------------------------------------------------
   // SECRETARY — front-office role: admitting/managing student records,
   // guardians, clearance desk, timetable & teacher-allocation reference,
-  // a working slice of Finance (expenses, invoices, Student Balance & Reports),
-  // announcements and letters. Reuses the ADMIN page components (and,
-  // for Invoices, the FINANCE page component), under /secretary/* routes.
+  // Mark Entry, Exams, Rankings, Promotions, a full Finance slice
+  // (expenses, invoices, payments, verify receipt, Student Balance &
+  // Reports), announcements and letters. Reuses the ADMIN/FINANCE page
+  // components under /secretary/* routes.
   // -----------------------------------------------------------------
   SECRETARY: [
     {
@@ -153,6 +154,10 @@ export const NAV_BY_ROLE = {
     {
       label: "Academics & Staffing",
       items: [
+        { to: "/secretary/mark-entry", icon: "bi-grid-3x3-gap", label: "Mark Entry (All Subjects)" },
+        { to: "/secretary/exams", icon: "bi-pencil-square", label: "Exams" },
+        { to: "/secretary/rankings", icon: "bi-bar-chart-line", label: "Rankings" },
+        { to: "/secretary/promotions", icon: "bi-arrow-up-circle", label: "Promotions" },
         { to: "/secretary/classrooms", icon: "bi-door-open", label: "Classes & Streams" },
         { to: "/secretary/timetable", icon: "bi-grid-3x3", label: "Timetable Management" },
         { to: "/secretary/teachers", icon: "bi-person-workspace", label: "Teacher Allocation" },
@@ -163,6 +168,8 @@ export const NAV_BY_ROLE = {
       items: [
         { to: "/secretary/expenses", icon: "bi-wallet2", label: "Expenses" },
         { to: "/secretary/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
+        { to: "/secretary/payments", icon: "bi-cash-coin", label: "Payments" },
+        { to: "/secretary/verify-receipt", icon: "bi-qr-code-scan", label: "Verify Receipt" },
         { to: "/secretary/finance-reports/detailed", icon: "bi-table", label: "Student Balance & Reports" },
       ],
     },
