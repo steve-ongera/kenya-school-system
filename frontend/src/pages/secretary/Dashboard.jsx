@@ -1,5 +1,4 @@
 // src/pages/secretary/Dashboard.jsx
-// src/pages/secretary/Dashboard.jsx
 import { useEffect, useState } from "react";
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
@@ -89,6 +88,7 @@ export default function SecretaryDashboard() {
   const {
     stat_cards, admission_monthly_trend, admissions_by_grade,
     gender_split, recent_admissions, payment_trend_30_days,
+    current_term, current_academic_year,
   } = data;
 
   return (
@@ -109,7 +109,9 @@ export default function SecretaryDashboard() {
         </div>
         <span className="badge badge-neutral" style={{ fontSize: "0.85rem", padding: "0.4rem 0.8rem" }}>
           <i className="bi bi-calendar3 me-1"></i>
-          Current Term
+          {current_term
+            ? `${current_term}${current_academic_year ? ` (${current_academic_year})` : ""}`
+            : "No Current Term Set"}
         </span>
       </div>
 

@@ -3163,7 +3163,7 @@ class FinanceStudentBalancesReportView(APIView):
         balance   = total_due - total_paid
     """
 
-    permission_classes = [utils.IsAdminOrFinance]
+    permission_classes = [utils.IsSchoolOffice]
     pagination_class = FinanceReportPagination
 
     def get(self, request):
@@ -3842,6 +3842,7 @@ class SecretaryDashboardStatsView(APIView):
     Front-office overview for the Secretary's dashboard:
       - 5 stat cards (students, guardians, classes, admissions this
         month, pending clearance applications)
+      - current_term / current_academic_year: for the page-header badge
       - payment_trend_30_days: daily payments received over the last
         30 days (line chart, sits right below the stat cards)
       - admission_monthly_trend: last 12 months of admissions (line chart)
@@ -3853,6 +3854,7 @@ class SecretaryDashboardStatsView(APIView):
 
     def get(self, request):
         current_year = models.AcademicYear.objects.filter(is_current=True).first()
+        current_term = models.Term.objects.filter(is_current=True).first()
         today = date.today()
 
         total_students = models.StudentProfile.objects.filter(is_active=True).count()
@@ -3945,6 +3947,8 @@ class SecretaryDashboardStatsView(APIView):
 
         return Response({
             "stat_cards": stat_cards,
+            "current_term": str(current_term) if current_term else None,
+            "current_academic_year": current_year.year if current_year else None,
             "payment_trend_30_days": payment_trend_30_days,
             "admission_monthly_trend": admission_monthly_trend,
             "admissions_by_grade": admissions_by_grade,
