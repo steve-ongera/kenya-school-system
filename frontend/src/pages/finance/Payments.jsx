@@ -36,6 +36,15 @@ const METHOD_ICON = {
   CHEQUE: "bi-file-text",
 };
 
+// Positive = still owes, negative = prepaid credit, 0 = fully paid.
+// Used on the on-screen receipt and the PDF (which is also what gets printed).
+const describeBalance = (balance) => {
+  const b = Number(balance || 0);
+  if (b > 0) return { label: "Balance Remaining", value: `KES ${currency(b)}`, tone: "owing" };
+  if (b < 0) return { label: "Prepaid Credit", value: `KES ${currency(Math.abs(b))}`, tone: "credit" };
+  return { label: "Balance", value: "KES 0 (Fully paid)", tone: "clear" };
+};
+
 // Groups a flat list of Invoice objects (from InvoiceSerializer) into
 // one entry per student, keyed by admission_no.
 const groupInvoicesByStudent = (invoiceList) => {
@@ -145,6 +154,10 @@ export default function FinancePayments() {
   const [recording, setRecording] = useState(false);
   const [paymentError, setPaymentError] = useState("");
 
+  // Bank-style verification step shown BEFORE the payment is actually recorded.
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [confirmChecked, setConfirmChecked] = useState(false);
+
   const openBalancePaymentPanel = (student, totalOwed) => {
     setPayingBalance({
       admission_no: student.admission_no,
@@ -153,19 +166,26 @@ export default function FinancePayments() {
     });
     setPaymentDraft({ amount: String(totalOwed), method: "MPESA", reference: "" });
     setPaymentError("");
+    setShowConfirm(false);
+    setConfirmChecked(false);
   };
 
   const closePaymentPanel = () => {
+    if (recording) return; // never close while a payment is being saved
     setPayingBalance(null);
     setPaymentError("");
+    setShowConfirm(false);
+    setConfirmChecked(false);
   };
 
   const amountNumber = Number(paymentDraft.amount || 0);
   const activeBalanceDue = payingBalance ? payingBalance.totalOwed : 0;
   const excessOverBalance = amountNumber > activeBalanceDue ? amountNumber - activeBalanceDue : 0;
+  // What the student will still owe (or hold as credit, if negative) after this payment.
+  const balanceAfterPayment = activeBalanceDue - amountNumber;
 
   // ---------------------------------------------------------------------
-  // STEP 3 - receipt (fetched from the backend, includes QR + allocations)
+  // STEP 3 - receipt (fetched from the backend, includes QR + allocations + balance)
   // ---------------------------------------------------------------------
   const [receipt, setReceipt] = useState(null);
   const [receiptLoading, setReceiptLoading] = useState(false);
@@ -173,10 +193,30 @@ export default function FinancePayments() {
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("info");
 
-  const submitPayment = async (e) => {
+  // Form submit only validates, then opens the verification popup.
+  const requestConfirmation = (e) => {
     e.preventDefault();
     if (!payingBalance || recording) return;
     if (!(amountNumber > 0)) {
+      setPaymentError("Enter an amount greater than zero.");
+      return;
+    }
+    setPaymentError("");
+    setConfirmChecked(false);
+    setShowConfirm(true);
+  };
+
+  const cancelConfirmation = () => {
+    if (recording) return;
+    setShowConfirm(false);
+    setConfirmChecked(false);
+  };
+
+  // Runs only after the cashier verifies and confirms in the popup.
+  const submitPayment = async () => {
+    if (!payingBalance || recording) return;
+    if (!(amountNumber > 0)) {
+      setShowConfirm(false);
       setPaymentError("Enter an amount greater than zero.");
       return;
     }
@@ -196,7 +236,7 @@ export default function FinancePayments() {
 
       setReceiptLoading(true);
       const { data: receiptData } = await financeApi.paymentReceipt(data.last_payment_id);
-      setReceipt({ ...receiptData, excess: excessOverBalance });
+      setReceipt({ ...receiptData, excess: excessOverBalance, payment_id: data.last_payment_id });
 
       const studentName = payingBalance.student_name;
       setPayingBalance(null);
@@ -224,14 +264,20 @@ export default function FinancePayments() {
     } finally {
       setRecording(false);
       setReceiptLoading(false);
+      setShowConfirm(false);
+      setConfirmChecked(false);
     }
   };
 
-  // ---- Download a professional A5 receipt PDF. ALWAYS exactly ONE page. ----
+  // ---- Build the professional A5 receipt PDF. ALWAYS exactly ONE page. ----
   // Compact fonts, fixed-position bottom block (QR + stamp + signatures +
   // copyright footer), and no addPage() anywhere - so it can never spill
   // onto a second page. Long "Applied to" lists switch to a two-column grid.
-  const downloadReceiptPdf = async (r) => {
+  //
+  // This is the SINGLE source of truth for the receipt layout: the download
+  // button saves it, and the print button prints the very same document, so
+  // the two are always identical.
+  const buildReceiptPdf = async (r) => {
     const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a5" });
     const pageWidth = doc.internal.pageSize.getWidth(); // 148
     const pageHeight = doc.internal.pageSize.getHeight(); // 210
@@ -241,10 +287,17 @@ export default function FinancePayments() {
     const base64Logo = await getImageBase64(logoImage);
 
     // --- Header ---
+    // Keep the logo's real aspect ratio (no squeezing) and make it a bit bigger.
+    let logoW = 0;
+    const logoH = 13;
     if (base64Logo) {
-      doc.addImage(base64Logo, "PNG", marginX, 8, 10, 10);
+      const props = doc.getImageProperties(base64Logo);
+      const ratio = props.width / props.height || 1;
+      logoW = Math.min(logoH * ratio, 28); // cap the width so long logos don't crowd the title
+      const drawH = logoW / ratio; // recompute height if the width was capped
+      doc.addImage(base64Logo, "PNG", marginX, 7.5 + (logoH - drawH) / 2, logoW, drawH);
     }
-    const textX = base64Logo ? marginX + 13 : marginX;
+    const textX = base64Logo ? marginX + logoW + 3 : marginX;
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(11);
@@ -279,12 +332,17 @@ export default function FinancePayments() {
     });
 
     // --- Info table ---
+    // Balance row (index 5): red when the student still owes, green when prepaid.
+    const bal = describeBalance(r.balance);
+    const BALANCE_ROW_INDEX = 5;
+
     const rows = [
       ["Student", r.student_name],
       ["Admission No", r.admission_no],
       ["Current Class", r.classroom || "-"],
       ["Term", r.term || "-"],
       ["Amount Paid", `KES ${currency(r.amount)}`],
+      [bal.label, bal.value],
       ["Method", METHOD_LABEL[r.method] || r.method],
       ["Reference", r.reference || "-"],
       ["Recorded By", r.recorded_by_name || "-"],
@@ -307,6 +365,19 @@ export default function FinancePayments() {
       columnStyles: {
         0: { fontStyle: "bold", cellWidth: 30, fillColor: [241, 245, 249] },
         1: { cellWidth: "auto" },
+      },
+      didParseCell: (data) => {
+        if (data.section === "body" && data.row.index === BALANCE_ROW_INDEX) {
+          data.cell.styles.fontStyle = "bold";
+          if (data.column.index === 1) {
+            data.cell.styles.textColor =
+              bal.tone === "owing"
+                ? [185, 28, 28]
+                : bal.tone === "credit"
+                ? [22, 101, 52]
+                : [51, 65, 85];
+          }
+        }
       },
     });
 
@@ -439,12 +510,17 @@ export default function FinancePayments() {
       footerLineY + 7.5
     );
 
+    return doc;
+  };
+
+  // ---- Download the receipt PDF ----
+  const downloadReceiptPdf = async (r) => {
+    const doc = await buildReceiptPdf(r);
     doc.save(`receipt_${r.receipt_no}.pdf`);
   };
 
-  // ---- Print a single receipt from the payment history list ----
-  // The whole receipt sits inside one fixed-height A5 "page" box with the
-  // footer pushed to the bottom, so it always prints on exactly ONE page.
+  // ---- Print a receipt (from the receipt panel or the payment history list) ----
+  // Prints the exact same PDF that the download button produces.
   const [printingReceiptId, setPrintingReceiptId] = useState(null);
 
   const handlePrintPaymentReceipt = async (payment) => {
@@ -452,259 +528,43 @@ export default function FinancePayments() {
       setPrintingReceiptId(payment.id);
       const { data: r } = await financeApi.paymentReceipt(payment.id);
 
-      const base64Logo = await getImageBase64(logoImage);
-      const logoTag = base64Logo
-        ? `<img src="${base64Logo}" alt="Junda High School Shanzu" class="logo" />`
-        : "";
-
-      const generatedOn = new Date().toLocaleDateString("en-KE", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      });
-      const year = new Date().getFullYear();
-
-      const methodLabel = METHOD_LABEL[r.method] || r.method;
-
-      let allocationsHtml = "";
-      if (r.allocations && r.allocations.length > 1) {
-        const allocs = r.allocations;
-        if (allocs.length > 5) {
-          const half = Math.ceil(allocs.length / 2);
-          const bodyRows = Array.from({ length: half }, (_, i) => {
-            const left = allocs[i];
-            const right = allocs[i + half];
-            return `<tr>
-              <td>${left.term}</td><td class="num">KES ${currency(left.amount)}</td>
-              <td>${right ? right.term : ""}</td><td class="num">${right ? "KES " + currency(right.amount) : ""}</td>
-            </tr>`;
-          }).join("");
-          allocationsHtml = `<table class="info alloc">
-            <tr><th colspan="4" style="width:auto">Payment applied to</th></tr>${bodyRows}</table>`;
-        } else {
-          allocationsHtml = `<table class="info alloc">
-            <tr><th colspan="2" style="width:auto">Payment applied to</th></tr>
-            ${allocs
-              .map((a) => `<tr><td>${a.term}</td><td class="num">KES ${currency(a.amount)}</td></tr>`)
-              .join("")}
-          </table>`;
-        }
-      }
-
-      const html = `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Receipt - ${r.receipt_no}</title>
-            <style>
-              * { box-sizing: border-box; font-family: Helvetica, Arial, sans-serif; }
-              @page { size: A5 portrait; margin: 8mm; }
-              html, body { margin: 0; padding: 0; color: #0f172a; background: #fff; }
-
-              /* One fixed-height box = exactly one printed page */
-              .page {
-                height: 192mm;
-                display: flex;
-                flex-direction: column;
-                overflow: hidden;
-                page-break-after: avoid;
-                page-break-inside: avoid;
-              }
-              .content { flex: 1 1 auto; min-height: 0; }
-
-              .header {
-                display: flex;
-                justify-content: space-between;
-                align-items: flex-start;
-                padding-bottom: 5px;
-                border-bottom: 1.5px solid #cbd5e1;
-              }
-              .header-left { display: flex; align-items: center; gap: 8px; }
-              .logo { width: 30px; height: 30px; object-fit: contain; }
-              .school-name { font-size: 12.5px; font-weight: bold; margin: 0; color: #0f172a; }
-              .subtitle { font-size: 9px; color: #475569; margin: 1px 0 0; }
-              .meta { font-size: 7.5px; color: #64748b; text-align: right; line-height: 1.5; }
-
-              table.info { width: 100%; border-collapse: collapse; margin-top: 8px; }
-              table.info th,
-              table.info td {
-                padding: 3.5px 7px;
-                border: 1px solid #e2e8f0;
-                font-size: 9px;
-                text-align: left;
-                vertical-align: middle;
-              }
-              table.info th { background: #f1f5f9; color: #334155; width: 36%; font-weight: 600; }
-              table.info td.num { text-align: right; }
-              table.alloc { margin-top: 6px; }
-              table.alloc td, table.alloc th { font-size: 8px; padding: 2.5px 6px; }
-              .amount-row td { font-size: 10.5px; font-weight: bold; color: #16a34a; background: #f8fafc; }
-
-              .excess {
-                margin-top: 6px;
-                padding: 5px 8px;
-                border: 1px solid #bbf7d0;
-                background: #f0fdf4;
-                color: #15803d;
-                font-size: 8px;
-                border-radius: 3px;
-              }
-
-              .qr-stamp-row { display: flex; align-items: stretch; gap: 8px; margin-top: 10px; }
-              .qr-block { flex: 0 0 auto; text-align: center; }
-              .qr-block img { width: 80px; height: 80px; }
-              .qr-block .qr-caption { font-size: 7px; color: #64748b; margin-top: 2px; }
-              .stamp-block {
-                flex: 1;
-                border: 1px solid #94a3b8;
-                border-radius: 3px;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                min-height: 80px;
-              }
-              .stamp-block .stamp-title { font-size: 9px; font-weight: bold; color: #0f172a; margin: 0 0 3px; }
-              .stamp-block .stamp-hint { font-size: 7px; color: #64748b; margin: 0; }
-
-              .sign-block { display: flex; justify-content: space-between; gap: 12px; margin-top: 16px; }
-              .sign-line {
-                flex: 1;
-                border-top: 1px solid #94a3b8;
-                padding-top: 3px;
-                font-size: 7.5px;
-                color: #64748b;
-                text-align: center;
-              }
-              .sign-role { font-weight: 700; color: #334155; font-size: 8px; }
-
-              /* Copyright footer, pinned to the bottom of the page box */
-              .copyright {
-                flex: 0 0 auto;
-                margin-top: 8px;
-                padding-top: 4px;
-                border-top: 1px solid #e2e8f0;
-                font-size: 6.5px;
-                color: #64748b;
-                line-height: 1.4;
-                text-align: center;
-              }
-              .copyright strong { color: #334155; }
-            </style>
-          </head>
-          <body>
-            <div class="page">
-              <div class="content">
-                <div class="header">
-                  <div class="header-left">
-                    ${logoTag}
-                    <div>
-                      <p class="school-name">Junda High School Shanzu</p>
-                      <p class="subtitle">Official Payment Receipt</p>
-                    </div>
-                  </div>
-                  <div class="meta">
-                    Receipt No: <strong>${r.receipt_no}</strong><br />
-                    Generated ${generatedOn}
-                  </div>
-                </div>
-
-                <table class="info">
-                  <tr><th>Student</th><td>${r.student_name}</td></tr>
-                  <tr><th>Admission No</th><td>${r.admission_no}</td></tr>
-                  <tr><th>Current Class</th><td>${r.classroom || "-"}</td></tr>
-                  <tr><th>Term</th><td>${r.term || "-"}</td></tr>
-                  <tr class="amount-row"><th>Amount Paid</th><td>KES ${currency(r.amount)}</td></tr>
-                  <tr><th>Method</th><td>${methodLabel}</td></tr>
-                  <tr><th>Reference</th><td>${r.reference || "-"}</td></tr>
-                  <tr><th>Recorded By</th><td>${r.recorded_by_name || "-"}</td></tr>
-                  <tr><th>Date Paid</th><td>${new Date(r.paid_at).toLocaleString("en-KE")}</td></tr>
-                </table>
-
-                ${allocationsHtml}
-
-                ${
-                  Number(r.excess) > 0
-                    ? `<div class="excess">
-                         <strong>Credit note:</strong> KES ${currency(r.excess)} was paid above the amount due
-                         and has been carried forward toward this student's next invoice.
-                       </div>`
-                    : ""
-                }
-
-                <div class="qr-stamp-row">
-                  <div class="qr-block">
-                    ${
-                      r.qr_code_base64
-                        ? `<img src="data:image/png;base64,${r.qr_code_base64}" alt="Receipt verification QR code" />
-                           <div class="qr-caption">Scan to verify this receipt</div>`
-                        : `<div style="width:80px;height:80px;border:1px solid #94a3b8;display:flex;align-items:center;justify-content:center;font-size:7px;color:#64748b;">QR unavailable</div>`
-                    }
-                  </div>
-                  <div class="stamp-block">
-                    <p class="stamp-title">Official School Stamp</p>
-                    <p class="stamp-hint">(Stamp here)</p>
-                  </div>
-                </div>
-
-                <div class="sign-block">
-                  <div class="sign-line">
-                    <div class="sign-role">Finance Officer</div>
-                    <div>Signature &amp; Official Stamp</div>
-                  </div>
-                  <div class="sign-line">
-                    <div class="sign-role">Principal</div>
-                    <div>Signature &amp; Official Stamp</div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="copyright">
-                <strong>© ${year} Junda High School Shanzu. All rights reserved.</strong><br />
-                This is an official payment receipt. Duplication or unauthorized reproduction is prohibited.
-              </div>
-            </div>
-          </body>
-        </html>
-      `;
+      // Same PDF as the download, so print and download always match
+      const doc = await buildReceiptPdf(r);
+      const blobUrl = URL.createObjectURL(doc.output("blob"));
 
       const iframe = document.createElement("iframe");
       iframe.style.position = "fixed";
       iframe.style.right = "0";
       iframe.style.bottom = "0";
-      iframe.style.width = "0";
-      iframe.style.height = "0";
+      iframe.style.width = "1px";
+      iframe.style.height = "1px";
       iframe.style.border = "0";
-      iframe.style.visibility = "hidden";
-      document.body.appendChild(iframe);
+      iframe.style.opacity = "0";
+      iframe.style.pointerEvents = "none";
+      iframe.src = blobUrl;
 
       const cleanup = () => {
         setTimeout(() => {
           if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
-        }, 500);
+          URL.revokeObjectURL(blobUrl);
+        }, 60000); // keep alive long enough for the print dialog
       };
 
-      const frameDoc = iframe.contentWindow.document;
-      frameDoc.open();
-      frameDoc.write(html);
-      frameDoc.close();
-
-      const triggerPrint = () => {
-        try {
-          iframe.contentWindow.focus();
-          iframe.contentWindow.print();
-        } catch (e) {
-          // ignore
-        } finally {
-          cleanup();
-        }
+      iframe.onload = () => {
+        setTimeout(() => {
+          try {
+            iframe.contentWindow.focus();
+            iframe.contentWindow.print();
+          } catch (e) {
+            // Fallback: open the PDF in a tab so the user can print from there
+            window.open(blobUrl, "_blank");
+          } finally {
+            cleanup();
+          }
+        }, 300);
       };
 
-      if (iframe.contentWindow.document.readyState === "complete") {
-        setTimeout(triggerPrint, 120);
-      } else {
-        iframe.onload = () => setTimeout(triggerPrint, 120);
-      }
+      document.body.appendChild(iframe);
     } catch (err) {
       setMessage("Could not prepare the receipt for printing.");
       setMessageType("danger");
@@ -736,7 +596,7 @@ export default function FinancePayments() {
     invoice__fee_structure__term: "",
     method: "",
     date_from: "", // exact "paid from" date (YYYY-MM-DD), filtered in the DB
-    date_to: "",   // exact "paid to" date (YYYY-MM-DD), filtered in the DB
+    date_to: "", // exact "paid to" date (YYYY-MM-DD), filtered in the DB
   });
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -1239,7 +1099,7 @@ export default function FinancePayments() {
                     </h6>
                     <button type="button" className="btn-close" onClick={closePaymentPanel}></button>
                   </div>
-                  <form onSubmit={submitPayment}>
+                  <form onSubmit={requestConfirmation}>
                     <div className="modal-body">
                       <div
                         className="d-flex justify-content-between mb-3 p-2 rounded-2"
@@ -1327,20 +1187,173 @@ export default function FinancePayments() {
                         Cancel
                       </button>
                       <button type="submit" className="btn btn-primary" disabled={recording}>
-                        {recording ? (
-                          <>
-                            <span className="spinner-border spinner-border-sm me-2"></span>
-                            Recording...
-                          </>
-                        ) : (
-                          <>
-                            <i className="bi bi-check2-circle me-1"></i>
-                            Confirm Payment
-                          </>
-                        )}
+                        <i className="bi bi-check2-circle me-1"></i>
+                        Confirm Payment
                       </button>
                     </div>
                   </form>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ================= STEP 2b: VERIFY TRANSACTION (BANK-STYLE POPUP) ================= */}
+          {payingBalance && showConfirm && (
+            <div
+              className="modal fade show d-block"
+              tabIndex="-1"
+              role="dialog"
+              aria-modal="true"
+              style={{ backgroundColor: "rgba(15,23,42,0.8)", zIndex: 1080 }}
+            >
+              <div className="modal-dialog modal-dialog-centered">
+                <div className="modal-content" style={{ border: "3px solid #f59e0b", overflow: "hidden" }}>
+                  <div className="modal-header" style={{ background: "#fffbeb" }}>
+                    <h6 className="modal-title mb-0" style={{ fontWeight: 700, color: "#92400e" }}>
+                      <i className="bi bi-shield-check me-2"></i>
+                      Review Transaction
+                    </h6>
+                  </div>
+
+                  <div className="modal-body">
+                    <div className="text-center text-muted-soft" style={{ fontSize: "var(--fs-sm)" }}>
+                      Please verify the amount received before proceeding
+                    </div>
+
+                    {/* Highlighted amount */}
+                    <div
+                      className="text-center my-3 py-3 rounded-3"
+                      style={{
+                        background: "#fef3c7",
+                        border: "2px dashed #f59e0b",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: "var(--fs-xs)",
+                          fontWeight: 700,
+                          color: "#92400e",
+                          textTransform: "uppercase",
+                          letterSpacing: "1px",
+                        }}
+                      >
+                        Amount Received
+                      </div>
+                      <div style={{ fontSize: "2.4rem", fontWeight: 800, color: "#0f172a", lineHeight: 1.2 }}>
+                        KES {currency(amountNumber)}
+                      </div>
+                    </div>
+
+                    {/* Transaction details */}
+                    <div className="border rounded-3 p-3" style={{ fontSize: "var(--fs-sm)" }}>
+                      <div className="d-flex justify-content-between mb-1">
+                        <span className="text-muted-soft">Student</span>
+                        <strong>{payingBalance.student_name}</strong>
+                      </div>
+                      <div className="d-flex justify-content-between mb-1">
+                        <span className="text-muted-soft">Admission No</span>
+                        <strong>{payingBalance.admission_no}</strong>
+                      </div>
+                      <div className="d-flex justify-content-between mb-1">
+                        <span className="text-muted-soft">Payment Method</span>
+                        <strong>{METHOD_LABEL[paymentDraft.method]}</strong>
+                      </div>
+                      <div className="d-flex justify-content-between mb-1">
+                        <span className="text-muted-soft">Reference</span>
+                        <strong>{paymentDraft.reference || "-"}</strong>
+                      </div>
+                      <hr className="my-2" />
+                      <div className="d-flex justify-content-between mb-1">
+                        <span className="text-muted-soft">Balance Before</span>
+                        <strong>KES {currency(activeBalanceDue)}</strong>
+                      </div>
+                      <div className="d-flex justify-content-between">
+                        <span className="text-muted-soft">
+                          {balanceAfterPayment < 0 ? "Credit After Payment" : "Balance After"}
+                        </span>
+                        <strong
+                          style={{
+                            color:
+                              balanceAfterPayment > 0
+                                ? "#b91c1c"
+                                : balanceAfterPayment < 0
+                                ? "#166534"
+                                : "#0f172a",
+                          }}
+                        >
+                          {balanceAfterPayment === 0
+                            ? "KES 0 (Fully paid)"
+                            : `KES ${currency(Math.abs(balanceAfterPayment))}`}
+                        </strong>
+                      </div>
+                    </div>
+
+                    {excessOverBalance > 0 && (
+                      <div className="mt-2 text-success" style={{ fontSize: "var(--fs-sm)" }}>
+                        <i className="bi bi-info-circle me-1"></i>
+                        KES {currency(excessOverBalance)} above the balance will be saved as credit.
+                      </div>
+                    )}
+                    {amountNumber < activeBalanceDue && (
+                      <div className="mt-2" style={{ fontSize: "var(--fs-sm)", color: "#b45309" }}>
+                        <i className="bi bi-info-circle me-1"></i>
+                        Partial payment: KES {currency(activeBalanceDue - amountNumber)} will remain unpaid.
+                      </div>
+                    )}
+
+                    {/* Verification checkbox */}
+                    <div
+                      className="form-check mt-3 p-2 ps-5 rounded-2"
+                      style={{ background: "#fef2f2", border: "1px solid #fecaca" }}
+                    >
+                      <input
+                        className="form-check-input"
+                        type="checkbox"
+                        id="confirmAmountVerified"
+                        checked={confirmChecked}
+                        disabled={recording}
+                        onChange={(e) => setConfirmChecked(e.target.checked)}
+                      />
+                      <label
+                        className="form-check-label"
+                        htmlFor="confirmAmountVerified"
+                        style={{ fontSize: "var(--fs-sm)", fontWeight: 600, color: "#b91c1c" }}
+                      >
+                        I have verified that KES {currency(amountNumber)} was received (cash count, M-Pesa
+                        message or bank slip).
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="modal-footer">
+                    <button
+                      type="button"
+                      className="btn btn-outline-secondary"
+                      onClick={cancelConfirmation}
+                      disabled={recording}
+                    >
+                      <i className="bi bi-arrow-left me-1"></i>
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-success"
+                      onClick={submitPayment}
+                      disabled={!confirmChecked || recording}
+                    >
+                      {recording ? (
+                        <>
+                          <span className="spinner-border spinner-border-sm me-2"></span>
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          <i className="bi bi-check2-circle me-1"></i>
+                          Confirm &amp; Record
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1393,6 +1406,27 @@ export default function FinancePayments() {
                       <div className="col-6 fw-bold" style={{ color: "var(--success-600, #198754)" }}>
                         KES {currency(receipt.amount)}
                       </div>
+
+                      {/* Balance remaining / prepaid credit after this payment */}
+                      {(() => {
+                        const bal = describeBalance(receipt.balance);
+                        const color =
+                          bal.tone === "owing"
+                            ? "var(--danger-600, #dc3545)"
+                            : bal.tone === "credit"
+                            ? "var(--success-600, #198754)"
+                            : undefined;
+                        return (
+                          <>
+                            <div className="col-6">
+                              <span className="text-muted-soft">{bal.label}</span>
+                            </div>
+                            <div className="col-6 fw-bold" style={{ color }}>
+                              {bal.value}
+                            </div>
+                          </>
+                        );
+                      })()}
 
                       {receipt.allocations?.length > 1 && (
                         <div className="col-12 mt-2">
@@ -1451,6 +1485,19 @@ export default function FinancePayments() {
                     >
                       <i className="bi bi-file-earmark-pdf me-2"></i>
                       Download Receipt (PDF)
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary mt-3 ms-2"
+                      onClick={() => handlePrintPaymentReceipt({ id: receipt.payment_id })}
+                      disabled={printingReceiptId === receipt.payment_id}
+                    >
+                      {printingReceiptId === receipt.payment_id ? (
+                        <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                      ) : (
+                        <i className="bi bi-printer me-2"></i>
+                      )}
+                      Print Receipt
                     </button>
                     <button
                       type="button"

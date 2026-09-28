@@ -2034,6 +2034,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
                 payment.recorded_by.get_full_name() if payment.recorded_by else "Self-service (STK push)"
             ),
             "qr_code_base64": services.generate_receipt_qr_base64(payment),
+            "balance": str(services.get_outstanding_balance(student)),
         })
 
     @action(detail=False, methods=["get"], url_path=r"verify/(?P<receipt_no>[^/]+)")
@@ -3954,4 +3955,238 @@ class SecretaryDashboardStatsView(APIView):
             "admissions_by_grade": admissions_by_grade,
             "gender_split": gender_split,
             "recent_admissions": recent_admissions,
+        })
+        
+        
+        
+"""
+School Fee Update Card & Gatepass - purely additive module.
+No changes to models.py: the grace-period policy below is a plain Python
+list, not a database table, so there is nothing to migrate.
+"""
+import base64
+import io
+from datetime import timedelta
+
+import qrcode
+from django.conf import settings
+from django.core import signing
+from django.utils import timezone
+from django.utils.dateparse import parse_date
+from rest_framework import generics
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from . import models, services, utils
+
+GATEPASS_TOKEN_SALT = "fee-gatepass-v1"
+
+CLEARED, GRACE, OWING = "CLEARED", "GRACE", "OWING"
+STATUS_LABELS = {CLEARED: "CLEARED", GRACE: "GRACE PERIOD", OWING: "FEES OWING"}
+
+# ---------------------------------------------------------------------------
+# GRACE PERIOD POLICY - edit these numbers to match your fee ranges.
+# Each row: (min_balance, max_balance_or_None, grace_days, label)
+#   - max_balance = None means "and above" - only the LAST row should use this.
+# Rows are checked top to bottom; the first row whose range contains the
+# balance wins, so keep them in ascending order with no gaps.
+# This is the ONLY place you edit to change the policy - no admin page,
+# no database row, no migration.
+#
+# Skewed generous on purpose, since many families here are working with very
+# tight budgets and paying in instalments through the term rather than all at
+# once. "High balance" now only starts at KES 20,000 (not 10,000), and even
+# the top band still gets 1 day rather than 0 - a learner is never sent home
+# on the very same day their balance crosses a threshold; the smallest
+# balances get close to a full school week to make a plan.
+# ---------------------------------------------------------------------------
+GRACE_PERIOD_BANDS = [
+    (0.01, 5000, 10, "Small balance"),
+    (5000.01, 10000, 7, "Moderate balance"),
+    (10000.01, 20000, 5, "Elevated balance"),
+    (20000.01, 40000, 3, "High balance"),
+    (40000.01, None, 1, "Very high balance"),
+]
+
+
+def grace_days_for_balance(balance):
+    """
+    Walk GRACE_PERIOD_BANDS top to bottom and return the grace_days for
+    the first row whose range contains this balance. balance <= 0 never
+    reaches here (callers check CLEARED first). A balance that falls
+    outside every configured row -> 0 grace days (owing), so a gap in
+    the table fails safe instead of guessing.
+    """
+    for min_balance, max_balance, grace_days, _label in GRACE_PERIOD_BANDS:
+        if balance >= min_balance and (max_balance is None or balance <= max_balance):
+            return grace_days
+    return 0
+
+
+def card_status(balance, issue_date, today=None):
+    """
+    Green: nothing owed - always allowed, no grace window at all.
+    Amber: owes, but still inside a grace window SIZED TO HOW MUCH THEY
+    OWE (see grace_days_for_balance) - not the same window for everyone.
+    Red: owes, and either falls outside every band or has run past their
+    own window.
+
+    Recomputed from the CURRENT balance every single time this is called
+    (both at Monday's generation and on every QR scan through the week),
+    so a mid-week part-payment moves the student into a wider band - or
+    to CLEARED - immediately, without reprinting anything.
+
+    Returns (status, grace_days_used).
+    """
+    today = today or timezone.localdate()
+    if balance <= 0:
+        return CLEARED, None
+    grace_days = grace_days_for_balance(balance)
+    if grace_days <= 0:
+        return OWING, 0
+    grace_to = issue_date + timedelta(days=grace_days - 1)
+    status = GRACE if issue_date <= today <= grace_to else OWING
+    return status, grace_days
+
+
+def make_token(student_id, issue_date):
+    """
+    The token carries only WHO and WHEN ISSUED - never a computed grace
+    end date. The grace window is re-derived from GRACE_PERIOD_BANDS and
+    the student's LIVE balance every time the QR is scanned, so it always
+    reflects today's balance rather than whatever was true on Monday.
+    """
+    return signing.dumps({"s": student_id, "i": issue_date.isoformat()}, salt=GATEPASS_TOKEN_SALT)
+
+
+def read_token(token):
+    try:
+        return signing.loads(token, salt=GATEPASS_TOKEN_SALT)
+    except signing.BadSignature:
+        return None
+
+
+def qr_base64(token):
+    url = f"{settings.FRONTEND_URL}/verify-gatepass/{token}"
+    img = qrcode.make(url, box_size=4, border=1)
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
+def _date_param(request, name):
+    raw = request.query_params.get(name)
+    if not raw:
+        return None
+    try:
+        return parse_date(raw)
+    except ValueError:
+        return None
+
+
+class ClassGatepassCardsView(APIView):
+    """
+    GET /api/v1/gatepass/class/?classroom=<id>&issue_date=YYYY-MM-DD
+    One card per ACTIVE learner in the classroom. Admin / Finance / Secretary.
+
+    issue_date defaults to today (generated fresh every Monday). There is
+    no grace_to input any more - each learner's own grace window is
+    computed from THEIR balance against GRACE_PERIOD_BANDS above, so a
+    KES 1,000 balance and a KES 30,000 balance printed on the same Monday
+    get different numbers of days automatically.
+    """
+
+    permission_classes = [utils.IsSchoolOffice]
+
+    def get(self, request):
+        classroom_id = request.query_params.get("classroom")
+        if not classroom_id:
+            return Response({"detail": "classroom is required."}, status=400)
+
+        classroom = generics.get_object_or_404(
+            models.ClassRoom.objects.select_related("grade_level", "stream", "academic_year"),
+            pk=classroom_id,
+        )
+
+        today = timezone.localdate()
+        issue_date = _date_param(request, "issue_date") or today
+
+        enrollments = list(
+            classroom.enrollments.filter(status=models.Enrollment.Status.ACTIVE)
+            .select_related("student__user")
+            .order_by("student__user__first_name", "student__user__last_name")
+        )
+        ledger = services.get_ledger_totals_bulk([e.student_id for e in enrollments])
+        term = models.Term.objects.filter(is_current=True).first()
+
+        cards = []
+        counts = {CLEARED: 0, GRACE: 0, OWING: 0}
+        for e in enrollments:
+            student = e.student
+            t = ledger.get(student.id)
+            balance = t["balance"] if t else 0
+            status, grace_days = card_status(balance, issue_date, today)
+            counts[status] += 1
+            token = make_token(student.id, issue_date)
+            grace_to = issue_date + timedelta(days=grace_days - 1) if grace_days else None
+            cards.append({
+                "student_id": student.id,
+                "admission_no": student.admission_no,
+                "name": student.user.get_full_name(),
+                "classroom": str(classroom),
+                "balance": float(balance),
+                "status": status,
+                "status_label": STATUS_LABELS[status],
+                "grace_from": issue_date if status == GRACE else None,
+                "grace_to": grace_to if status == GRACE else None,
+                "serial": f"FUC-{student.admission_no}-{today:%y%m%d}",
+                "qr_code_base64": qr_base64(token),
+            })
+
+        return Response({
+            "classroom": str(classroom),
+            "term": str(term) if term else "",
+            "issue_date": issue_date,
+            "generated_on": today,
+            "counts": counts,
+            "cards": cards,
+        })
+
+
+class GatepassVerifyView(APIView):
+    """
+    GET /api/v1/gatepass/verify/<token>/   PUBLIC (what the card QR opens).
+    Recomputes status LIVE off the CURRENT balance and the CURRENT
+    GRACE_PERIOD_BANDS list - not whatever was true when the card was
+    printed. Deliberately returns NO balance amount.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, token):
+        payload = read_token(token)
+        if not payload:
+            return Response({"valid": False, "detail": "This QR code is invalid or has been tampered with."})
+
+        student = models.StudentProfile.objects.select_related("user").filter(pk=payload["s"]).first()
+        if not student or not student.is_active:
+            return Response({"valid": False, "detail": "This learner is no longer active."})
+
+        issue_date = parse_date(payload["i"])
+        balance = services.get_outstanding_balance(student)
+        status, grace_days = card_status(balance, issue_date)
+        grace_to = issue_date + timedelta(days=grace_days - 1) if grace_days else None
+
+        return Response({
+            "valid": True,
+            "student_name": student.user.get_full_name(),
+            "admission_no": student.admission_no,
+            "classroom": services.get_student_status_label(student),
+            "status": status,
+            "status_label": STATUS_LABELS[status],
+            "grace_from": issue_date if status == GRACE else None,
+            "grace_to": grace_to if status == GRACE else None,
+            "verified_at": timezone.now(),
         })

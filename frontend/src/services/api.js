@@ -2,7 +2,7 @@ import axios from "axios";
 
 export const BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
-  "http://127.0.0.1:8000/api/v1";
+  "http://10.214.5.92:8000/api/v1";
 
 const api = axios.create({
   baseURL: BASE_URL,
@@ -237,6 +237,11 @@ export const teacherApi = {
   allAllocations: (params) => api.get("/teacher-allocations/", { params }),
   unallocated: (params) => api.get("/teacher-allocations/unallocated/", { params }),
   myClassTeacherClassrooms: () => api.get("/my-class-teacher-classrooms/"),
+};
+
+export const gatepassApi = {
+  classCards: (params) => api.get("/gatepass/class/", { params }),
+  verify: (token) => api.get(`/gatepass/verify/${token}/`),
 };
 
 export const examsApi = {

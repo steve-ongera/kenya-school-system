@@ -134,6 +134,8 @@ urlpatterns = [
     path("payments/status/<str:checkout_request_id>/", views.PaymentStatusView.as_view(), name="payment-status"),
     path("payments/<int:payment_id>/receipt/", views.ReceiptView.as_view(), name="payment-receipt"),
     path("receipts/verify/<str:receipt_no>/", views.VerifyReceiptView.as_view(), name="verify-receipt"),
+    path("gatepass/class/", views.ClassGatepassCardsView.as_view()),
+    path("gatepass/verify/<str:token>/", views.GatepassVerifyView.as_view()),
 
     # -----------------------------------------------------------------
     # FINANCE REPORTS

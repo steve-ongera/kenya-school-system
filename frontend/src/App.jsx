@@ -75,6 +75,8 @@ const FinanceCollections = lazy(() => import("./pages/finance/Collections"));
 const FinanceClassAnalysis = lazy(() => import("./pages/finance/ClassAnalysis"));
 const FinanceDetailedReport = lazy(() => import("./pages/finance/DetailedReport"));
 import FinanceVerifyReceipt from "./pages/finance/FinanceVerifyReceipt";
+const FeeUpdateCards = lazy(() => import("./pages/finance/FeeUpdateCards"));
+const VerifyGatepass = lazy(() => import("./pages/VerifyGatepass"));
 
 // teacher
 const TeacherDashboard = lazy(() => import("./pages/teacher/Dashboard"));
@@ -115,6 +117,14 @@ function RoleSection({ role, children }) {
   return <Guarded roles={[role]}>{children}</Guarded>;
 }
 
+// Gate Pass verification (scanning a Fee Update Card's QR, or looking one
+// up manually): every signed-in role EXCEPT the student themself. A
+// student is exactly who the card is about, so they're deliberately left
+// out here - everyone else (gate/security-facing staff, teachers,
+// parents dropping off a child, finance/admin/secretary/principal) can
+// verify one.
+const GATEPASS_VERIFIER_ROLES = ["ADMIN", "PRINCIPAL", "SECRETARY", "TEACHER", "PARENT", "FINANCE"];
+
 export default function App() {
   return (
     <AuthProvider>
@@ -136,6 +146,26 @@ export default function App() {
             <Route path="/change-password" element={<Guarded><ChangePassword /></Guarded>} />
             <Route path="/messages" element={<Guarded><Messages /></Guarded>} />
             <Route path="/notifications" element={<Guarded><Notifications /></Guarded>} />
+
+            {/* GATE PASS VERIFICATION - moved inside the authenticated shell
+                (it used to be a fully public route). Reachable two ways
+                under the SAME guard: "/verify-gatepass" from a sidebar link
+                for typing/looking a card up manually, and
+                "/verify-gatepass/:token" for the deep link a Fee Update
+                Card's QR code opens. Every role except STUDENT can use
+                either - see GATEPASS_VERIFIER_ROLES above. */}
+            <Route
+              path="/verify-gatepass"
+              element={<Guarded roles={GATEPASS_VERIFIER_ROLES}><VerifyGatepass /></Guarded>}
+            />
+            <Route
+              path="/verify-gatepass/:token"
+              element={<Guarded roles={GATEPASS_VERIFIER_ROLES}><VerifyGatepass /></Guarded>}
+            />
+
+            <Route path="/finance/fee-cards" element={<RoleSection role="FINANCE"><FeeUpdateCards /></RoleSection>} />
+            <Route path="/secretary/fee-cards" element={<RoleSection role="SECRETARY"><FeeUpdateCards /></RoleSection>} />
+            <Route path="/admin/fee-cards" element={<RoleSection role="ADMIN"><FeeUpdateCards /></RoleSection>} />
 
             {/* HELP & SUPPORT - restricted to ADMIN / TEACHER / FINANCE / STUDENT.
                 Adjust the roles array below if you want PARENT included too. */}

@@ -37,6 +37,7 @@ ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
     "127.0.0.1",
+    "10.214.5.92",
 ]
 
 
@@ -256,8 +257,9 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5174",
     "http://127.0.0.1:5174",
-    "http://127.0.0.1:5174",
+    "http://10.214.5.92:5174",
 ]
+
 
 CORS_ALLOW_CREDENTIALS = True
 
@@ -274,7 +276,7 @@ CORS_ALLOW_CREDENTIALS = True
 
 FRONTEND_URL = os.environ.get(
     "FRONTEND_URL",
-    "http://127.0.0.1:5174",
+    "http://10.214.5.92:5174",
 )
 
 

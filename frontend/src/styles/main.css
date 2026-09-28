@@ -2275,3 +2275,29 @@ a.contact-detail-value:hover { color: var(--blue-700); }
     animation-iteration-count: infinite !important;
   }
 }
+
+/* Vertically center the close icon inside dismissible alerts */
+.alert-dismissible .btn-close {
+  position: absolute;
+  top: 50%;
+  right: 0.75rem;
+  transform: translateY(-50%);
+  padding: 0;
+  width: 1rem;
+  height: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-size: 0.75rem;
+  opacity: 0.6;
+  z-index: 2;
+}
+
+.alert-dismissible .btn-close:hover {
+  opacity: 1;
+}
+
+/* Keep long messages from running under the icon */
+.alert-dismissible {
+  padding-right: 2.75rem;
+}
