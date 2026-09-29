@@ -36,6 +36,16 @@ const METHOD_ICON = {
   CHEQUE: "bi-file-text",
 };
 
+// ---- Receipt PDF theme (matches the report card) ----
+const RECEIPT_SCHOOL_NAME = "JUNDA HIGH SCHOOL";
+const RECEIPT_ADDRESS_LINE_1 = "P.O BOX 87073-80100, MOMBASA";
+const RECEIPT_ADDRESS_LINE_2 = "Email: jundahighschool83@gmail.com";
+const RECEIPT_MOTTO = "STRIVE TO EXCELL";
+const RC_NAVY = [31, 56, 100];
+const RC_GREY = [242, 242, 242];
+const RC_BORDER = [166, 166, 166];
+const RC_BLACK = [0, 0, 0];
+
 // Positive = still owes, negative = prepaid credit, 0 = fully paid.
 // Used on the on-screen receipt and the PDF (which is also what gets printed).
 const describeBalance = (balance) => {
@@ -286,48 +296,63 @@ export default function FinancePayments() {
 
     const base64Logo = await getImageBase64(logoImage);
 
-    // --- Header ---
-    // Keep the logo's real aspect ratio (no squeezing) and make it a bit bigger.
-    let logoW = 0;
-    const logoH = 13;
+    // --- Header (same look as the report card): logo left, school details centred ---
     if (base64Logo) {
       const props = doc.getImageProperties(base64Logo);
       const ratio = props.width / props.height || 1;
-      logoW = Math.min(logoH * ratio, 28); // cap the width so long logos don't crowd the title
-      const drawH = logoW / ratio; // recompute height if the width was capped
-      doc.addImage(base64Logo, "PNG", marginX, 7.5 + (logoH - drawH) / 2, logoW, drawH);
+      const maxH = 13;
+      const maxW = 28;
+      let drawW = maxH * ratio;
+      let drawH = maxH;
+      if (drawW > maxW) {
+        drawW = maxW;
+        drawH = drawW / ratio;
+      }
+      doc.addImage(base64Logo, "PNG", marginX, 6 + (maxH - drawH) / 2, drawW, drawH);
     }
-    const textX = base64Logo ? marginX + logoW + 3 : marginX;
 
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
-    doc.setTextColor(15, 23, 42);
-    doc.text("Junda High School Shanzu", textX, 12.5);
+    doc.setFontSize(15);
+    doc.setTextColor(...RC_NAVY);
+    doc.text(RECEIPT_SCHOOL_NAME, pageWidth / 2, 12, { align: "center" });
 
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
-    doc.setTextColor(71, 85, 105);
-    doc.text("Official Payment Receipt", textX, 17);
-
     doc.setFontSize(6.5);
-    doc.setTextColor(100, 116, 139);
+    doc.setTextColor(...RC_BLACK);
+    doc.text(RECEIPT_ADDRESS_LINE_1, pageWidth / 2, 16.5, { align: "center" });
+    doc.text(RECEIPT_ADDRESS_LINE_2, pageWidth / 2, 19.5, { align: "center" });
+
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(6.5);
+    doc.setTextColor(110, 110, 110);
+    doc.text(RECEIPT_MOTTO, pageWidth / 2, 22.8, { align: "center" });
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(5.5);
+    doc.setTextColor(110, 110, 110);
     doc.text(
       `Generated ${new Date().toLocaleDateString("en-KE", { year: "numeric", month: "long", day: "numeric" })}`,
       pageWidth - marginX,
-      12,
+      8.5,
       { align: "right" }
     );
 
-    doc.setDrawColor(203, 213, 225);
-    doc.setLineWidth(0.3);
-    doc.line(marginX, 21, pageWidth - marginX, 21);
+    doc.setDrawColor(...RC_NAVY);
+    doc.setLineWidth(0.6);
+    doc.line(marginX, 25.5, pageWidth - marginX, 25.5);
+
+    // --- Title ---
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.5);
+    doc.setTextColor(...RC_NAVY);
+    doc.text("OFFICIAL PAYMENT RECEIPT", pageWidth / 2, 31, { align: "center" });
 
     // --- Receipt number + date strip ---
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7.5);
-    doc.setTextColor(51, 65, 85);
-    doc.text(`Receipt No: ${r.receipt_no}`, marginX, 26);
-    doc.text(`Date: ${new Date(r.paid_at).toLocaleString("en-KE")}`, pageWidth - marginX, 26, {
+    doc.setTextColor(...RC_BLACK);
+    doc.text(`Receipt No: ${r.receipt_no}`, marginX, 36.5);
+    doc.text(`Date: ${new Date(r.paid_at).toLocaleString("en-KE")}`, pageWidth - marginX, 36.5, {
       align: "right",
     });
 
@@ -349,21 +374,22 @@ export default function FinancePayments() {
     ];
 
     autoTable(doc, {
-      startY: 29,
+      startY: 39.5,
       margin: { left: marginX, right: marginX },
       pageBreak: "avoid",
       body: rows,
       theme: "grid",
       styles: {
+        font: "helvetica",
         fontSize: 7.5,
         cellPadding: 1.3,
-        lineColor: [226, 232, 240],
-        lineWidth: 0.1,
-        textColor: [51, 65, 85],
+        lineColor: RC_BORDER,
+        lineWidth: 0.2,
+        textColor: RC_BLACK,
         overflow: "ellipsize",
       },
       columnStyles: {
-        0: { fontStyle: "bold", cellWidth: 30, fillColor: [241, 245, 249] },
+        0: { fontStyle: "bold", cellWidth: 30, fillColor: RC_GREY },
         1: { cellWidth: "auto" },
       },
       didParseCell: (data) => {
@@ -375,7 +401,7 @@ export default function FinancePayments() {
                 ? [185, 28, 28]
                 : bal.tone === "credit"
                 ? [22, 101, 52]
-                : [51, 65, 85];
+                : RC_BLACK;
           }
         }
       },
@@ -412,8 +438,17 @@ export default function FinancePayments() {
         head,
         body,
         theme: "grid",
-        styles: { fontSize: 6.8, cellPadding: 1, overflow: "ellipsize" },
-        headStyles: { fillColor: [71, 85, 105] },
+        styles: {
+          font: "helvetica",
+          fontSize: 6.8,
+          cellPadding: 1,
+          overflow: "ellipsize",
+          textColor: RC_BLACK,
+          lineColor: [191, 191, 191],
+          lineWidth: 0.2,
+        },
+        headStyles: { fillColor: RC_NAVY, textColor: [255, 255, 255], fontStyle: "bold", lineColor: RC_NAVY },
+        alternateRowStyles: { fillColor: RC_GREY },
         columnStyles:
           allocs.length > 5 ? { 1: { halign: "right" }, 3: { halign: "right" } } : { 1: { halign: "right" } },
       });
@@ -449,15 +484,15 @@ export default function FinancePayments() {
       doc.addImage(`data:image/png;base64,${r.qr_code_base64}`, "PNG", qrX, qrY, qrSize, qrSize);
       doc.setFont("helvetica", "normal");
       doc.setFontSize(6);
-      doc.setTextColor(100, 116, 139);
+      doc.setTextColor(110, 110, 110);
       doc.text("Scan to verify this receipt", qrX + qrSize / 2, qrY + qrSize + 3, { align: "center" });
     } else {
-      doc.setDrawColor(148, 163, 184);
+      doc.setDrawColor(...RC_BORDER);
       doc.setLineWidth(0.2);
       doc.rect(qrX, qrY, qrSize, qrSize);
       doc.setFont("helvetica", "normal");
       doc.setFontSize(6);
-      doc.setTextColor(100, 116, 139);
+      doc.setTextColor(110, 110, 110);
       doc.text("Verification QR", qrX + qrSize / 2, qrY + qrSize / 2 - 1, { align: "center" });
       doc.text("unavailable", qrX + qrSize / 2, qrY + qrSize / 2 + 3, { align: "center" });
     }
@@ -466,49 +501,58 @@ export default function FinancePayments() {
     const stampX = qrX + qrSize + 5;
     const stampWidth = pageWidth - stampX - marginX;
 
-    doc.setDrawColor(148, 163, 184);
-    doc.setLineWidth(0.2);
+    doc.setDrawColor(...RC_BLACK);
+    doc.setLineWidth(0.25);
     doc.rect(stampX, qrY, stampWidth, qrSize);
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(7);
-    doc.setTextColor(15, 23, 42);
+    doc.setTextColor(...RC_BLACK);
     doc.text("Official School Stamp", stampX + stampWidth / 2, qrY + 5, { align: "center" });
     doc.setFont("helvetica", "normal");
     doc.setFontSize(6);
-    doc.setTextColor(100, 116, 139);
+    doc.setTextColor(120, 120, 120);
     doc.text("(Stamp here)", stampX + stampWidth / 2, qrY + qrSize / 2 + 2, { align: "center" });
 
     // Signature lines
-    doc.setDrawColor(148, 163, 184);
-    doc.setLineWidth(0.2);
+    doc.setDrawColor(...RC_BLACK);
+    doc.setLineWidth(0.25);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(7);
-    doc.setTextColor(15, 23, 42);
+    doc.setTextColor(...RC_BLACK);
     doc.text("Finance Officer's Signature:", marginX, sigY);
     doc.line(marginX, sigY + 6, pageWidth / 2 - 3, sigY + 6);
     doc.text("Principal's Signature:", pageWidth / 2 + 3, sigY);
     doc.line(pageWidth / 2 + 3, sigY + 6, pageWidth - marginX, sigY + 6);
 
     // Copyright / anti-duplication footer (always on the page)
-    doc.setDrawColor(203, 213, 225);
+    doc.setDrawColor(...RC_BLACK);
     doc.setLineWidth(0.15);
     doc.line(marginX, footerLineY, pageWidth - marginX, footerLineY);
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(6);
-    doc.setTextColor(51, 65, 85);
+    doc.setTextColor(...RC_BLACK);
     doc.text(`© ${year} Junda High School Shanzu. All rights reserved.`, marginX, footerLineY + 4);
 
-    doc.setFont("helvetica", "normal");
+    doc.setFont("helvetica", "italic");
     doc.setFontSize(5.5);
-    doc.setTextColor(100, 116, 139);
-    doc.text("Finance Department", pageWidth - marginX, footerLineY + 4, { align: "right" });
+    doc.setTextColor(90, 90, 90);
+    doc.text("Powered by Masomo Portal (www.masomoportal.com)", pageWidth - marginX, footerLineY + 4, { align: "right" });
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(5.2);
     doc.text(
-      "This is an official payment receipt. Duplication or unauthorized reproduction is prohibited.",
+      "This is an official payment receipt. Duplication  is prohibited.",
       marginX,
       footerLineY + 7.5
     );
+
+    // --- Marketing line, directly below the Finance Department footer ---
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(5.5);
+    doc.setTextColor(90, 90, 90);
+    
 
     return doc;
   };

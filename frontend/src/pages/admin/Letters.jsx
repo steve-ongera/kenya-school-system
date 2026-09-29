@@ -18,16 +18,17 @@ import logoImage from "../../assets/junda_high_logo.png";
      | Label | Value |  a row in a details table
    ========================================================================== */
 
-const LH_KEY = "masomo_letterhead_v1";
+// bumped to v2 so the new defaults apply (v1 was saved on devices with blank details)
+const LH_KEY = "masomo_letterhead_v2";
 const thisYear = String(new Date().getFullYear());
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
 const DEFAULT_LH = {
-  schoolName: "Junda High School Shanzu",
-  schoolAddress: "",
-  schoolPhone: "",
-  schoolEmail: "",
-  schoolMotto: "",
+  schoolName: "Junda High School",
+  schoolAddress: "P.O. Box 87073, Mombasa",
+  schoolPhone: "0722 745241, 0733 765148",
+  schoolEmail: "jundahighschool83@gmail.com",
+  schoolMotto: "Strive to Excell",
   principalName: "",
   showLogo: true,
 };
@@ -136,6 +137,40 @@ const F = {
   returnTime: { label: "Return time", def: "5:00 p.m." },
   activityCost: { label: "Cost per student (KES)", type: "money", ph: "0 if free" },
   consentDeadline: { label: "Return slip by", type: "date" },
+
+  // closing letter
+  closeDate: { label: "School closes on", type: "date" },
+  closeTime: { label: "Closing time", def: "12:30 p.m." },
+  tuitionFrom: { label: "Holiday tuition starts", type: "date" },
+  tuitionTo: { label: "Holiday tuition ends", type: "date" },
+  tuitionFee: { label: "Holiday tuition fee (KES)", type: "money", def: "800" },
+  tuitionPayBy: { label: "Pay tuition before", type: "date" },
+  reopenDate: { label: "School resumes on", type: "date" },
+  reopenTime: { label: "Resumption time", def: "6:30 a.m." },
+  resultsDate: { label: "Results collection date", type: "date" },
+  resultsTime: { label: "Results collection time", def: "8:00 a.m." },
+  tripVenue: { label: "Trip venue", ph: "e.g. Mkomamani Show Ground" },
+  tripWhen: { label: "Trip timing", ph: "e.g. the first week of September 2026" },
+  tripFee: { label: "Trip fee (KES)", type: "money", def: "1000" },
+  tripAim: {
+    label: "Trip aim",
+    type: "textarea",
+    def: "expose learners to agriculture, technology and career opportunities",
+  },
+  sportsUpdate: {
+    label: "Sports update",
+    type: "textarea",
+    def: "We are proud to announce that the school emerged 2nd overall in the recently concluded term games. Congratulations to our team for the excellent performance. We continue to nurture talent and discipline through sports.",
+  },
+  tillNo: { label: "M-Pesa Till No.", def: "848740" },
+  paybillNo: { label: "M-Pesa Paybill", def: "111999" },
+  paybillAccount: { label: "Paybill account", def: "350065" },
+  guidanceNote: {
+    label: "Parental guidance",
+    type: "textarea",
+    def: "As students are home, please take time to talk with them about discipline, life choices, and future goals. Your mentorship is key to their success.",
+  },
+
   teacherInCharge: { label: "Teacher in charge" },
   sport: { label: "Sport / game", ph: "e.g. Football" },
   eventName: { label: "Event", ph: "e.g. County Secondary Schools Games" },
@@ -604,6 +639,48 @@ Kindly acknowledge receipt of this invitation by signing the slip below and retu
 I, ______________________________, parent/guardian of {{studentName}}, acknowledge receipt of this invitation.
 
 Signature: ______________________     Date: ________________`,
+  }),
+
+  T({
+    id: "closing-letter",
+    cat: "parents",
+    title: "Closing Letter",
+    desc: "End-of-term update: key dates, results, holiday tuition, trip, fees and payment details.",
+    salutation: "Dear Parents and Guardians,",
+    closing: "Warm regards,",
+    subject: "End of {{term}} Update, Holiday Tuition, Academic Trip & Resumption Dates",
+    body: `We thank God for a successful {{term}}. We celebrate your child's hard work and commitment this term. Kindly note the key dates for the holiday, tuition, trip and resumption.
+
+# Key Term Dates
+- School Closes: {{closeDate}} at {{closeTime}}
+- Holiday Tuition: {{tuitionFrom}} to {{tuitionTo}}
+- School Resumes: {{reopenDate}} at {{reopenTime}}
+
+# Examination Results
+Students completed end of term exams this week. Teachers are marking. Final results will be ready for collection on {{resultsDate}} at {{resultsTime}}.
+
+# Holiday Tuition
+Holiday tuition will run from {{tuitionFrom}} to {{tuitionTo}}. Cost: KES {{tuitionFee}} per learner. This is compulsory for ALL learners. All students are expected to attend. Please ensure students report in full school uniform daily. Tuition fees should be paid before {{tuitionPayBy}} using the school payment details below.
+
+# Academic Trip
+We have organized an Academic Trip to {{tripVenue}} in {{tripWhen}}. Trip Fee: KES {{tripFee}} per learner. The trip aims to {{tripAim}}. All learners are expected to participate. Payment should be made before resumption on {{reopenDate}}.
+
+# Sports Update
+{{sportsUpdate}}
+
+# Fees Reminder
+- Tuition Fee: KES {{tuitionFee}} per learner - Compulsory for all
+- Academic Trip Fee: KES {{tripFee}} per learner
+- School Fees: Clear any outstanding balances before resumption to avoid inconveniences.
+- Uniform: Students must report in complete, neat school uniform on {{reopenDate}}.
+
+# Payment Details
+Till No: {{tillNo}} OR Paybill: {{paybillNo}}, Account: {{paybillAccount}}
+
+# Parental Guidance
+{{guidanceNote}}
+
+Thank you for your continued partnership. We wish you and your family a safe, restful, and refreshing holiday.`,
   }),
 
   T({
@@ -1140,17 +1217,19 @@ const readLetterhead = () => {
    ========================================================================== */
 const LETTER_CSS = `
 .lp{font-family:Helvetica,Arial,sans-serif;font-size:10.5pt;line-height:1.55;color:#1e293b}
-.lp .lh{text-align:center}
-.lp .lh-logo{height:64px;width:auto;max-width:200px;object-fit:contain;margin-bottom:6px}
-.lp .lh-name{font-size:17pt;font-weight:700;color:#0f2f5c;letter-spacing:.04em;text-transform:uppercase;line-height:1.25}
-.lp .lh-line{font-size:9pt;color:#475569}
-.lp .lh-motto{font-size:9pt;font-style:italic;color:#0f2f5c;margin-top:2px}
-.lp .lh-rule{border-top:2.5px solid #0f2f5c;border-bottom:1px solid #0f2f5c;height:3px;margin:10px 0 18px}
+.lp .lh{display:flex;align-items:center;gap:10px}
+.lp .lh-logo-box{width:80px;flex-shrink:0;display:flex;align-items:center}
+.lp .lh-logo{height:72px;width:auto;max-width:80px;object-fit:contain}
+.lp .lh-text{flex:1;text-align:center}
+.lp .lh-name{font-size:17pt;font-weight:700;color:#1f3864;letter-spacing:.04em;text-transform:uppercase;line-height:1.25}
+.lp .lh-line{font-size:9pt;color:#000}
+.lp .lh-motto{font-size:9pt;font-style:italic;color:#6e6e6e;margin-top:2px}
+.lp .lh-rule{border-top:2.5px solid #1f3864;border-bottom:1px solid #1f3864;height:3px;margin:10px 0 18px}
 .lp .meta{display:flex;justify-content:space-between;gap:12px;margin-bottom:14px}
 .lp .to{margin-bottom:12px;font-weight:600}
 .lp p{margin:0 0 10px}
 .lp .subj{font-weight:700;text-decoration:underline;margin:14px 0}
-.lp h4{font-size:10.5pt;font-weight:700;color:#0f2f5c;margin:14px 0 6px;break-after:avoid;page-break-after:avoid}
+.lp h4{font-size:10.5pt;font-weight:700;color:#1f3864;margin:14px 0 6px;break-after:avoid;page-break-after:avoid}
 .lp ul{margin:0 0 10px;padding-left:20px}
 .lp li{margin-bottom:3px}
 .lp table.kv{width:100%;border-collapse:collapse;margin:4px 0 12px;font-size:10pt}
@@ -1165,7 +1244,10 @@ const LETTER_CSS = `
 .lp .sign-title{color:#334155}
 .lp .sign-school{color:#64748b;font-size:9.5pt}
 .lp .stamp{flex-shrink:0;width:96px;height:96px;border:1.5px dashed #94a3b8;border-radius:50%;display:flex;align-items:center;justify-content:center;text-align:center;color:#94a3b8;font-size:8pt;letter-spacing:.06em;text-transform:uppercase;line-height:1.3}
-.lp .lp-foot{margin-top:26px;padding-top:8px;border-top:1px solid #e2e8f0;text-align:center;font-size:8pt;color:#94a3b8}
+.lp .lp-foot{margin-top:26px;padding-top:6px;border-top:1px solid #000;font-size:8pt;color:#000}
+.lp .lp-foot-row{display:flex;justify-content:space-between;gap:8px}
+.lp .lp-foot-row em{color:#5a5a5a}
+.lp .lp-foot-note{font-size:7pt;color:#5a5a5a;margin-top:2px}
 .lp mark.ph{background:#fef08a;color:#854d0e;padding:0 2px;border-radius:2px}
 `;
 
@@ -1183,7 +1265,7 @@ const PAGE_CSS = `
 export default function Letters() {
   const savedLh = readLetterhead();
   const [lh, setLh] = useState(savedLh || DEFAULT_LH);
-  const [showLh, setShowLh] = useState(!savedLh); // first visit: ask for the letterhead details
+  const [showLh, setShowLh] = useState(!savedLh); // first visit: let the admin confirm the letterhead details
   const [activeId, setActiveId] = useState(null);
   const [category, setCategory] = useState("all");
   const [search, setSearch] = useState("");
@@ -1265,14 +1347,19 @@ export default function Letters() {
   /* ---------- HTML (preview + print) ---------- */
   const buildLetterHtml = (highlight) => {
     const f = (s) => fillHtml(s, highlight);
-    const contact = [lh.schoolPhone && `Tel: ${lh.schoolPhone}`, lh.schoolEmail].filter(Boolean).join("   |   ");
-    let h = `<div class="lh">`;
-    if (lh.showLogo && logo) h += `<img class="lh-logo" src="${logo.data}" alt="" />`;
-    h += `<div class="lh-name">${esc(lh.schoolName || "School Name")}</div>`;
-    if (lh.schoolAddress) h += `<div class="lh-line">${esc(lh.schoolAddress)}</div>`;
-    if (contact) h += `<div class="lh-line">${esc(contact)}</div>`;
-    if (lh.schoolMotto) h += `<div class="lh-motto">${esc(lh.schoolMotto)}</div>`;
-    h += `</div><div class="lh-rule"></div>`;
+
+    // Letterhead: logo left, details centred (same look as the receipts)
+    let h = `<div class="lh">
+      <div class="lh-logo-box">${lh.showLogo && logo ? `<img class="lh-logo" src="${logo.data}" alt="" />` : ""}</div>
+      <div class="lh-text">
+        <div class="lh-name">${esc(lh.schoolName || "School Name")}</div>
+        ${lh.schoolAddress ? `<div class="lh-line">${esc(lh.schoolAddress)}</div>` : ""}
+        ${lh.schoolPhone ? `<div class="lh-line">Tel: ${esc(lh.schoolPhone)}</div>` : ""}
+        ${lh.schoolEmail ? `<div class="lh-line">${esc(lh.schoolEmail)}</div>` : ""}
+        ${lh.schoolMotto ? `<div class="lh-motto">${esc(lh.schoolMotto)}</div>` : ""}
+      </div>
+      <div class="lh-logo-box"></div>
+    </div><div class="lh-rule"></div>`;
 
     h += `<div class="meta"><span>${values.refNo ? `Our Ref: ${esc(values.refNo)}` : ""}</span><span>${esc(
       fmtDate(rawValue("letterDate"))
@@ -1298,8 +1385,13 @@ export default function Letters() {
             <div class="sign-school">${esc(lh.schoolName)}</div>
           </div><div class="stamp">Official<br/>Stamp</div></div>`;
 
-    const foot = [lh.schoolName, lh.schoolAddress, lh.schoolPhone, lh.schoolEmail].filter(Boolean).join("   |   ");
-    if (foot) h += `<div class="lp-foot">${esc(foot)}</div>`;
+    h += `<div class="lp-foot">
+      <div class="lp-foot-row">
+        <strong>© ${new Date().getFullYear()} ${esc(lh.schoolName)}. All rights reserved.</strong>
+        <em>Powered by Masomo Portal (www.masomoportal.com)</em>
+      </div>
+      <div class="lp-foot-note">This is an official school letter. Duplication is prohibited.</div>
+    </div>`;
     return h;
   };
 
@@ -1346,7 +1438,7 @@ export default function Letters() {
       const M = 20;
       const CW = W - 2 * M;
       const BOTTOM = H - 24;
-      const NAVY = [15, 47, 92];
+      const NAVY = [31, 56, 100];
       const INK = [30, 41, 59];
       const MUTED = [100, 116, 139];
       let y = 15;
@@ -1378,19 +1470,21 @@ export default function Letters() {
         y += after;
       };
 
-      // --- letterhead ---
+      // --- letterhead: logo left, details centred ---
+      const headTop = 12;
+      const logoH = 20;
       if (lh.showLogo && logo) {
-        const hh = 18;
-        const ww = (hh * logo.w) / logo.h;
-        doc.addImage(logo.data, "PNG", (W - ww) / 2, y, ww, hh);
-        y += hh + 3;
+        const ww = Math.min((logoH * logo.w) / logo.h, 32);
+        const hh = (ww * logo.h) / logo.w;
+        doc.addImage(logo.data, "PNG", M, headTop + (logoH - hh) / 2, ww, hh);
       }
-      y += 5;
-      write((lh.schoolName || "School Name").toUpperCase(), { size: 16, bold: true, color: NAVY, align: "center", after: 1 });
-      if (lh.schoolAddress) write(lh.schoolAddress, { size: 9, color: MUTED, align: "center", after: 0.5 });
-      const contact = [lh.schoolPhone && `Tel: ${lh.schoolPhone}`, lh.schoolEmail].filter(Boolean).join("   |   ");
-      if (contact) write(contact, { size: 9, color: MUTED, align: "center", after: 0.5 });
-      if (lh.schoolMotto) write(lh.schoolMotto, { size: 9, italic: true, color: NAVY, align: "center", after: 0 });
+      y = headTop + 4;
+      write((lh.schoolName || "School Name").toUpperCase(), { size: 17, bold: true, color: NAVY, align: "center", after: 1 });
+      if (lh.schoolAddress) write(lh.schoolAddress, { size: 8.5, color: [0, 0, 0], align: "center", after: 0.5 });
+      if (lh.schoolPhone) write(`Tel: ${lh.schoolPhone}`, { size: 8.5, color: [0, 0, 0], align: "center", after: 0.5 });
+      if (lh.schoolEmail) write(lh.schoolEmail, { size: 8.5, color: [0, 0, 0], align: "center", after: 0.5 });
+      if (lh.schoolMotto) write(lh.schoolMotto, { size: 8.5, italic: true, color: [110, 110, 110], align: "center", after: 0 });
+      y = Math.max(y, headTop + logoH) + 1;
       y += 2;
       doc.setDrawColor(...NAVY);
       doc.setLineWidth(0.7);
@@ -1476,18 +1570,28 @@ export default function Letters() {
       doc.text("STAMP", cx, signTop + 0.5, { align: "center" });
 
       // --- footer on every page ---
-      const footText = [lh.schoolName, lh.schoolAddress, lh.schoolPhone, lh.schoolEmail].filter(Boolean).join("   |   ");
       const pages = doc.getNumberOfPages();
+      const yr = new Date().getFullYear();
       for (let p = 1; p <= pages; p++) {
         doc.setPage(p);
-        doc.setDrawColor(226, 232, 240);
-        doc.setLineWidth(0.2);
-        doc.line(M, H - 15, W - M, H - 15);
+        doc.setDrawColor(0, 0, 0);
+        doc.setLineWidth(0.15);
+        doc.line(M, H - 17, W - M, H - 17);
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7);
+        doc.setTextColor(0, 0, 0);
+        doc.text(`© ${yr} ${lh.schoolName || ""}. All rights reserved.`, M, H - 12.5);
+
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(6.5);
+        doc.setTextColor(90, 90, 90);
+        doc.text("Powered by Masomo Portal (www.masomoportal.com)", W - M, H - 12.5, { align: "right" });
+
         doc.setFont("helvetica", "normal");
-        doc.setFontSize(7.5);
-        doc.setTextColor(148, 163, 184);
-        if (footText) doc.text(footText, W / 2, H - 10.5, { align: "center" });
-        if (pages > 1) doc.text(`Page ${p} of ${pages}`, W - M, H - 6.5, { align: "right" });
+        doc.setFontSize(6);
+        doc.text("This is an official school letter. Duplication is prohibited.", M, H - 8.5);
+        if (pages > 1) doc.text(`Page ${p} of ${pages}`, W - M, H - 8.5, { align: "right" });
       }
 
       const parts = [slug(t.title), slug(nameForFile()), todayISO()].filter(Boolean);
@@ -1563,12 +1667,12 @@ export default function Letters() {
         </div>
         <div className="row g-2">
           {[
-            ["schoolName", "School name", "col-md-6", "Junda High School Shanzu"],
-            ["schoolAddress", "Address", "col-md-6", "e.g. P.O. Box 123-40100, Kisumu"],
-            ["schoolPhone", "Phone", "col-md-4", "e.g. 0712 345 678"],
+            ["schoolName", "School name", "col-md-6", "Junda High School"],
+            ["schoolAddress", "Address", "col-md-6", "e.g. P.O. Box 87073, Mombasa"],
+            ["schoolPhone", "Phone", "col-md-4", "e.g. 0722 745241"],
             ["schoolEmail", "Email", "col-md-4", "e.g. info@jundahigh.sc.ke"],
             ["principalName", "Principal's name", "col-md-4", "e.g. Mr. John Kamau"],
-            ["schoolMotto", "Motto (optional)", "col-12", "e.g. Strive for Excellence"],
+            ["schoolMotto", "Motto (optional)", "col-12", "e.g. Strive to Excell"],
           ].map(([key, label, col, ph]) => (
             <div key={key} className={`col-12 ${col}`}>
               <label className="form-label">{label}</label>

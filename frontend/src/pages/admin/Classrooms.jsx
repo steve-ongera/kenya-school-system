@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import api, { academicsApi, calendarApi, reportCardsApi } from "../../services/api";
+import api, { academicsApi, calendarApi, reportCardsApi, teacherApi } from "../../services/api";
 import Breadcrumb from "../../components/Breadcrumb";
 import TableSkeleton from "../../components/TableSkeleton";
 import Pagination from "../../components/Pagination";
@@ -49,6 +49,22 @@ const getImageBase64 = (url) =>
     img.onerror = () => resolve(null);
   });
 
+// Draws the logo at its NATURAL aspect ratio (never squashed into a square),
+// limited by a max height and a max width. Returns the size it was drawn at.
+const placeLogo = (doc, logo, x, y, maxH, maxW) => {
+  if (!logo) return { w: 0, h: 0 };
+  const props = doc.getImageProperties(logo);
+  const ratio = props.width / props.height;
+  let h = maxH;
+  let w = h * ratio;
+  if (w > maxW) {
+    w = maxW;
+    h = w / ratio;
+  }
+  doc.addImage(logo, "PNG", x, y, w, h);
+  return { w, h };
+};
+
 // ---- Money helpers (fee balance on the ranking table + report cards) ----
 const KES = (amount) =>
   `KES ${Number(amount || 0).toLocaleString("en-KE", {
@@ -71,17 +87,49 @@ const feeBadgeClass = (balance) => {
   return "badge-success";
 };
 
-// Fallback remark ladder for report cards - only used if an older cached
-// response doesn't carry a `remark` field from the backend. The backend
-// (ClassRoomViewSet.results) now computes and returns this per student,
-// including "No marks recorded" for students with nothing entered yet.
-const overallRemark = (avg) => {
-  if (avg === null || avg === undefined) return "No marks recorded";
-  if (avg >= 80) return "Excellent";
-  if (avg >= 65) return "Good";
-  if (avg >= 50) return "Average";
-  if (avg >= 30) return "Below Average";
-  return "Needs Improvement";
+// ---- Report card wording (matches the school's official report card) ----
+const SCHOOL_NAME = "JUNDA HIGH SCHOOL";
+const SCHOOL_ADDRESS = "P.O BOX 87073-80100, MOMBASA   |   Email: jundahighschool83@gmail.com";
+const SCHOOL_MOTTO = "STRIVE TO EXCELL"; // spelled as on the school's sample report card
+const PASS_MARK = 50; // mean score below this = "has not attained a pass mark"
+
+// Per-subject teacher remark, by the subject's average %.
+const subjectRemark = (avg) => {
+  if (avg === null || avg === undefined) return "Did not sit for this paper.";
+  if (avg >= 80) return "Excellent performance. Keep up the good work.";
+  if (avg >= 60) return "Good performance. Keep working hard to reach the top grade.";
+  if (avg >= 45) return "Fair performance. More consistency and effort required.";
+  if (avg >= 30) return "Below average. Needs close attention and extra practice.";
+  return "Poor performance. Requires urgent remedial support.";
+};
+
+const firstNameOf = (fullName) => {
+  const first = String(fullName || "The student").trim().split(/\s+/)[0] || "The student";
+  return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+};
+
+const classTeacherRemark = (name, mean) => {
+  if (mean === null || mean === undefined) {
+    return `No examination marks have been recorded for ${name} this term.`;
+  }
+  let text;
+  if (mean >= 80) text = `${name} has performed excellently this term. Keep up the outstanding work and aim even higher.`;
+  else if (mean >= 60) text = `${name} has performed well this term. With continued effort, the top grade is within reach.`;
+  else if (mean >= 45) text = `${name} has shown a fair performance this term. With more focus, a higher grade is achievable.`;
+  else if (mean >= 30) text = `${name} has performed below average this term and needs to put in significantly more effort.`;
+  else text = `${name} has performed poorly this term and requires urgent remedial support and closer supervision.`;
+  if (mean < PASS_MARK) text += " The student has not attained a pass mark this term and needs to work much harder.";
+  return text;
+};
+
+const principalRemark = (name, mean) => {
+  if (mean === null || mean === undefined) {
+    return `The school administration encourages ${name} to consult subject teachers and sit all papers next term.`;
+  }
+  if (mean < PASS_MARK) {
+    return `The student has not attained a pass mark this term and needs to work much harder. The school administration encourages ${name} to maintain close consultation with subject teachers next term.`;
+  }
+  return `The student has attained a pass mark this term. The school administration encourages ${name} to keep up the good work and aim even higher next term.`;
 };
 
 // Tabs shown on this page - "classrooms" is the landing tab.
@@ -419,22 +467,21 @@ export default function AdminClassrooms() {
         year: "numeric", month: "long", day: "numeric",
       });
 
-      // --- Header: logo + school name + report title + generated date ---
-      if (base64Logo) {
-        doc.addImage(base64Logo, "PNG", 12, 10, 12, 12);
-      }
+      // --- Header: logo (natural width, not squeezed) + school name + report title + generated date ---
+      const { w: logoW } = placeLogo(doc, base64Logo, 12, 10, 14, 30);
+      const textX = base64Logo ? 12 + logoW + 4 : 12;
 
       doc.setFont("helvetica", "bold");
       doc.setFontSize(14);
       doc.setTextColor(15, 23, 42);
-      doc.text("Junda High School Shanzu", base64Logo ? 28 : 12, 16);
+      doc.text("Junda High School Shanzu", textX, 16);
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(10);
       doc.setTextColor(71, 85, 105);
       doc.text(
         viewClassroom.is_promoted ? "Class Student Roster (Historical)" : "Class Student Roster",
-        base64Logo ? 28 : 12,
+        textX,
         22
       );
 
@@ -589,321 +636,356 @@ export default function AdminClassrooms() {
   };
 
   // ================================================================
-  // REPORT CARD PDF
-  // Monochrome, compact rows, one page per student, with:
-  //   - a LARGE QR code near the bottom (above signatures) linking to
-  //     the public verification page
-  //   - per-subject grade + points (backend falls back to a default
-  //     high-school scale when no GradingScale is configured)
-  //   - a summary strip: total marks / average % / overall grade / points
-  //   - a stamp box for the official school stamp
-  //   - class teacher & principal signature lines at the very bottom
-  //   - a copyright / anti-duplication footer for Junda High School Shanzu
+  // REPORT CARD PDF - exactly ONE A4 page per student:
+  //   TOP     : logo, school name/address/motto, verification QR, title
+  //   MIDDLE  : student info, subject table, summary (total/mean/grade/
+  //             position), FEE STATEMENT, class teacher + principal remarks
+  //   BOTTOM  : [Class Teacher signature] [Official Stamp] [Principal signature]
+  //   FOOTER  : note + copyright line pinned to the bottom of the page
+  // The subject table's row height is calculated from the space left over,
+  // so the bottom block always stays on the same page regardless of how
+  // many subjects a student has.
   // ================================================================
   const drawReportCardPage = (
     doc,
-    { classroom, term, examLabel, resultRow, logoBase64, qrCodeBase64, isFirstPage }
+    { classroom, termLabel, titleText, resultRow, logoBase64, qrCodeBase64, teacherMap, isFirstPage }
   ) => {
     if (!isFirstPage) doc.addPage();
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
+    const M = 12; // page margin
+    const cw = pageWidth - M * 2; // content width
+    const navy = [31, 56, 100];
+    const grey = [242, 242, 242];
+    const border = [166, 166, 166];
     const black = [0, 0, 0];
 
-    // ---- Header ----
-    if (logoBase64) {
-      doc.addImage(logoBase64, "PNG", 14, 9, 11, 11);
-    }
+    // ---- Header: logo (left), school details (centre), QR (right) ----
+    placeLogo(doc, logoBase64, M, 9, 21, 34);
 
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(12);
-    doc.setTextColor(...black);
-    doc.text("Junda High School Shanzu", logoBase64 ? 28 : 14, 15);
+    doc.setFontSize(18);
+    doc.setTextColor(...navy);
+    doc.text(SCHOOL_NAME, pageWidth / 2, 17, { align: "center" });
 
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
-    doc.text("Official Student Report Card", logoBase64 ? 28 : 14, 20);
-
-    // Date only in the top-right (QR moved to the bottom)
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.text(
-      new Date().toLocaleDateString("en-KE", { year: "numeric", month: "long", day: "numeric" }),
-      pageWidth - 14,
-      14,
-      { align: "right" }
-    );
-
-    doc.setDrawColor(...black);
-    doc.setLineWidth(0.25);
-    doc.line(14, 26, pageWidth - 14, 26);
-
-    // ---- Student + class meta, two columns ----
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8);
     doc.setTextColor(...black);
-    doc.text(`Name: ${resultRow.full_name}`, 14, 31.5);
-    doc.text(`Admission No: ${resultRow.admission_no}`, 14, 36);
-    doc.text(`Status this year: ${resultRow.enrollment_status_display || "Active"}`, 14, 40.5);
+    doc.text(SCHOOL_ADDRESS, pageWidth / 2, 23, { align: "center" });
 
-    doc.text(
-      `Class: ${classroom.grade_level_name} ${classroom.stream_name} (${classroom.academic_year_year})`,
-      pageWidth - 14, 31.5, { align: "right" }
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(7.5);
+    doc.setTextColor(110, 110, 110);
+    doc.text(SCHOOL_MOTTO, pageWidth / 2, 27.5, { align: "center" });
+
+    if (qrCodeBase64) {
+      const qrSize = 20;
+      const qrX = pageWidth - M - qrSize;
+      doc.addImage(`data:image/png;base64,${qrCodeBase64}`, "PNG", qrX, 9, qrSize, qrSize);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(4.8);
+      doc.setTextColor(110, 110, 110);
+      doc.text("Scan to verify", qrX + qrSize / 2, 31, { align: "center" });
+    }
+
+    doc.setDrawColor(...navy);
+    doc.setLineWidth(0.6);
+    doc.line(M, 34, pageWidth - M, 34);
+
+    // ---- Report title ----
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10.5);
+    doc.setTextColor(...navy);
+    doc.text(titleText, pageWidth / 2, 41, { align: "center" });
+
+    // small helper: one bordered cell with (auto-shrinking) text
+    const drawCell = (x, y, w, h, text, { bold = false, fill = false, align = "left", size = 8.5 } = {}) => {
+      doc.setDrawColor(...border);
+      doc.setLineWidth(0.2);
+      if (fill) {
+        doc.setFillColor(...grey);
+        doc.rect(x, y, w, h, "FD");
+      } else {
+        doc.rect(x, y, w, h, "S");
+      }
+      const str = String(text ?? "-");
+      doc.setFont("helvetica", bold ? "bold" : "normal");
+      doc.setTextColor(...black);
+      let fs = size;
+      doc.setFontSize(fs);
+      while (fs > 5.5 && doc.getTextWidth(str) > w - 4) {
+        fs -= 0.5;
+        doc.setFontSize(fs);
+      }
+      const tx = align === "center" ? x + w / 2 : x + 2;
+      doc.text(str, tx, y + h / 2, { align, baseline: "middle" });
+    };
+
+    // ---- Student / term info table ----
+    let y = 46;
+    const rowH = 7.5;
+    const labelW = 36;
+    const valW = (cw - labelW * 2) / 2;
+    drawCell(M, y, labelW, rowH, "Student Name", { bold: true, fill: true });
+    drawCell(M + labelW, y, valW, rowH, resultRow.full_name);
+    drawCell(M + labelW + valW, y, labelW, rowH, "Admission No.", { bold: true, fill: true });
+    drawCell(M + labelW * 2 + valW, y, valW, rowH, resultRow.admission_no || "-");
+    y += rowH;
+    drawCell(M, y, labelW, rowH, "Term / Year", { bold: true, fill: true });
+    drawCell(M + labelW, y, valW, rowH, termLabel);
+    drawCell(M + labelW + valW, y, labelW, rowH, "Class / Form", { bold: true, fill: true });
+    drawCell(
+      M + labelW * 2 + valW, y, valW, rowH,
+      `${classroom.grade_level_name} ${classroom.stream_name}`
     );
-    doc.text(`Term: ${term}`, pageWidth - 14, 36, { align: "right" });
-    doc.text(`Exam: ${examLabel}`, pageWidth - 14, 40.5, { align: "right" });
+    y += rowH + 6;
 
-    // ---- Subject marks table: compact row height, grade + points ----
-    const tableRows = resultRow.subjects.map((s) => [
-      s.subject,
-      s.average != null ? `${s.average}%` : "-",
-      s.grade || "-",
-      s.points != null ? s.points : "-",
-    ]);
+    // ================================================================
+    // PRE-CALCULATE the fixed-size sections so we know exactly how much
+    // room is left for the subject table.
+    // ================================================================
+    const hasMarks = resultRow.has_marks && resultRow.average_marks != null;
+    const mean = hasMarks ? resultRow.average_marks : null;
+    const name = firstNameOf(resultRow.full_name);
+
+    // -- Bottom block (signatures + stamp) and footer, pinned to the page bottom --
+    const footerLineY = pageHeight - 14;          // thin line above the footer text
+    const blockH = 26;                            // signatures + stamp row
+    const blockTop = footerLineY - 4 - blockH;    // where the bottom block starts
+
+    // -- Fee statement height --
+    const balance = resultRow.fee_balance;
+    const hasFeeRecords = balance !== null && balance !== undefined;
+    const feeH = 8 + (hasFeeRecords && balance < 0 ? 4 : 0);
+
+    // -- Remarks boxes (measure the wrapped text) --
+    const measureRemark = (text) => {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      const lines = doc.splitTextToSize(text, cw - 8);
+      return { lines, h: 10 + lines.length * 3.5 + 2.5 };
+    };
+    const ctRemark = measureRemark(classTeacherRemark(name, mean));
+    const prRemark = measureRemark(principalRemark(name, mean));
+
+    // -- Subject table sizing --
+    const subjects = resultRow.subjects || [];
+    const n = subjects.length;
+    const fontSize = n <= 9 ? 8 : n <= 12 ? 7.5 : n <= 16 ? 7 : 6.5;
+    const sumH = 7;
+    const fixedBelow =
+      6 + sumH * 2 + 5 +   // gap + summary (2 rows) + gap
+      feeH + 5 +           // fee statement + gap
+      ctRemark.h + 4 +     // class teacher remarks + gap
+      prRemark.h + 4;      // principal remarks + gap
+    const headH = 8;
+    const availForRows = blockTop - 3 - y - fixedBelow - headH;
+    const lineH = fontSize * 0.3528 * 1.15;
+    const perRow = n > 0 ? availForRows / n : 6;
+    const pad = Math.min(2.2, Math.max(0.35, (perRow - lineH) / 2));
+
+    const body = subjects.map((s, i) => {
+      const teacherNames = teacherMap?.[String(s.subject || "").trim().toLowerCase()];
+      return [
+        String(i + 1),
+        s.subject,
+        s.average != null ? String(s.average) : "-",
+        s.grade || "-",
+        subjectRemark(s.average),
+        teacherNames && teacherNames.length ? teacherNames.join(" / ") : "-",
+      ];
+    });
+
+    const colNo = 8, colSubject = 42, colMarks = 15, colGrade = 12, colTeacher = 34;
+    const colRemarks = cw - colNo - colSubject - colMarks - colGrade - colTeacher;
 
     autoTable(doc, {
-      startY: 45,
-      head: [["Subject", "Average %", "Grade", "Points"]],
-      body: tableRows,
+      startY: y,
+      head: [["No", "Subject", "Marks\n/100", "Grade", "Teacher's Remarks", "Teacher"]],
+      body,
       theme: "grid",
+      margin: { left: M, right: M },
       styles: {
-        lineColor: black,
-        lineWidth: 0.15,
+        font: "helvetica",
+        fontSize,
         textColor: black,
-        cellPadding: { top: 0.7, bottom: 0.7, left: 1.5, right: 1.5 },
+        lineColor: [191, 191, 191],
+        lineWidth: 0.2,
+        cellPadding: { top: pad, bottom: pad, left: 1.6, right: 1.6 },
+        valign: "middle",
+        overflow: "linebreak",
       },
       headStyles: {
-        fillColor: false,
-        textColor: black,
+        fillColor: navy,
+        textColor: [255, 255, 255],
         fontStyle: "bold",
         fontSize: 7.5,
         halign: "left",
-        cellPadding: { top: 1, bottom: 1, left: 1.5, right: 1.5 },
+        lineColor: navy,
+        cellPadding: { top: 1, bottom: 1, left: 1.6, right: 1.6 },
       },
-      bodyStyles: {
-        fontSize: 7,
-        valign: "middle",
-        minCellHeight: 0, // shrink rows to content — this is what keeps everything on one page
-      },
+      alternateRowStyles: { fillColor: grey },
       columnStyles: {
-        0: { cellWidth: "auto", halign: "left" },
-        1: { cellWidth: 26, halign: "center" },
-        2: { cellWidth: 20, halign: "center" },
-        3: { cellWidth: 20, halign: "center" },
+        0: { cellWidth: colNo, halign: "center" },
+        1: { cellWidth: colSubject },
+        2: { cellWidth: colMarks, halign: "center" },
+        3: { cellWidth: colGrade, halign: "center", fontStyle: "bold" },
+        4: { cellWidth: colRemarks, fontSize: Math.max(5.8, fontSize - 1) },
+        5: { cellWidth: colTeacher, fontSize: Math.max(5.8, fontSize - 0.5) },
       },
-      margin: { left: 14, right: 14 },
+      didParseCell: (d) => {
+        if (d.section === "head" && [0, 2, 3].includes(d.column.index)) d.cell.styles.halign = "center";
+      },
     });
 
-    let y = doc.lastAutoTable.finalY + 5;
+    y = doc.lastAutoTable.finalY + 6;
 
-    // ---- Summary strip: total marks / average % / overall grade / avg points ----
-    const stripHeight = 14;
-    doc.setDrawColor(...black);
-    doc.setLineWidth(0.25);
-    doc.rect(14, y, pageWidth - 28, stripHeight);
-
-    const summaryCols = [
-      ["Total Marks", resultRow.total_marks ?? "-"],
-      ["Average %", resultRow.average_marks != null ? `${resultRow.average_marks}%` : "-"],
-      ["Overall Grade", resultRow.overall_grade || "-"],
-      ["Points (Avg)", resultRow.average_points ?? "-"],
-      ["Total Points", resultRow.total_points ?? "-"],
-    ];
-    const colWidth = (pageWidth - 28) / summaryCols.length;
-    summaryCols.forEach(([label, value], i) => {
-      const x = 14 + i * colWidth;
-      if (i > 0) doc.line(x, y, x, y + stripHeight);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(6);
-      doc.text(label, x + colWidth / 2, y + 5, { align: "center" });
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(8.5);
-      doc.text(String(value), x + colWidth / 2, y + 11, { align: "center" });
-    });
-
-    y += stripHeight + 5;
-
-    // ---- Position + remark ----
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
-    doc.setTextColor(...black);
-    doc.text(
-      `Class Position: ${resultRow.class_position ?? "-"} of ${resultRow.class_size ?? "-"}`,
-      14, y
+    // ---- Summary: Total Marks / Mean Score / Mean Grade / Position ----
+    const w1 = 28, v1 = 66, w2 = 28, v2 = 22, w3 = 26;
+    const v3 = cw - w1 - v1 - w2 - v2 - w3;
+    let x = M;
+    drawCell(x, y, w1, sumH, "Total Marks", { bold: true, fill: true }); x += w1;
+    drawCell(x, y, v1, sumH, hasMarks ? resultRow.total_marks : "-", { align: "center" }); x += v1;
+    drawCell(x, y, w2, sumH, "Mean Score", { bold: true, fill: true }); x += w2;
+    drawCell(x, y, v2, sumH, hasMarks ? resultRow.average_marks : "-", { align: "center" }); x += v2;
+    drawCell(x, y, w3, sumH, "Mean Grade", { bold: true, fill: true }); x += w3;
+    drawCell(x, y, v3, sumH, resultRow.overall_grade || "-", { align: "center", bold: true });
+    y += sumH;
+    drawCell(M, y, w1, sumH, "Position", { bold: true, fill: true });
+    drawCell(
+      M + w1, y, v1, sumH,
+      resultRow.class_position != null
+        ? `${resultRow.class_position} out of ${resultRow.class_size ?? "-"}`
+        : "-",
+      { align: "center" }
     );
-    doc.text(
-      `Remark: ${resultRow.remark || overallRemark(resultRow.average_marks)}`,
-      pageWidth - 14, y, { align: "right" }
-    );
+    y += sumH + 5;
 
-    // ---- Fee statement box (monochrome) ----
-    y += 5;
-    const balance = resultRow.fee_balance;
-    const hasFeeRecords = balance !== null && balance !== undefined;
-    const feeBoxHeight = hasFeeRecords ? (balance < 0 ? 20 : 16) : 11;
-
-    doc.setDrawColor(...black);
-    doc.setLineWidth(0.2);
-    doc.rect(14, y, pageWidth - 28, feeBoxHeight);
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(7.5);
-    doc.text("Fee Statement", 17, y + 4.5);
-
+    // ---- FEE STATEMENT (one compact strip) ----
+    const feeLabelW = 30;
     if (hasFeeRecords) {
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(6.8);
-      doc.text(`Total Billed: ${KES(resultRow.fee_total_charged)}`, 17, y + 9.5);
-      doc.text(`Total Paid: ${KES(resultRow.fee_total_paid)}`, 17, y + 14);
-
-      const feeLabelText = balance > 0 ? "Outstanding Balance:" : balance < 0 ? "Credit (Prepaid):" : "Balance:";
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(6.8);
-      doc.text(feeLabelText, pageWidth - 17, y + 9.5, { align: "right" });
-      doc.setFontSize(9);
-      doc.text(
-        balance === 0 ? "Fully cleared" : KES(Math.abs(balance)),
-        pageWidth - 17, y + 14.5, { align: "right" }
-      );
+      const fw = (cw - feeLabelW) / 3;
+      const balanceLabel =
+        balance > 0 ? "Outstanding Balance" : balance < 0 ? "Credit (Prepaid)" : "Balance";
+      const balanceValue = balance === 0 ? "Fully cleared" : KES(Math.abs(balance));
+      let fx = M;
+      drawCell(fx, y, feeLabelW, 8, "Fee Statement", { bold: true, fill: true }); fx += feeLabelW;
+      drawCell(fx, y, fw, 8, `Total Billed: ${KES(resultRow.fee_total_charged)}`, { size: 8 }); fx += fw;
+      drawCell(fx, y, fw, 8, `Total Paid: ${KES(resultRow.fee_total_paid)}`, { size: 8 }); fx += fw;
+      drawCell(fx, y, fw, 8, `${balanceLabel}: ${balanceValue}`, { bold: true, size: 8 });
       if (balance < 0) {
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(5.5);
-        doc.text("This credit carries forward to next term's invoice automatically.", 17, y + 18);
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(5.8);
+        doc.setTextColor(110, 110, 110);
+        doc.text(
+          "This credit carries forward to next term's invoice automatically.",
+          M + feeLabelW + 2,
+          y + 8 + 3
+        );
       }
     } else {
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(6.8);
-      doc.text("No invoices raised for this student yet.", pageWidth - 17, y + 4.5, { align: "right" });
+      drawCell(M, y, feeLabelW, 8, "Fee Statement", { bold: true, fill: true });
+      drawCell(M + feeLabelW, y, cw - feeLabelW, 8, "No invoices raised for this student yet.", { size: 8 });
     }
+    y += feeH + 5;
 
-    // ================================================================
-    // BOTTOM SECTION (restructured):
-    //   Large QR code (left) + Official stamp box (right) on one row,
-    //   then Class Teacher & Principal signature lines below them,
-    //   then the copyright / anti-duplication footer at the very bottom.
-    // ================================================================
-
-    // Total bottom block height = QR row + signature row + footer clearance
-    const qrSize = 26;                       // larger QR (was 16)
-    const qrRowHeight = qrSize + 6;          // QR + caption
-    const sigRowHeight = 12;                 // signature line + label
-    const footerReserve = 14;                // space for the copyright footer
-    const bottomBlockHeight = qrRowHeight + sigRowHeight + footerReserve + 8;
-
-    // Where the bottom block starts (anchored to page bottom)
-    let bottomTop = pageHeight - bottomBlockHeight - 6;
-
-    // Never let the bottom block overlap the fee box
-    const feeBottom = y + feeBoxHeight;
-    if (bottomTop < feeBottom + 4) bottomTop = feeBottom + 4;
-
-    // ---- Row 1: Large QR (left) + Official Stamp box (right) ----
-    const qrX = 14;
-    const qrY = bottomTop;
-
-    if (qrCodeBase64) {
-      doc.addImage(
-        `data:image/png;base64,${qrCodeBase64}`,
-        "PNG",
-        qrX, qrY, qrSize, qrSize
-      );
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(5.8);
-      doc.setTextColor(...black);
-      doc.text(
-        "Scan to verify authenticity",
-        qrX + qrSize / 2,
-        qrY + qrSize + 3.5,
-        { align: "center" }
-      );
-    } else {
-      // Placeholder box when the QR can't be generated
-      doc.setDrawColor(...black);
+    // ---- Remarks boxes ----
+    const drawRemarkBox = (top, title, remark) => {
+      doc.setDrawColor(...border);
       doc.setLineWidth(0.2);
-      doc.rect(qrX, qrY, qrSize, qrSize);
+      doc.rect(M, top, cw, remark.h);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(...navy);
+      doc.text(title, M + 4, top + 5.5);
       doc.setFont("helvetica", "normal");
-      doc.setFontSize(6);
-      doc.text("Verification QR", qrX + qrSize / 2, qrY + qrSize / 2 - 1, { align: "center" });
-      doc.text("unavailable", qrX + qrSize / 2, qrY + qrSize / 2 + 3, { align: "center" });
-    }
+      doc.setFontSize(8);
+      doc.setTextColor(...black);
+      doc.text(remark.lines, M + 4, top + 10);
+      return top + remark.h;
+    };
 
-    // Official stamp box on the same row, to the right of the QR
-    const stampGap = 6;
-    const stampX = qrX + qrSize + stampGap;
-    const stampY = qrY;
-    const stampWidth = pageWidth - stampX - 14;
-    const stampHeight = qrSize;
+    y = drawRemarkBox(y, "Class Teacher's Remarks:", ctRemark) + 4;
+    y = drawRemarkBox(y, "Principal's Remarks:", prRemark);
 
+    // ================================================================
+    // BOTTOM BLOCK (pinned to the bottom of the page):
+    //   [Class Teacher signature]   [ Official Stamp ]   [Principal signature]
+    // ================================================================
+    const stampW = 46;
+    const stampX = pageWidth / 2 - stampW / 2;
+    const sigGap = 6;
+    const leftEnd = stampX - sigGap;
+    const rightStart = stampX + stampW + sigGap;
+
+    // Official stamp box (centre)
     doc.setDrawColor(...black);
-    doc.setLineWidth(0.2);
-    doc.rect(stampX, stampY, stampWidth, stampHeight);
-
+    doc.setLineWidth(0.25);
+    doc.rect(stampX, blockTop, stampW, blockH);
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(6.5);
+    doc.setFontSize(7);
     doc.setTextColor(...black);
-    doc.text(
-      "Official School Stamp",
-      stampX + stampWidth / 2,
-      stampY + 5,
-      { align: "center" }
-    );
+    doc.text("Official School Stamp", pageWidth / 2, blockTop + 5, { align: "center" });
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(5.5);
-    doc.text(
-      "(Stamp here)",
-      stampX + stampWidth / 2,
-      stampY + stampHeight / 2 + 2,
-      { align: "center" }
-    );
+    doc.setFontSize(6);
+    doc.setTextColor(120, 120, 120);
+    doc.text("(Stamp here)", pageWidth / 2, blockTop + blockH / 2 + 3, { align: "center" });
 
-    // ---- Row 2: Signature lines (Class Teacher | Principal) ----
-    const sigY = qrY + qrRowHeight + 2;
+    const drawSignature = (x1, x2, label, printedName) => {
+      // printed name sits just above the signature line
+      if (printedName) {
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(8);
+        doc.setTextColor(...black);
+        let fs = 8;
+        while (fs > 5.5 && doc.getTextWidth(printedName) > x2 - x1) {
+          fs -= 0.5;
+          doc.setFontSize(fs);
+        }
+        doc.text(printedName, x1, blockTop + 12);
+      }
+      doc.setDrawColor(...black);
+      doc.setLineWidth(0.25);
+      doc.line(x1, blockTop + 15, x2, blockTop + 15);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7.5);
+      doc.setTextColor(...black);
+      doc.text(label, x1, blockTop + 19.5);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.text("Date: ____________________", x1, blockTop + 25);
+    };
+    drawSignature(M, leftEnd, "Class Teacher's Signature", classroom.class_teacher_name || "");
+    drawSignature(rightStart, pageWidth - M, "Principal's Signature");
 
-    doc.setDrawColor(...black);
-    doc.setLineWidth(0.2);
-
-    // Class Teacher (left)
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(7.5);
-    doc.setTextColor(...black);
-    doc.text("Class Teacher's Signature:", 14, sigY);
-    doc.line(14, sigY + 7, pageWidth / 2 - 6, sigY + 7);
-
-    // Principal (right)
-    doc.text("Principal's Signature:", pageWidth / 2 + 6, sigY);
-    doc.line(pageWidth / 2 + 6, sigY + 7, pageWidth - 14, sigY + 7);
-
-    // ---- Row 3: Copyright / anti-duplication footer ----
-    const footerLineY = pageHeight - 10;
-    const footerTextY = pageHeight - 6.5;
-
+    // ================================================================
+    // FOOTER (very bottom of the page)
+    // ================================================================
     doc.setDrawColor(...black);
     doc.setLineWidth(0.15);
-    doc.line(14, footerLineY - 2.5, pageWidth - 14, footerLineY - 2.5);
+    doc.line(M, footerLineY, pageWidth - M, footerLineY);
 
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(5.5);
+    doc.setFontSize(6);
     doc.setTextColor(...black);
-    doc.text(
-      "© Junda High School Shanzu. All rights reserved.",
-      14,
-      footerTextY
-    );
+    doc.text("© Junda High School. All rights reserved.", M, footerLineY + 4);
 
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(4.8);
-    doc.text(
-      "This document is the property of Junda High School Shanzu. Parents/guardians should keep it safe. Duplication or unauthorized printing is prohibited.",
-      14,
-      footerTextY + 3
-    );
-
-    doc.setFont("helvetica", "normal");
+    doc.setFont("helvetica", "italic");
     doc.setFontSize(5.5);
+    doc.setTextColor(90, 90, 90);
     doc.text(
-      `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
-      pageWidth - 14,
-      footerTextY,
+      " Powered by Masomo Portal (www.masomoportal.com).",
+      pageWidth - M,
+      footerLineY + 4,
       { align: "right" }
+    );
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(5.2);
+    doc.text(
+      "This document is the property of Junda High School. Parents/guardians should keep it safe. Duplication or unauthorized printing is prohibited.",
+      M,
+      footerLineY + 7.5
     );
   };
 
@@ -921,6 +1003,61 @@ export default function AdminClassrooms() {
   const currentClassSize = () =>
     viewResults?.class_size ??
     (viewResults?.results?.filter((r) => r.class_position != null).length || 0);
+
+  // "Term 2, 2026" + "TERM 2, 2026 END OF TERM EXAMINATION REPORT" for the card header.
+  const reportCardMeta = () => {
+    const term = viewTerms.find((t) => String(t.id) === String(viewResults?.term_id));
+    const year = viewClassroom?.academic_year_year;
+    const termLabel = term ? `Term ${term.term_number}, ${year}` : String(viewResults?.term || "");
+    const exam = viewSelectedExam
+      ? viewExams.find((e) => String(e.id) === String(viewSelectedExam))
+      : null;
+    const examWording = exam ? String(exam.name).toUpperCase() : "END OF TERM";
+    return {
+      termLabel,
+      titleText: `${termLabel.toUpperCase()} ${examWording} EXAMINATION REPORT`,
+    };
+  };
+
+  // Subject -> teacher name(s) for this classroom, from teacher allocations.
+  // Reads EVERY page of results (the endpoint ignores page_size), so no
+  // subject is left without its teacher. If the account can't read
+  // allocations (or the fields differ), the Teacher column simply shows
+  // "-" and the report card still prints.
+  const loadSubjectTeachers = async (classroom) => {
+    try {
+      let list = [];
+      let page = 1;
+      // safety cap of 50 pages
+      while (page <= 50) {
+        const { data } = await teacherApi.allAllocations({ classroom: classroom.id, page });
+        if (Array.isArray(data)) {
+          list = data;
+          break;
+        }
+        list = list.concat(data.results ?? []);
+        if (!data.next) break;
+        page += 1;
+      }
+
+      const map = {};
+      list.forEach((a) => {
+        const subject = String(a.subject_name || a.subject?.name || "").trim().toLowerCase();
+        const teacher = String(
+          a.teacher_name ||
+            a.teacher_full_name ||
+            (a.teacher?.first_name ? `${a.teacher.first_name} ${a.teacher.last_name || ""}` : "")
+        ).trim();
+        if (!subject || !teacher) return;
+        map[subject] = map[subject] || [];
+        if (!map[subject].includes(teacher)) map[subject].push(teacher);
+      });
+      return map;
+    } catch (err) {
+      console.error("Could not load subject teachers for the report card:", err);
+      return {};
+    }
+  };
 
   // Fetches the QR image for one report card's verification token. Only
   // called at print time (not on every ranking-table load), since the
@@ -941,16 +1078,21 @@ export default function AdminClassrooms() {
     setPrintingReportCard(resultRow.enrollment_id);
     try {
       const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-      const logoBase64 = await getImageBase64(logoImage);
-      const qrCodeBase64 = await fetchReportCardQr(resultRow.verification_token);
+      const [logoBase64, qrCodeBase64, teacherMap] = await Promise.all([
+        getImageBase64(logoImage),
+        fetchReportCardQr(resultRow.verification_token),
+        loadSubjectTeachers(viewClassroom),
+      ]);
+      const { termLabel, titleText } = reportCardMeta();
 
       drawReportCardPage(doc, {
         classroom: viewClassroom,
-        term: viewResults.term,
-        examLabel: currentExamLabel(),
+        termLabel,
+        titleText,
         resultRow: { ...resultRow, class_size: currentClassSize() },
         logoBase64,
         qrCodeBase64,
+        teacherMap,
         isFirstPage: true,
       });
       doc.save(`${resultRow.admission_no}_report_card.pdf`.replace(/\s+/g, "_"));
@@ -968,27 +1110,32 @@ export default function AdminClassrooms() {
     setPrintingReportCard("ALL");
     try {
       const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-      const logoBase64 = await getImageBase64(logoImage);
-      const examLabel = currentExamLabel();
       const classSize = currentClassSize();
+      const { termLabel, titleText } = reportCardMeta();
 
-      // Fetch every student's verification QR up front, in parallel, so
-      // the page-drawing loop below doesn't block on network per student.
+      // Fetch the logo, the subject teachers and every student's verification
+      // QR up front, in parallel, so the page-drawing loop below doesn't
+      // block on network per student.
       const qrByEnrollment = {};
-      await Promise.all(
-        viewResults.results.map(async (row) => {
-          qrByEnrollment[row.enrollment_id] = await fetchReportCardQr(row.verification_token);
-        })
-      );
+      const [logoBase64, teacherMap] = await Promise.all([
+        getImageBase64(logoImage),
+        loadSubjectTeachers(viewClassroom),
+        Promise.all(
+          viewResults.results.map(async (row) => {
+            qrByEnrollment[row.enrollment_id] = await fetchReportCardQr(row.verification_token);
+          })
+        ),
+      ]);
 
       viewResults.results.forEach((row, idx) => {
         drawReportCardPage(doc, {
           classroom: viewClassroom,
-          term: viewResults.term,
-          examLabel,
+          termLabel,
+          titleText,
           resultRow: { ...row, class_size: classSize },
           logoBase64,
           qrCodeBase64: qrByEnrollment[row.enrollment_id] || null,
+          teacherMap,
           isFirstPage: idx === 0,
         });
       });
@@ -1562,7 +1709,7 @@ export default function AdminClassrooms() {
                 <img
                   src={logoImage}
                   alt="Junda High School Shanzu"
-                  style={{ width: 44, height: 44, objectFit: "contain" }}
+                  style={{ width: 76, height: 52, objectFit: "contain", flexShrink: 0 }}
                 />
                 <div>
                   <div style={{ fontWeight: 700, fontSize: "var(--fs-md)", color: "var(--ink-900)" }}>
