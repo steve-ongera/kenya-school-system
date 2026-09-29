@@ -10,18 +10,25 @@ import logoImage from "../../assets/junda_high_logo.png";
    admin picks a template, fills in the blanks, then prints it or downloads
    a PDF. The school letterhead is set once and remembered on this device.
 
+   NEW: "Fee Structure" category
+     - Fee Structure: build a fee table (add / remove / rename fee items, enter
+       amounts per term or a single amount). Totals are calculated automatically.
+     - Fee Structure Circular: a short letter to parents announcing the structure.
+
    TEMPLATE SYNTAX (used in every `body` below, and in the "Edit wording" box)
      {{key}}            a fill-in field (see the F table for the field list)
      blank line         starts a new paragraph
      # Heading          a small section heading
      - item             a bullet point
      | Label | Value |  a row in a details table
+     [[FEE_TABLE]]      the fee items table (Fee Structure template only)
    ========================================================================== */
 
 // bumped to v2 so the new defaults apply (v1 was saved on devices with blank details)
 const LH_KEY = "masomo_letterhead_v2";
 const thisYear = String(new Date().getFullYear());
 const todayISO = () => new Date().toISOString().slice(0, 10);
+const uid = () => Math.random().toString(36).slice(2, 9);
 
 const DEFAULT_LH = {
   schoolName: "Junda High School",
@@ -48,6 +55,26 @@ const LH_LABELS = {
 };
 
 /* --------------------------------------------------------------------------
+   FEE STRUCTURE - default fee items (amounts left blank for the admin to fill)
+   -------------------------------------------------------------------------- */
+const DEFAULT_FEE_NAMES = [
+  "Tuition Fee",
+  "Boarding Fee",
+  "Activity Fee",
+  "Medical Fee",
+  "Examination Fee",
+  "Library Fee",
+  "Development Fee",
+];
+const makeDefaultFees = () => DEFAULT_FEE_NAMES.map((name) => ({ id: uid(), name, amounts: ["", "", ""] }));
+
+const parseAmt = (v) => {
+  const n = Number(String(v ?? "").replace(/,/g, ""));
+  return Number.isNaN(n) ? 0 : n;
+};
+const fmtFee = (n) => (n ? n.toLocaleString("en-KE") : "-");
+
+/* --------------------------------------------------------------------------
    FIELD LIBRARY - label, input type, default value and hint for every {{key}}
    -------------------------------------------------------------------------- */
 const F = {
@@ -72,6 +99,16 @@ const F = {
   },
   previousSchool: { label: "Previous school" },
   absenceReason: { label: "Reason for earlier absence", def: "a period away from school", ph: "e.g. medical deferment" },
+
+  // fee structure
+  feeClass: { label: "Class / Form(s)", ph: "e.g. Form 1 – Form 4" },
+  feeCategory: {
+    label: "Applies to",
+    type: "select",
+    options: ["All students", "Day scholars", "Boarders"],
+    def: "All students",
+  },
+  feeEffective: { label: "Effective from", type: "date" },
 
   // academic
   admittedYear: { label: "Year admitted", ph: "e.g. 2024" },
@@ -315,6 +352,7 @@ const CATEGORIES = [
   { id: "admissions", label: "Admissions", icon: "bi-mortarboard" },
   { id: "academic", label: "Academic & Records", icon: "bi-journal-text" },
   { id: "parents", label: "Parents & Fees", icon: "bi-people" },
+  { id: "fees", label: "Fee Structure", icon: "bi-cash-coin" },
   { id: "health", label: "Health & Welfare", icon: "bi-heart-pulse" },
   { id: "sports", label: "Sports & Trips", icon: "bi-trophy" },
   { id: "discipline", label: "Discipline & Transfers", icon: "bi-shield-exclamation" },
@@ -740,6 +778,56 @@ In line with school regulations, the cost of repair or replacement is to be met 
 If you would like to discuss the circumstances of the incident, please contact the school office. We appreciate your cooperation.`,
   }),
 
+  /* ------------------------------ FEE STRUCTURE ---------------------------- */
+  T({
+    id: "fee-structure",
+    cat: "fees",
+    kind: "fees",
+    title: "Fee Structure",
+    desc: "Build a school fee structure: add fee items, enter amounts per term, and totals are worked out for you. Always prints on one page.",
+    signerTitle: "Principal",
+    salutation: "",
+    closing: "Approved by:",
+    subject: "SCHOOL FEE STRUCTURE – {{feeClass}}, {{academicYear}}",
+    body: `The approved school fees structure for {{feeClass}} ({{feeCategory}}) for the {{academicYear}} academic year, effective {{feeEffective}}, is set out below. All amounts are in Kenya Shillings (KES).
+
+[[FEE_TABLE]]
+
+# Payment details
+M-Pesa Till No: {{tillNo}} OR Paybill: {{paybillNo}}, Account: {{paybillAccount}}. Always quote the student's admission number and keep the payment confirmation or receipt.
+
+# Notes
+- Fees are payable at the beginning of each term, and not later than the deadline communicated by the school.
+- Students with fee balances may be asked to clear or agree a payment plan before sitting examinations or collecting report forms.
+- Parents facing difficulty should see the Principal or the Finance Office early to agree on a payment arrangement.
+- The Board of Management may review these fees, with prior notice to parents/guardians.`,
+  }),
+
+  T({
+    id: "fee-structure-circular",
+    cat: "fees",
+    title: "Fee Structure Circular",
+    desc: "A short letter to parents announcing the fee structure and the amount due this term.",
+    signerTitle: "Principal",
+    salutation: "Dear Parents and Guardians,",
+    closing: "Yours faithfully,",
+    subject: "FEE STRUCTURE FOR {{academicYear}} – {{term}}",
+    body: `We write to share the approved fee structure for the {{academicYear}} academic year, effective {{feeEffective}}, and to remind you of the fees payable this term. The detailed fee structure is enclosed with this circular.
+
+# Fees payable this term
+| Class / Form | {{feeClass}} |
+| Applies To | {{feeCategory}} |
+| Fees Payable for {{term}} | KES {{feeAmount}} |
+| Payment Deadline | {{deadline}} |
+
+# How to pay
+M-Pesa Till No: {{tillNo}} OR Paybill: {{paybillNo}}, Account: {{paybillAccount}}. Please quote the student's admission number and carry the payment confirmation or receipt to school.
+
+Parents facing difficulty are encouraged to see the Principal or the Finance Office before the deadline so that a suitable payment arrangement can be agreed.
+
+Thank you for your continued support and partnership.`,
+  }),
+
   /* ---------------------------- HEALTH & WELFARE --------------------------- */
   T({
     id: "sick-notice",
@@ -1144,7 +1232,8 @@ const labelOf = (key) => LH_LABELS[key] || F[key]?.label || key;
 
 const placeholderKeys = (text) => [...text.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1]);
 
-// Turns the template body into blocks: paragraphs, headings, bullet lists and details tables.
+// Turns the template body into blocks: paragraphs, headings, bullet lists, details tables
+// and (for the Fee Structure template) the fee items table.
 function parseBody(text) {
   const blocks = [];
   let para = [];
@@ -1167,7 +1256,10 @@ function parseBody(text) {
   text.split("\n").forEach((raw) => {
     const line = raw.trim();
     if (!line) return flush();
-    if (line.startsWith("# ")) {
+    if (line === "[[FEE_TABLE]]") {
+      flush();
+      blocks.push({ type: "feetable" });
+    } else if (line.startsWith("# ")) {
       flush();
       blocks.push({ type: "h", text: line.slice(2) });
     } else if (line.startsWith("- ")) {
@@ -1236,6 +1328,13 @@ const LETTER_CSS = `
 .lp table.kv tr{break-inside:avoid;page-break-inside:avoid}
 .lp table.kv th,.lp table.kv td{border:1px solid #e2e8f0;padding:6px 10px;text-align:left;vertical-align:top}
 .lp table.kv th{background:#f1f5f9;color:#334155;width:34%;font-weight:600}
+.lp table.fees{width:100%;border-collapse:collapse;margin:6px 0 14px;font-size:9.5pt}
+.lp table.fees tr{break-inside:avoid;page-break-inside:avoid}
+.lp table.fees th,.lp table.fees td{border:1px solid #a6a6a6;padding:5px 8px;text-align:right;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.lp table.fees th:first-child,.lp table.fees td:first-child{text-align:left}
+.lp table.fees th{background:#1f3864;color:#fff;border-color:#1f3864;font-weight:700}
+.lp table.fees tbody tr:nth-child(even) td{background:#f2f2f2}
+.lp table.fees tfoot td{background:#f2f2f2;color:#1f3864;font-weight:700}
 .lp .closing{margin-top:18px;margin-bottom:0;break-after:avoid;page-break-after:avoid}
 .lp .sign{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-top:6px;break-inside:avoid;page-break-inside:avoid}
 .lp .sign-space{height:44px}
@@ -1248,6 +1347,56 @@ const LETTER_CSS = `
 .lp .lp-foot-row{display:flex;justify-content:space-between;gap:8px}
 .lp .lp-foot-row em{color:#5a5a5a}
 .lp .lp-foot-note{font-size:7pt;color:#5a5a5a;margin-top:2px}
+.lp.fit1{font-size:9.8pt;line-height:1.42}
+.lp.fit1 p{margin-bottom:7px}
+.lp.fit1 .subj{margin:10px 0}
+.lp.fit1 h4{margin:10px 0 4px}
+.lp.fit1 .lh-rule{margin:8px 0 12px}
+.lp.fit1 .sign-space{height:32px}
+.lp.fit1 table.fees td,.lp.fit1 table.fees th{padding:4px 7px}
+.lp.fit1 .lp-foot{margin-top:16px}
+.lp.fit2{font-size:9.2pt;line-height:1.36}
+.lp.fit2 p{margin-bottom:5px}
+.lp.fit2 .subj{margin:8px 0}
+.lp.fit2 h4{margin:8px 0 3px}
+.lp.fit2 .lh-logo{height:60px}
+.lp.fit2 .lh-rule{margin:6px 0 9px}
+.lp.fit2 .meta{margin-bottom:8px}
+.lp.fit2 .sign-space{height:24px}
+.lp.fit2 .stamp{width:78px;height:78px}
+.lp.fit2 table.fees{font-size:8.8pt;margin:4px 0 8px}
+.lp.fit2 table.fees td,.lp.fit2 table.fees th{padding:3px 6px}
+.lp.fit2 li{margin-bottom:1px}
+.lp.fit2 .lp-foot{margin-top:12px}
+.lp.fit3{font-size:8.6pt;line-height:1.3}
+.lp.fit3 p{margin-bottom:4px}
+.lp.fit3 .subj{margin:6px 0}
+.lp.fit3 h4{margin:6px 0 2px;font-size:9.4pt}
+.lp.fit3 .lh-logo{height:50px}
+.lp.fit3 .lh-name{font-size:15pt}
+.lp.fit3 .lh-rule{margin:5px 0 7px}
+.lp.fit3 .meta{margin-bottom:6px}
+.lp.fit3 .sign-space{height:18px}
+.lp.fit3 .stamp{width:64px;height:64px;font-size:7pt}
+.lp.fit3 table.fees{font-size:8.2pt;margin:3px 0 6px}
+.lp.fit3 table.fees td,.lp.fit3 table.fees th{padding:2px 5px}
+.lp.fit3 li{margin-bottom:0}
+.lp.fit3 .lp-foot{margin-top:8px}
+.lp.fit4{font-size:8pt;line-height:1.25}
+.lp.fit4 p{margin-bottom:3px}
+.lp.fit4 .subj{margin:4px 0}
+.lp.fit4 h4{margin:4px 0 2px;font-size:8.8pt}
+.lp.fit4 .lh-logo{height:42px}
+.lp.fit4 .lh-name{font-size:13pt}
+.lp.fit4 .lh-line,.lp.fit4 .lh-motto{font-size:8pt}
+.lp.fit4 .lh-rule{margin:4px 0 5px}
+.lp.fit4 .meta{margin-bottom:4px}
+.lp.fit4 .sign-space{height:14px}
+.lp.fit4 .stamp{width:54px;height:54px;font-size:6.5pt}
+.lp.fit4 table.fees{font-size:7.6pt;margin:2px 0 4px}
+.lp.fit4 table.fees td,.lp.fit4 table.fees th{padding:1.5px 4px}
+.lp.fit4 li{margin-bottom:0}
+.lp.fit4 .lp-foot{margin-top:6px}
 .lp mark.ph{background:#fef08a;color:#854d0e;padding:0 2px;border-radius:2px}
 `;
 
@@ -1257,6 +1406,10 @@ const PAGE_CSS = `
 .letter-card-icon{width:42px;height:42px;border-radius:var(--radius-md);background:var(--blue-100);color:var(--blue-700);display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0}
 .letter-card:hover .letter-card-icon{background:var(--blue-700);color:#fff}
 .letter-body-editor{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.5}
+.fee-grid{display:grid;gap:6px;align-items:center;margin-bottom:6px}
+.fee-grid-head{font-size:var(--fs-xs);font-weight:600;color:var(--ink-600);text-transform:uppercase;letter-spacing:.03em}
+.fee-grid .form-control{padding:.3rem .5rem;font-size:var(--fs-sm)}
+.fee-grid .form-control.num{text-align:right}
 `;
 
 /* ==========================================================================
@@ -1276,6 +1429,10 @@ export default function Letters() {
   const [editingBody, setEditingBody] = useState(false);
   const [logo, setLogo] = useState(null);
   const [busy, setBusy] = useState("");
+
+  // Fee structure builder
+  const [feeItems, setFeeItems] = useState(makeDefaultFees);
+  const [feeLayout, setFeeLayout] = useState("terms"); // "terms" = Term 1/2/3 + annual total, "single" = one amount
 
   useEffect(() => {
     loadLogo(logoImage).then(setLogo);
@@ -1301,6 +1458,59 @@ export default function Letters() {
     setSignerTitle(tpl.signerTitle || "Principal");
     setEditingBody(false);
     document.querySelector(".app-shell__main")?.scrollTo({ top: 0 });
+  };
+
+  /* ---------- fee item editing ---------- */
+  const setFeeName = (id, name) => setFeeItems((p) => p.map((r) => (r.id === id ? { ...r, name } : r)));
+  const setFeeAmount = (id, i, v) =>
+    setFeeItems((p) =>
+      p.map((r) => (r.id === id ? { ...r, amounts: r.amounts.map((a, idx) => (idx === i ? v : a)) } : r))
+    );
+  const addFeeItem = () => setFeeItems((p) => [...p, { id: uid(), name: "", amounts: ["", "", ""] }]);
+  const removeFeeItem = (id) => setFeeItems((p) => p.filter((r) => r.id !== id));
+  const clearFeeAmounts = () => setFeeItems((p) => p.map((r) => ({ ...r, amounts: ["", "", ""] })));
+  const resetFeeItems = () => setFeeItems(makeDefaultFees());
+
+  const feeColCount = feeLayout === "terms" ? 3 : 1;
+
+  // Cleaned rows + totals for the fee table (blank rows are ignored)
+  const feeTableModel = () => {
+    const lines = feeItems
+      .filter((r) => r.name.trim() || r.amounts.slice(0, feeColCount).some((a) => String(a).trim() !== ""))
+      .map((r) => {
+        const vals = Array.from({ length: feeColCount }, (_, i) => parseAmt(r.amounts[i]));
+        return { name: r.name.trim() || "-", vals, total: vals.reduce((a, b) => a + b, 0) };
+      });
+    const colTotals = Array.from({ length: feeColCount }, (_, i) => lines.reduce((s, l) => s + l.vals[i], 0));
+    const grand = colTotals.reduce((a, b) => a + b, 0);
+
+    if (feeLayout === "terms") {
+      return {
+        head: ["Fee Item", "Term 1 (KES)", "Term 2 (KES)", "Term 3 (KES)", "Annual Total (KES)"],
+        body: lines.map((l) => [l.name, ...l.vals.map(fmtFee), fmtFee(l.total)]),
+        foot: ["TOTAL", ...colTotals.map(fmtFee), fmtFee(grand)],
+        grand,
+      };
+    }
+    return {
+      head: ["Fee Item", "Amount (KES)"],
+      body: lines.map((l) => [l.name, fmtFee(l.vals[0])]),
+      foot: ["TOTAL", fmtFee(grand)],
+      grand,
+    };
+  };
+
+  const feeTableHtml = (highlight) => {
+    const ft = feeTableModel();
+    if (!ft.body.length) {
+      const ph = "[Fee items]";
+      return `<p>${highlight ? `<mark class="ph">${ph}</mark>` : ph}</p>`;
+    }
+    return `<table class="fees">
+      <thead><tr>${ft.head.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead>
+      <tbody>${ft.body.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody>
+      <tfoot><tr>${ft.foot.map((c) => `<td>${esc(c)}</td>`).join("")}</tr></tfoot>
+    </table>`;
   };
 
   /* ---------- value resolution ---------- */
@@ -1365,7 +1575,8 @@ export default function Letters() {
       fmtDate(rawValue("letterDate"))
     )}</span></div>`;
     if (t.to) h += `<div class="to">${f(t.to).replace(/\n/g, "<br>")}</div>`;
-    h += `<p>${f(t.salutation)}</p><p class="subj">${f(t.subject)}</p>`;
+    if (t.salutation) h += `<p>${f(t.salutation)}</p>`;
+    h += `<p class="subj">${f(t.subject)}</p>`;
 
     blocks.forEach((b) => {
       if (b.type === "p") h += `<p>${f(b.text)}</p>`;
@@ -1375,6 +1586,7 @@ export default function Letters() {
         h += `<table class="kv">${b.rows
           .map((r) => `<tr><th>${f(r[0] || "")}</th><td>${f(r.slice(1).join(" | "))}</td></tr>`)
           .join("")}</table>`;
+      else if (b.type === "feetable") h += feeTableHtml(highlight);
     });
 
     h += `<p class="closing">${esc(t.closing)}</p>`;
@@ -1395,26 +1607,44 @@ export default function Letters() {
     return h;
   };
 
-  const nameForFile = () => values.studentName || values.staffName || values.traineeName || "";
+  const nameForFile = () =>
+    values.studentName || values.staffName || values.traineeName || (t?.kind === "fees" ? values.feeClass : "") || "";
 
   /* ---------- PRINT ---------- */
   const printLetter = () => {
     if (!t) return;
     setBusy("print");
+    const isFees = t.kind === "fees";
     const title = esc(`${t.title} ${nameForFile()}`.trim());
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8" /><title>${title}</title>
-      <style>@page{size:A4 portrait;margin:16mm 18mm}html,body{margin:0;padding:0;background:#fff}${LETTER_CSS}</style>
+      <style>@page{size:A4 portrait;margin:16mm 18mm}html,body{margin:0;padding:0;background:#fff}${isFees ? "body{width:174mm}" : ""}${LETTER_CSS}</style>
       </head><body><div class="lp">${buildLetterHtml(false)}</div></body></html>`;
 
     const iframe = document.createElement("iframe");
     Object.assign(iframe.style, {
-      position: "fixed", right: "0", bottom: "0", width: "0", height: "0", border: "0", visibility: "hidden",
+      position: "fixed",
+      right: "0",
+      bottom: "0",
+      width: isFees ? "794px" : "0",
+      height: isFees ? "1123px" : "0",
+      border: "0",
+      visibility: "hidden",
     });
     document.body.appendChild(iframe);
     const frameDoc = iframe.contentWindow.document;
     frameDoc.open();
     frameDoc.write(html);
     frameDoc.close();
+
+    // Fee Structure: shrink step by step until the whole document fits on ONE A4 page.
+    if (isFees) {
+      const lpEl = frameDoc.querySelector(".lp");
+      const availablePx = (265 / 25.4) * 96 - 10; // A4 height minus the print margins
+      for (let level = 0; level <= 4; level++) {
+        lpEl.className = level ? `lp fit${level}` : "lp";
+        if (lpEl.offsetHeight <= availablePx) break;
+      }
+    }
 
     setTimeout(() => {
       try {
@@ -1428,170 +1658,209 @@ export default function Letters() {
   };
 
   /* ---------- PDF DOWNLOAD ---------- */
+  // Builds the PDF at a given scale (s = 1 is normal size). The Fee Structure must be
+  // ONE page only, so downloadPdf keeps trying smaller scales until it fits on one page.
+  const buildPdf = (s) => {
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const W = doc.internal.pageSize.getWidth();
+    const H = doc.internal.pageSize.getHeight();
+    const M = 20;
+    const CW = W - 2 * M;
+    const BOTTOM = H - 24;
+    const NAVY = [31, 56, 100];
+    const INK = [30, 41, 59];
+    const MUTED = [100, 116, 139];
+    const GREY = [242, 242, 242];
+    const BORDER = [166, 166, 166];
+    let y = 15;
+
+    const need = (h) => {
+      if (y + h > BOTTOM) {
+        doc.addPage();
+        y = 20;
+      }
+    };
+
+    // k = scale factor for this line (the letterhead passes k: 1 so it never shrinks)
+    const write = (text, o = {}) => {
+      const { size = 10.5, bold = false, italic = false, color = INK, x = M, width = CW, after = 3, align = "left", underline = false, k = s } = o;
+      const fs = size * k;
+      doc.setFont("helvetica", bold ? "bold" : italic ? "italic" : "normal");
+      doc.setFontSize(fs);
+      doc.setTextColor(...color);
+      const step = fs * 0.5;
+      doc.splitTextToSize(text, width).forEach((line) => {
+        need(step);
+        doc.text(line, align === "center" ? W / 2 : x, y, { align });
+        if (underline) {
+          const w = doc.getTextWidth(line);
+          doc.setDrawColor(...color);
+          doc.setLineWidth(0.25);
+          doc.line(x, y + 1, x + w, y + 1);
+        }
+        y += step;
+      });
+      y += after * k;
+    };
+
+    // --- letterhead: logo left, details centred ---
+    const headTop = 12;
+    const logoH = 20;
+    if (lh.showLogo && logo) {
+      const ww = Math.min((logoH * logo.w) / logo.h, 32);
+      const hh = (ww * logo.h) / logo.w;
+      doc.addImage(logo.data, "PNG", M, headTop + (logoH - hh) / 2, ww, hh);
+    }
+    y = headTop + 4;
+    write((lh.schoolName || "School Name").toUpperCase(), { size: 17, bold: true, color: NAVY, align: "center", after: 1, k: 1 });
+    if (lh.schoolAddress) write(lh.schoolAddress, { size: 8.5, color: [0, 0, 0], align: "center", after: 0.5, k: 1 });
+    if (lh.schoolPhone) write(`Tel: ${lh.schoolPhone}`, { size: 8.5, color: [0, 0, 0], align: "center", after: 0.5, k: 1 });
+    if (lh.schoolEmail) write(lh.schoolEmail, { size: 8.5, color: [0, 0, 0], align: "center", after: 0.5, k: 1 });
+    if (lh.schoolMotto) write(lh.schoolMotto, { size: 8.5, italic: true, color: [110, 110, 110], align: "center", after: 0, k: 1 });
+    y = Math.max(y, headTop + logoH) + 1;
+    y += 2;
+    doc.setDrawColor(...NAVY);
+    doc.setLineWidth(0.7);
+    doc.line(M, y, W - M, y);
+    doc.setLineWidth(0.2);
+    doc.line(M, y + 1.3, W - M, y + 1.3);
+    y += 9 * s;
+
+    // --- reference + date ---
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10 * s);
+    doc.setTextColor(...INK);
+    if (values.refNo) doc.text(`Our Ref: ${values.refNo}`, M, y);
+    doc.text(fmtDate(rawValue("letterDate")), W - M, y, { align: "right" });
+    y += 8 * s;
+
+    // --- addressee, salutation, subject ---
+    if (t.to) {
+      fillText(t.to).split("\n").forEach((line) => write(line, { bold: true, after: 0 }));
+      y += 4 * s;
+    }
+    if (t.salutation) write(fillText(t.salutation));
+    write(fillText(t.subject), { bold: true, underline: true, after: 5 });
+
+    // --- body ---
+    blocks.forEach((b) => {
+      if (b.type === "p") {
+        write(fillText(b.text));
+      } else if (b.type === "h") {
+        need(14 * s);
+        write(fillText(b.text), { bold: true, color: NAVY, after: 2 });
+      } else if (b.type === "ul") {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10.5 * s);
+        doc.setTextColor(...INK);
+        b.items.forEach((item) => {
+          doc.splitTextToSize(fillText(item), CW - 8).forEach((line, i) => {
+            need(5.25 * s);
+            if (i === 0) doc.text("•", M + 2, y);
+            doc.text(line, M + 7, y);
+            y += 5.25 * s;
+          });
+          y += 0.8 * s;
+        });
+        y += 2.5 * s;
+      } else if (b.type === "table") {
+        autoTable(doc, {
+          startY: y,
+          theme: "grid",
+          body: b.rows.map((r) => [fillText(r[0] || ""), fillText(r.slice(1).join(" | "))]),
+          styles: { fontSize: 9.5 * s, cellPadding: 2 * s, lineColor: [226, 232, 240], lineWidth: 0.15, textColor: INK },
+          columnStyles: { 0: { cellWidth: 52, fontStyle: "bold", fillColor: [241, 245, 249], textColor: [51, 65, 85] } },
+          margin: { left: M, right: M, bottom: 24 },
+        });
+        y = doc.lastAutoTable.finalY + 5 * s;
+      } else if (b.type === "feetable") {
+        const ft = feeTableModel();
+        if (ft.body.length) {
+          need(30 * s);
+          autoTable(doc, {
+            startY: y,
+            theme: "grid",
+            head: [ft.head],
+            body: ft.body,
+            foot: [ft.foot],
+            showFoot: "lastPage",
+            styles: { font: "helvetica", fontSize: 9 * s, cellPadding: 2 * s, lineColor: BORDER, lineWidth: 0.15, textColor: INK, valign: "middle" },
+            headStyles: { fillColor: NAVY, textColor: [255, 255, 255], fontStyle: "bold", lineColor: NAVY },
+            footStyles: { fillColor: GREY, textColor: NAVY, fontStyle: "bold" },
+            alternateRowStyles: { fillColor: GREY },
+            didParseCell: (d) => {
+              d.cell.styles.halign = d.column.index === 0 ? "left" : "right";
+            },
+            margin: { left: M, right: M, bottom: 24 },
+          });
+          y = doc.lastAutoTable.finalY + 5 * s;
+        }
+      }
+    });
+
+    // --- closing, signature, stamp ---
+    need(62 * s);
+    y += 3 * s;
+    write(t.closing, { after: 0 });
+    y += 16 * s;
+    const signTop = y;
+    doc.setDrawColor(...MUTED);
+    doc.setLineWidth(0.3);
+    doc.line(M, y, M + 62, y);
+    y += 5 * s;
+    write(fillText("{{signerName}}").toUpperCase(), { bold: true, after: 0.5 });
+    write(fillText("{{signerTitle}}"), { after: 0.5 });
+    write(lh.schoolName || "", { size: 9.5, color: MUTED, after: 0 });
+
+    const cx = W - M - 16 * s;
+    doc.setLineDashPattern([1.2, 1.2], 0);
+    doc.setDrawColor(148, 163, 184);
+    doc.setLineWidth(0.4);
+    doc.circle(cx, signTop - 2 * s, 15 * s);
+    doc.setLineDashPattern([], 0);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5 * s);
+    doc.setTextColor(148, 163, 184);
+    doc.text("OFFICIAL", cx, signTop - 3.5 * s, { align: "center" });
+    doc.text("STAMP", cx, signTop + 0.5 * s, { align: "center" });
+
+    // --- footer on every page ---
+    const pages = doc.getNumberOfPages();
+    const yr = new Date().getFullYear();
+    for (let p = 1; p <= pages; p++) {
+      doc.setPage(p);
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.15);
+      doc.line(M, H - 17, W - M, H - 17);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7);
+      doc.setTextColor(0, 0, 0);
+      doc.text(`© ${yr} ${lh.schoolName || ""}. All rights reserved.`, M, H - 12.5);
+
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(6.5);
+      doc.setTextColor(90, 90, 90);
+      doc.text("Powered by Masomo Portal (www.masomoportal.com)", W - M, H - 12.5, { align: "right" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(6);
+      doc.text("This is an official school letter. Duplication is prohibited.", M, H - 8.5);
+      if (pages > 1) doc.text(`Page ${p} of ${pages}`, W - M, H - 8.5, { align: "right" });
+    }
+    return doc;
+  };
+
   const downloadPdf = async () => {
     if (!t) return;
     setBusy("pdf");
     try {
-      const doc = new jsPDF({ unit: "mm", format: "a4" });
-      const W = doc.internal.pageSize.getWidth();
-      const H = doc.internal.pageSize.getHeight();
-      const M = 20;
-      const CW = W - 2 * M;
-      const BOTTOM = H - 24;
-      const NAVY = [31, 56, 100];
-      const INK = [30, 41, 59];
-      const MUTED = [100, 116, 139];
-      let y = 15;
-
-      const need = (h) => {
-        if (y + h > BOTTOM) {
-          doc.addPage();
-          y = 20;
-        }
-      };
-
-      const write = (text, o = {}) => {
-        const { size = 10.5, bold = false, italic = false, color = INK, x = M, width = CW, after = 3, align = "left", underline = false } = o;
-        doc.setFont("helvetica", bold ? "bold" : italic ? "italic" : "normal");
-        doc.setFontSize(size);
-        doc.setTextColor(...color);
-        const step = size * 0.5;
-        doc.splitTextToSize(text, width).forEach((line) => {
-          need(step);
-          doc.text(line, align === "center" ? W / 2 : x, y, { align });
-          if (underline) {
-            const w = doc.getTextWidth(line);
-            doc.setDrawColor(...color);
-            doc.setLineWidth(0.25);
-            doc.line(x, y + 1, x + w, y + 1);
-          }
-          y += step;
-        });
-        y += after;
-      };
-
-      // --- letterhead: logo left, details centred ---
-      const headTop = 12;
-      const logoH = 20;
-      if (lh.showLogo && logo) {
-        const ww = Math.min((logoH * logo.w) / logo.h, 32);
-        const hh = (ww * logo.h) / logo.w;
-        doc.addImage(logo.data, "PNG", M, headTop + (logoH - hh) / 2, ww, hh);
-      }
-      y = headTop + 4;
-      write((lh.schoolName || "School Name").toUpperCase(), { size: 17, bold: true, color: NAVY, align: "center", after: 1 });
-      if (lh.schoolAddress) write(lh.schoolAddress, { size: 8.5, color: [0, 0, 0], align: "center", after: 0.5 });
-      if (lh.schoolPhone) write(`Tel: ${lh.schoolPhone}`, { size: 8.5, color: [0, 0, 0], align: "center", after: 0.5 });
-      if (lh.schoolEmail) write(lh.schoolEmail, { size: 8.5, color: [0, 0, 0], align: "center", after: 0.5 });
-      if (lh.schoolMotto) write(lh.schoolMotto, { size: 8.5, italic: true, color: [110, 110, 110], align: "center", after: 0 });
-      y = Math.max(y, headTop + logoH) + 1;
-      y += 2;
-      doc.setDrawColor(...NAVY);
-      doc.setLineWidth(0.7);
-      doc.line(M, y, W - M, y);
-      doc.setLineWidth(0.2);
-      doc.line(M, y + 1.3, W - M, y + 1.3);
-      y += 9;
-
-      // --- reference + date ---
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
-      doc.setTextColor(...INK);
-      if (values.refNo) doc.text(`Our Ref: ${values.refNo}`, M, y);
-      doc.text(fmtDate(rawValue("letterDate")), W - M, y, { align: "right" });
-      y += 8;
-
-      // --- addressee, salutation, subject ---
-      if (t.to) {
-        fillText(t.to).split("\n").forEach((line) => write(line, { bold: true, after: 0 }));
-        y += 4;
-      }
-      write(fillText(t.salutation));
-      write(fillText(t.subject), { bold: true, underline: true, after: 5 });
-
-      // --- body ---
-      blocks.forEach((b) => {
-        if (b.type === "p") {
-          write(fillText(b.text));
-        } else if (b.type === "h") {
-          need(14);
-          write(fillText(b.text), { bold: true, color: NAVY, after: 2 });
-        } else if (b.type === "ul") {
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(10.5);
-          doc.setTextColor(...INK);
-          b.items.forEach((item) => {
-            doc.splitTextToSize(fillText(item), CW - 8).forEach((line, i) => {
-              need(5.25);
-              if (i === 0) doc.text("•", M + 2, y);
-              doc.text(line, M + 7, y);
-              y += 5.25;
-            });
-            y += 0.8;
-          });
-          y += 2.5;
-        } else if (b.type === "table") {
-          autoTable(doc, {
-            startY: y,
-            theme: "grid",
-            body: b.rows.map((r) => [fillText(r[0] || ""), fillText(r.slice(1).join(" | "))]),
-            styles: { fontSize: 9.5, cellPadding: 2, lineColor: [226, 232, 240], lineWidth: 0.15, textColor: INK },
-            columnStyles: { 0: { cellWidth: 52, fontStyle: "bold", fillColor: [241, 245, 249], textColor: [51, 65, 85] } },
-            margin: { left: M, right: M, bottom: 24 },
-          });
-          y = doc.lastAutoTable.finalY + 5;
-        }
-      });
-
-      // --- closing, signature, stamp ---
-      need(62);
-      y += 3;
-      write(t.closing, { after: 0 });
-      y += 16;
-      const signTop = y;
-      doc.setDrawColor(...MUTED);
-      doc.setLineWidth(0.3);
-      doc.line(M, y, M + 62, y);
-      y += 5;
-      write(fillText("{{signerName}}").toUpperCase(), { bold: true, after: 0.5 });
-      write(fillText("{{signerTitle}}"), { after: 0.5 });
-      write(lh.schoolName || "", { size: 9.5, color: MUTED, after: 0 });
-
-      const cx = W - M - 16;
-      doc.setLineDashPattern([1.2, 1.2], 0);
-      doc.setDrawColor(148, 163, 184);
-      doc.setLineWidth(0.4);
-      doc.circle(cx, signTop - 2, 15);
-      doc.setLineDashPattern([], 0);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(7.5);
-      doc.setTextColor(148, 163, 184);
-      doc.text("OFFICIAL", cx, signTop - 3.5, { align: "center" });
-      doc.text("STAMP", cx, signTop + 0.5, { align: "center" });
-
-      // --- footer on every page ---
-      const pages = doc.getNumberOfPages();
-      const yr = new Date().getFullYear();
-      for (let p = 1; p <= pages; p++) {
-        doc.setPage(p);
-        doc.setDrawColor(0, 0, 0);
-        doc.setLineWidth(0.15);
-        doc.line(M, H - 17, W - M, H - 17);
-
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(7);
-        doc.setTextColor(0, 0, 0);
-        doc.text(`© ${yr} ${lh.schoolName || ""}. All rights reserved.`, M, H - 12.5);
-
-        doc.setFont("helvetica", "italic");
-        doc.setFontSize(6.5);
-        doc.setTextColor(90, 90, 90);
-        doc.text("Powered by Masomo Portal (www.masomoportal.com)", W - M, H - 12.5, { align: "right" });
-
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(6);
-        doc.text("This is an official school letter. Duplication is prohibited.", M, H - 8.5);
-        if (pages > 1) doc.text(`Page ${p} of ${pages}`, W - M, H - 8.5, { align: "right" });
+      // Fee Structure: always ONE page. Try normal size first, then shrink until it fits.
+      const scales = t.kind === "fees" ? [1, 0.94, 0.88, 0.82, 0.76, 0.7, 0.64, 0.58] : [1];
+      let doc = null;
+      for (const s of scales) {
+        doc = buildPdf(s);
+        if (doc.getNumberOfPages() === 1) break;
       }
 
       const parts = [slug(t.title), slug(nameForFile()), todayISO()].filter(Boolean);
@@ -1638,6 +1907,94 @@ export default function Letters() {
       </div>
     );
   };
+
+  /* ---------- fee items editor (Fee Structure template only) ---------- */
+  const feeGridCols =
+    feeLayout === "terms" ? "minmax(120px,1fr) 78px 78px 78px 30px" : "minmax(120px,1fr) 110px 30px";
+
+  const feeEditor = t?.kind === "fees" && (
+    <>
+      <hr className="my-3" />
+      <div className="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+        <div className="section-label">Fee items (KES)</div>
+        <select
+          className="form-select form-select-sm"
+          style={{ width: "auto" }}
+          value={feeLayout}
+          onChange={(e) => setFeeLayout(e.target.value)}
+        >
+          <option value="terms">Amount per term (Term 1, 2, 3)</option>
+          <option value="single">Single amount per item</option>
+        </select>
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <div style={{ minWidth: feeLayout === "terms" ? 430 : 300 }}>
+          <div className="fee-grid fee-grid-head" style={{ gridTemplateColumns: feeGridCols }}>
+            <span>Fee item</span>
+            {feeLayout === "terms" ? (
+              <>
+                <span className="text-end">Term 1</span>
+                <span className="text-end">Term 2</span>
+                <span className="text-end">Term 3</span>
+              </>
+            ) : (
+              <span className="text-end">Amount</span>
+            )}
+            <span></span>
+          </div>
+
+          {feeItems.map((r) => (
+            <div key={r.id} className="fee-grid" style={{ gridTemplateColumns: feeGridCols }}>
+              <input
+                className="form-control"
+                value={r.name}
+                placeholder="e.g. Tuition Fee"
+                onChange={(e) => setFeeName(r.id, e.target.value)}
+              />
+              {Array.from({ length: feeColCount }).map((_, i) => (
+                <input
+                  key={i}
+                  className="form-control num"
+                  inputMode="decimal"
+                  value={r.amounts[i]}
+                  placeholder="0"
+                  onChange={(e) => setFeeAmount(r.id, i, e.target.value)}
+                />
+              ))}
+              <button
+                type="button"
+                className="btn btn-sm btn-light"
+                title="Remove this fee item"
+                onClick={() => removeFeeItem(r.id)}
+                style={{ padding: "0.15rem 0.4rem" }}
+              >
+                <i className="bi bi-x-lg"></i>
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="d-flex flex-wrap gap-2 mt-2">
+        <button type="button" className="btn btn-sm btn-outline-primary" onClick={addFeeItem}>
+          <i className="bi bi-plus-lg me-1"></i>Add fee item
+        </button>
+        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={clearFeeAmounts}>
+          Clear amounts
+        </button>
+        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={resetFeeItems}>
+          <i className="bi bi-arrow-counterclockwise me-1"></i>Reset items
+        </button>
+      </div>
+
+      <div className="mt-2" style={{ fontSize: "var(--fs-sm)", color: "var(--ink-600)" }}>
+        <i className="bi bi-calculator me-1"></i>
+        {feeLayout === "terms" ? "Annual total" : "Total"}:{" "}
+        <strong>KES {feeTableModel().grand.toLocaleString("en-KE")}</strong>
+      </div>
+    </>
+  );
 
   /* ---------- gallery filtering ---------- */
   const q = search.trim().toLowerCase();
@@ -1850,6 +2207,8 @@ export default function Letters() {
                   {formKeys.map(renderField)}
                 </div>
 
+                {feeEditor}
+
                 <hr className="my-3" />
                 <div className="section-label mb-2">Signed by</div>
                 <div className="row g-2">
@@ -1905,6 +2264,11 @@ export default function Letters() {
                       Keep <code>{"{{fields}}"}</code> to fill in details automatically. Start a line with <code>- </code> for a
                       bullet, <code># </code> for a heading, or write <code>| Label | Value |</code> for a table row. Leave a blank
                       line between paragraphs.
+                      {t.kind === "fees" && (
+                        <>
+                          {" "}Keep the line <code>[[FEE_TABLE]]</code> where the fee table should appear.
+                        </>
+                      )}
                     </div>
                   </div>
                 )}

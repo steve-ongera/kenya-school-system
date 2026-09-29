@@ -65,12 +65,113 @@ const SUBJECT_ABBREVIATIONS = {
   "religious education": "RE",
 };
 
-// Edit these to match the real school's details - shown centered under the
-// school name in the PDF header.
-const SCHOOL_CONTACT = {
-  poBox: "P.O. Box 1234-00100, Nairobi, Kenya",
-  phone: "+254 712 345 678",
-  email: "info@masomoschool.ac.ke",
+// ---- PDF theme (same as the finance report / payment receipt) ----
+const SCHOOL_NAME = "JUNDA HIGH SCHOOL SHANZU";
+const ADDRESS_LINE_1 = "P.O BOX 87073-80100, MOMBASA";
+const ADDRESS_LINE_2 = "Email: jundahighschool83@gmail.com";
+const MOTTO = "STRIVE TO EXCELL";
+const NAVY = [31, 56, 100];
+const GREY = [242, 242, 242];
+const BORDER = [166, 166, 166];
+const BLACK = [0, 0, 0];
+
+// Receipt-style letterhead, drawn on every page.
+const drawLetterhead = (doc, base64Logo, title, filterLine) => {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const marginX = 10;
+
+  if (base64Logo) {
+    const props = doc.getImageProperties(base64Logo);
+    const ratio = props.width / props.height || 1;
+    const maxH = 16;
+    const maxW = 30;
+    let drawW = maxH * ratio;
+    let drawH = maxH;
+    if (drawW > maxW) {
+      drawW = maxW;
+      drawH = drawW / ratio;
+    }
+    doc.addImage(base64Logo, "PNG", marginX, 6 + (maxH - drawH) / 2, drawW, drawH);
+  }
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.setTextColor(...NAVY);
+  doc.text(SCHOOL_NAME, pageWidth / 2, 12, { align: "center" });
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7);
+  doc.setTextColor(...BLACK);
+  doc.text(ADDRESS_LINE_1, pageWidth / 2, 17, { align: "center" });
+  doc.text(ADDRESS_LINE_2, pageWidth / 2, 20.5, { align: "center" });
+
+  doc.setFont("helvetica", "italic");
+  doc.setFontSize(7);
+  doc.setTextColor(110, 110, 110);
+  doc.text(MOTTO, pageWidth / 2, 24, { align: "center" });
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6);
+  doc.text(
+    `Generated ${new Date().toLocaleDateString("en-KE", { year: "numeric", month: "long", day: "numeric" })}`,
+    pageWidth - marginX,
+    8.5,
+    { align: "right" }
+  );
+
+  doc.setDrawColor(...NAVY);
+  doc.setLineWidth(0.6);
+  doc.line(marginX, 27, pageWidth - marginX, 27);
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10.5);
+  doc.setTextColor(...NAVY);
+  doc.text(title, pageWidth / 2, 33, { align: "center" });
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.5);
+  doc.setTextColor(...BLACK);
+  doc.text(filterLine, pageWidth / 2, 38, { align: "center", maxWidth: pageWidth - marginX * 2 });
+};
+
+// Footer with copyright + Masomo Portal credit + page numbers, on every page.
+const drawFooters = (doc) => {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const marginX = 10;
+  const year = new Date().getFullYear();
+  const total = doc.internal.getNumberOfPages();
+  const lineY = pageHeight - 14;
+
+  for (let i = 1; i <= total; i++) {
+    doc.setPage(i);
+    doc.setDrawColor(...BLACK);
+    doc.setLineWidth(0.15);
+    doc.line(marginX, lineY, pageWidth - marginX, lineY);
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(6.5);
+    doc.setTextColor(...BLACK);
+    doc.text(`© ${year} Junda High School Shanzu. All rights reserved.`, marginX, lineY + 4);
+
+    doc.setFont("helvetica", "normal");
+    doc.text(`Page ${i} of ${total}`, pageWidth / 2, lineY + 4, { align: "center" });
+
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(6);
+    doc.setTextColor(90, 90, 90);
+    doc.text("Powered by Masomo Portal (www.masomoportal.com)", pageWidth - marginX, lineY + 4, {
+      align: "right",
+    });
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(5.5);
+    doc.text(
+      "This is an official rankings report. Duplication is prohibited.",
+      marginX,
+      lineY + 7.5
+    );
+  }
 };
 
 function abbreviateSubject(name) {
@@ -203,7 +304,7 @@ export default function AdminRankings() {
   // ---------------------------------------------------------------------
   // Download the ranking as a compact landscape PDF - super tiny data so
   // wide grade-level tables (now including Total/Pts/Grade columns) fit
-  // on one horizontal page/row.
+  // on one horizontal page/row. Letterhead + footer match the finance report.
   // ---------------------------------------------------------------------
   const handleDownloadRankingPdf = async () => {
     if (!data || !data.results?.length) return;
@@ -213,48 +314,17 @@ export default function AdminRankings() {
       const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
+      const marginX = 10;
 
       const base64Logo = await getImageBase64(logoImage);
 
-      const generatedOn = new Date().toLocaleDateString("en-KE", {
-        year: "numeric", month: "long", day: "numeric",
-      });
-
-      // --- Header ---
-      if (base64Logo) {
-        doc.addImage(base64Logo, "PNG", 8, 7, 10, 10);
-      }
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(11);
-      doc.setTextColor(15, 23, 42);
-      doc.text("Junda High School Shanzu", base64Logo ? 21 : 8, 12);
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(8);
-      doc.setTextColor(71, 85, 105);
-      doc.text("Student Rankings Report", base64Logo ? 21 : 8, 17);
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(7);
-      doc.setTextColor(100, 116, 139);
-      doc.text(`Generated ${generatedOn}`, pageWidth - 8, 10, { align: "right" });
-
-      doc.setDrawColor(203, 213, 225);
-      doc.setLineWidth(0.3);
-      doc.line(8, 20, pageWidth - 8, 20);
-
-      // --- Meta line ---
+      // --- Title + meta line (drawn by the letterhead on every page) ---
       const scopeLabel = data.grade_level
         ? `${data.grade_level} — All Streams`
         : data.classroom || "-";
       const examLabel = selectedExamLabel;
-      const metaLine = `${scopeLabel}   |   ${data.term || "-"}${data.academic_year ? ` (${data.academic_year})` : ""}   |   ${examLabel}   |   ${data.results.length} student(s)`;
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(7);
-      doc.setTextColor(51, 65, 85);
-      doc.text(metaLine, 8, 25);
+      const reportTitle = "STUDENT RANKINGS REPORT";
+      const metaLine = `${scopeLabel}  |  ${data.term || "-"}${data.academic_year ? ` (${data.academic_year})` : ""}  |  ${examLabel}  |  ${data.results.length} student(s)`;
 
       // --- Table columns (PDF uses abbreviated subject headers) ---
       const showClassCol = scope === "grade";
@@ -300,7 +370,7 @@ export default function AdminRankings() {
         columnStyles[nextIdx] = { cellWidth: 22, halign: "left", overflow: "ellipsize" };
         nextIdx += 1;
       }
-      const subjectColWidth = 9; // shrunk further to make room for the 3 new columns
+      const subjectColWidth = 9;
       (data.subjects || []).forEach(() => {
         columnStyles[nextIdx] = { cellWidth: subjectColWidth, halign: "center" };
         nextIdx += 1;
@@ -314,39 +384,37 @@ export default function AdminRankings() {
       columnStyles[nextIdx] = { cellWidth: 12, halign: "center" }; // Avg%
 
       autoTable(doc, {
-        startY: 28,
+        startY: 42,
         head: [tableColumn],
         body: tableRows,
         theme: "grid",
+        margin: { top: 42, left: marginX, right: marginX, bottom: 20 },
         styles: {
-          fontSize: 5.5,          // even tinier so the whole width fits one row
-          cellPadding: 0.6,       // ultra tight
-          lineColor: [226, 232, 240],
-          lineWidth: 0.1,
-          textColor: [51, 65, 85],
+          font: "helvetica",
+          fontSize: 5.5,
+          cellPadding: 0.6,
+          lineColor: BORDER,
+          lineWidth: 0.15,
+          textColor: BLACK,
           overflow: "ellipsize",
           valign: "middle",
         },
         headStyles: {
-          fillColor: [15, 23, 42],
+          fillColor: NAVY,
           textColor: [255, 255, 255],
           fontStyle: "bold",
           fontSize: 5.5,
           cellPadding: 0.8,
           halign: "center",
+          lineColor: NAVY,
         },
         bodyStyles: {
           fontSize: 5.5,
-          textColor: [51, 65, 85],
+          textColor: BLACK,
           cellPadding: 0.6,
         },
-        alternateRowStyles: { fillColor: [248, 250, 252] },
+        alternateRowStyles: { fillColor: GREY },
         columnStyles,
-        margin: { left: 6, right: 6 },
-        // horizontalPageBreak is still set as a safety net - but with
-        // abbreviations + 5.5pt font + 9mm subject columns, a 13-subject
-        // grade-wide ranking (plus Total/Pts/Grade) fits in one horizontal
-        // page/row.
         horizontalPageBreak: true,
         horizontalPageBreakRepeat: showClassCol ? [0, 1, 2, 3] : [0, 1, 2],
         didParseCell: (dataCell) => {
@@ -355,7 +423,7 @@ export default function AdminRankings() {
           const lastColIdx = tableColumn.length - 1;
           if (dataCell.column.index === lastColIdx) {
             dataCell.cell.styles.fontStyle = "bold";
-            dataCell.cell.styles.textColor = [15, 23, 42];
+            dataCell.cell.styles.textColor = NAVY;
           }
           // Bold the Grade column too (second to last)
           if (dataCell.column.index === lastColIdx - 1) {
@@ -368,48 +436,37 @@ export default function AdminRankings() {
           }
         },
         didDrawPage: () => {
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(6);
-          doc.setTextColor(148, 163, 184);
-          doc.text(
-            `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
-            pageWidth - 8,
-            pageHeight - 4,
-            { align: "right" }
-          );
-          doc.text("Junda High School Shanzu — Academics Office", 8, pageHeight - 4);
+          drawLetterhead(doc, base64Logo, reportTitle, metaLine);
         },
       });
 
-      // --- Signature blocks ---
+      // --- Signature blocks (moves to a new page if there is no room) ---
       let finalY = doc.lastAutoTable.finalY + 12;
-      if (finalY > pageHeight - 26) {
+      if (finalY > pageHeight - 38) {
         doc.addPage();
-        finalY = 20;
+        drawLetterhead(doc, base64Logo, reportTitle, metaLine);
+        finalY = 50;
       }
 
-      doc.setDrawColor(148, 163, 184);
-      doc.setLineWidth(0.2);
+      doc.setDrawColor(...BLACK);
+      doc.setLineWidth(0.25);
 
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(8);
-      doc.setTextColor(15, 23, 42);
-      doc.text("Academic Officer's Signature:", 8, finalY);
-      doc.line(8, finalY + 8, 80, finalY + 8);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(6.5);
-      doc.setTextColor(100, 116, 139);
-      doc.text("Sign & Official Stamp", 8, finalY + 11.5);
+      doc.setFontSize(7.5);
+      doc.setTextColor(...BLACK);
+      doc.text("Academic Officer's Signature:", marginX, finalY);
+      doc.line(marginX, finalY + 8, 82, finalY + 8);
+      doc.text("Principal's Signature:", pageWidth - 82, finalY);
+      doc.line(pageWidth - 82, finalY + 8, pageWidth - marginX, finalY + 8);
 
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(8);
-      doc.setTextColor(15, 23, 42);
-      doc.text("Principal's Signature:", pageWidth - 80, finalY);
-      doc.line(pageWidth - 80, finalY + 8, pageWidth - 8, finalY + 8);
       doc.setFont("helvetica", "normal");
       doc.setFontSize(6.5);
-      doc.setTextColor(100, 116, 139);
-      doc.text("Sign & Official Stamp", pageWidth - 80, finalY + 11.5);
+      doc.setTextColor(100, 100, 100);
+      doc.text("Sign & Official Stamp", marginX, finalY + 12);
+      doc.text("Sign & Official Stamp", pageWidth - 82, finalY + 12);
+
+      // --- Footer on every page ---
+      drawFooters(doc);
 
       // --- Filename ---
       const scopeSlug = (data.grade_level || data.classroom || "ranking")
