@@ -16,10 +16,10 @@ import Breadcrumb from "../components/Breadcrumb";
 
 const CONTACT = {
   developerName: "Steve Ongera",
-  company: "Innovations Softwares",
-  email: "gadafimran411@gmail.com",
+  company: "Masomo Portal",
+  email: "steveongera001@gmail.com",
   phone: "0112 284 093 or 0757 790 687  ",
-  location: "Nairobi, Kenya",
+  location: "Nairobi, Mombasa , Nyeri , Kisumu Kenya",
   hours: "Mon – Fri, 9:00 AM – 6:00 PM (EAT)",
 };
 

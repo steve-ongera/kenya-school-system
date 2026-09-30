@@ -202,7 +202,7 @@ export default function FinanceDetailedReport() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [pdfBusy, setPdfBusy] = useState(null); // null | "download" | "print"
+  const [pdfBusy, setPdfBusy] = useState(null); // null | "download" | "print" | "classes"
   const initialLoad = useRef(true);
   const searchDebounce = useRef(null);
 
@@ -592,6 +592,160 @@ export default function FinanceDetailedReport() {
     return { doc, filename: `Masomo_Student_Balances_${new Date().toISOString().slice(0, 10)}.pdf` };
   };
 
+  // ---- ALL students' balances, grouped by class - every class starts on a new page ----
+  // Independent of the on-screen filters: it always includes every student.
+  const buildBalancesByClassPdf = async () => {
+    const { data: fullRes } = await financeReportsApi.studentBalances({
+      page: 1,
+      page_size: 10000,
+    });
+    const allRows = fullRes?.results || [];
+    if (!allRows.length) return null;
+
+    const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const marginX = 10;
+    const base64Logo = await getImageBase64(logoImage);
+
+    // Year shown after the class name, e.g. "Form 3 Blue 2026"
+    const yearObj = academicYears.find((ay) => ay.is_current) || academicYears.find((ay) => ay.id === selectedYear);
+    const yearLabel = yearObj ? String(yearObj.year) : "";
+
+    // Group students by class
+    const UNASSIGNED = "Unassigned";
+    const groups = new Map();
+    allRows.forEach((r) => {
+      const raw = r.classroom ? String(r.classroom).trim() : "";
+      const key = raw && raw !== "-" ? raw : UNASSIGNED;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(r);
+    });
+
+    // Natural order: Form 1 Blue, Form 1 Red, Form 2 ... (students without a class go last)
+    const classKeys = [...groups.keys()].sort((a, b) => {
+      if (a === UNASSIGNED) return 1;
+      if (b === UNASSIGNED) return -1;
+      return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+    });
+
+    classKeys.forEach((key, idx) => {
+      const groupRows = groups.get(key);
+      const classTitle =
+        key !== UNASSIGNED && yearLabel && !key.includes(yearLabel) ? `${key} ${yearLabel}` : key;
+
+      const totals = groupRows.reduce(
+        (acc, r) => {
+          acc.due += Number(r.total_due || 0);
+          acc.paid += Number(r.total_paid || 0);
+          acc.balance += Number(r.balance || 0);
+          return acc;
+        },
+        { due: 0, paid: 0, balance: 0 }
+      );
+
+      const title = `STUDENT FEE BALANCES - ${classTitle.toUpperCase()}`;
+      const filterLine = `Class: ${classTitle}  |  Students: ${groupRows.length}  |  Total Outstanding: ${formatKES(totals.balance)}`;
+
+      // every class starts on a fresh page
+      if (idx > 0) doc.addPage();
+
+      autoTable(doc, {
+        startY: 42,
+        head: [["Adm No", "Student Name", "Class", "Curriculum", "Total Due", "Total Paid", "Balance", "Status"]],
+        body: groupRows.map((r) => [
+          r.admission_no,
+          r.student_name,
+          r.classroom,
+          r.curriculum_type,
+          num(r.total_due),
+          num(r.total_paid),
+          num(r.balance),
+          STATUS_BADGE[r.status]?.label || r.status,
+        ]),
+        foot: [["", "", "", "Totals", num(totals.due), num(totals.paid), num(totals.balance), ""]],
+        showFoot: "lastPage",
+        theme: "grid",
+        margin: { top: 42, left: marginX, right: marginX, bottom: 20 },
+        styles: {
+          font: "helvetica",
+          fontSize: 7,
+          cellPadding: 1.2,
+          overflow: "linebreak",
+          lineColor: BORDER,
+          lineWidth: 0.15,
+          textColor: BLACK,
+          valign: "middle",
+        },
+        headStyles: {
+          fillColor: NAVY,
+          textColor: [255, 255, 255],
+          fontStyle: "bold",
+          fontSize: 7.2,
+          lineColor: NAVY,
+        },
+        footStyles: {
+          fillColor: GREY,
+          textColor: NAVY,
+          fontStyle: "bold",
+          fontSize: 7.2,
+        },
+        alternateRowStyles: { fillColor: GREY },
+        // widths add up to 190mm
+        columnStyles: {
+          0: { cellWidth: 18, halign: "left" },
+          1: { cellWidth: 42, halign: "left" },
+          2: { cellWidth: 24, halign: "left" },
+          3: { cellWidth: 20, halign: "left" },
+          4: { cellWidth: 22, halign: "right" },
+          5: { cellWidth: 22, halign: "right" },
+          6: { cellWidth: 22, halign: "right" },
+          7: { cellWidth: 20, halign: "center" },
+        },
+        didParseCell: (data) => {
+          if (data.section === "body" && data.column.index === 7) {
+            const val = String(data.cell.raw).toLowerCase();
+            if (val === "paid") data.cell.styles.textColor = [22, 163, 74];
+            else if (val === "partial") data.cell.styles.textColor = [217, 119, 6];
+            else if (val === "unpaid") data.cell.styles.textColor = [220, 38, 38];
+          }
+        },
+        didDrawPage: () => {
+          drawLetterhead(doc, base64Logo, title, filterLine);
+        },
+      });
+
+      // Signature block at the end of each class (moves to a new page if there is no room)
+      let finalY = doc.lastAutoTable.finalY + 12;
+      if (finalY > pageHeight - 38) {
+        doc.addPage();
+        drawLetterhead(doc, base64Logo, title, filterLine);
+        finalY = 50;
+      }
+
+      doc.setDrawColor(...BLACK);
+      doc.setLineWidth(0.25);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7.5);
+      doc.setTextColor(...BLACK);
+      doc.text("Finance Officer's Signature:", marginX, finalY);
+      doc.line(marginX, finalY + 8, pageWidth / 2 - 6, finalY + 8);
+      doc.text("Principal's Signature:", pageWidth / 2 + 6, finalY);
+      doc.line(pageWidth / 2 + 6, finalY + 8, pageWidth - marginX, finalY + 8);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(6.5);
+      doc.setTextColor(100, 100, 100);
+      doc.text("Sign & Official Stamp", marginX, finalY + 12);
+      doc.text("Sign & Official Stamp", pageWidth / 2 + 6, finalY + 12);
+    });
+
+    drawFooters(doc);
+    return {
+      doc,
+      filename: `Masomo_Student_Balances_By_Class_${new Date().toISOString().slice(0, 10)}.pdf`,
+    };
+  };
+
   // ---- Download / Print handler used by the buttons (works for both tabs) ----
   const handleExport = async (mode) => {
     const onBalances = activeTab === "balances";
@@ -607,6 +761,23 @@ export default function FinanceDetailedReport() {
           : "Could not generate the report PDF.";
       if (onBalances) setBalanceError(msg);
       else setError(msg);
+    } finally {
+      setPdfBusy(null);
+    }
+  };
+
+  // ---- Download every student's balance, one class per page ----
+  const handleDownloadByClass = async () => {
+    try {
+      setPdfBusy("classes");
+      const built = await buildBalancesByClassPdf();
+      if (!built) {
+        setBalanceError("There are no student balances to download yet.");
+        return;
+      }
+      built.doc.save(built.filename);
+    } catch (err) {
+      setBalanceError("Could not generate the class-by-class balances PDF.");
     } finally {
       setPdfBusy(null);
     }
@@ -880,7 +1051,28 @@ export default function FinanceDetailedReport() {
               <i className="bi bi-receipt me-2" style={{ color: "var(--blue-700)" }}></i>
               Detailed Report
             </span>
-            <div className="d-flex align-items-center gap-2">
+            <div className="d-flex align-items-center gap-2 flex-wrap">
+              {activeTab === "balances" && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-success d-flex align-items-center gap-1"
+                  onClick={handleDownloadByClass}
+                  disabled={pdfBusy !== null}
+                  title="Download every student's balance, grouped by class (each class starts on a new page)"
+                  style={{ fontSize: "var(--fs-xs)" }}
+                >
+                  {pdfBusy === "classes" ? (
+                    <>
+                      <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                      Preparing...
+                    </>
+                  ) : (
+                    <>
+                      <i className="bi bi-files"></i> All Students by Class
+                    </>
+                  )}
+                </button>
+              )}
               {showExportButtons && (
                 <>
                   <button

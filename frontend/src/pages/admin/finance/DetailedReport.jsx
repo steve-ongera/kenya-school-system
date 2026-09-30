@@ -7,13 +7,180 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import logoImage from "../../../assets/junda_high_logo.png";
 
+
 const formatKES = (n) =>
   `KES ${Number(n || 0).toLocaleString("en-KE", { maximumFractionDigits: 0 })}`;
+
+const num = (n) => Number(n || 0).toLocaleString("en-KE");
 
 const STATUS_BADGE = {
   paid: { className: "badge-success", label: "Paid", icon: "bi-check-circle" },
   partial: { className: "badge-warning", label: "Partial", icon: "bi-hourglass-split" },
   unpaid: { className: "badge-danger", label: "Unpaid", icon: "bi-x-circle" },
+};
+
+// ---- PDF theme (same as the payment receipt) ----
+const SCHOOL_NAME = "JUNDA HIGH SCHOOL";
+const ADDRESS_LINE_1 = "P.O BOX 87073-80100, MOMBASA";
+const ADDRESS_LINE_2 = "Email: jundahighschool83@gmail.com";
+const MOTTO = "STRIVE TO EXCELL";
+const NAVY = [31, 56, 100];
+const GREY = [242, 242, 242];
+const BORDER = [166, 166, 166];
+const BLACK = [0, 0, 0];
+
+// Shared helper: load the logo as a base64 data URL
+const getImageBase64 = (url) => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.src = url;
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = () => resolve(null);
+  });
+};
+
+// Receipt-style letterhead, drawn on every page.
+const drawLetterhead = (doc, base64Logo, title, filterLine) => {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const marginX = 10;
+
+  if (base64Logo) {
+    const props = doc.getImageProperties(base64Logo);
+    const ratio = props.width / props.height || 1;
+    const maxH = 16;
+    const maxW = 30;
+    let drawW = maxH * ratio;
+    let drawH = maxH;
+    if (drawW > maxW) {
+      drawW = maxW;
+      drawH = drawW / ratio;
+    }
+    doc.addImage(base64Logo, "PNG", marginX, 6 + (maxH - drawH) / 2, drawW, drawH);
+  }
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.setTextColor(...NAVY);
+  doc.text(SCHOOL_NAME, pageWidth / 2, 12, { align: "center" });
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7);
+  doc.setTextColor(...BLACK);
+  doc.text(ADDRESS_LINE_1, pageWidth / 2, 17, { align: "center" });
+  doc.text(ADDRESS_LINE_2, pageWidth / 2, 20.5, { align: "center" });
+
+  doc.setFont("helvetica", "italic");
+  doc.setFontSize(7);
+  doc.setTextColor(110, 110, 110);
+  doc.text(MOTTO, pageWidth / 2, 24, { align: "center" });
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6);
+  doc.text(
+    `Generated ${new Date().toLocaleDateString("en-KE", { year: "numeric", month: "long", day: "numeric" })}`,
+    pageWidth - marginX,
+    8.5,
+    { align: "right" }
+  );
+
+  doc.setDrawColor(...NAVY);
+  doc.setLineWidth(0.6);
+  doc.line(marginX, 27, pageWidth - marginX, 27);
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10.5);
+  doc.setTextColor(...NAVY);
+  doc.text(title, pageWidth / 2, 33, { align: "center" });
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.5);
+  doc.setTextColor(...BLACK);
+  doc.text(filterLine, pageWidth / 2, 38, { align: "center", maxWidth: pageWidth - marginX * 2 });
+};
+
+// Footer with copyright + Masomo Portal credit + page numbers, on every page.
+const drawFooters = (doc) => {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const marginX = 10;
+  const year = new Date().getFullYear();
+  const total = doc.internal.getNumberOfPages();
+  const lineY = pageHeight - 14;
+
+  for (let i = 1; i <= total; i++) {
+    doc.setPage(i);
+    doc.setDrawColor(...BLACK);
+    doc.setLineWidth(0.15);
+    doc.line(marginX, lineY, pageWidth - marginX, lineY);
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(6.5);
+    doc.setTextColor(...BLACK);
+    doc.text(`© ${year} Junda High School Shanzu. All rights reserved.`, marginX, lineY + 4);
+
+    doc.setFont("helvetica", "normal");
+    doc.text(`Page ${i} of ${total}`, pageWidth / 2, lineY + 4, { align: "center" });
+
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(6);
+    doc.setTextColor(90, 90, 90);
+    doc.text("Powered by Masomo Portal (www.masomoportal.com)", pageWidth - marginX, lineY + 4, {
+      align: "right",
+    });
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(5.5);
+    doc.text(
+      "This is an official finance report. Duplication is prohibited.",
+      marginX,
+      lineY + 7.5
+    );
+  }
+};
+
+// Print a jsPDF document through a hidden iframe (same PDF as the download).
+const printPdfDoc = (doc) => {
+  const blobUrl = URL.createObjectURL(doc.output("blob"));
+  const iframe = document.createElement("iframe");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = "1px";
+  iframe.style.height = "1px";
+  iframe.style.border = "0";
+  iframe.style.opacity = "0";
+  iframe.style.pointerEvents = "none";
+  iframe.src = blobUrl;
+
+  const cleanup = () => {
+    setTimeout(() => {
+      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      URL.revokeObjectURL(blobUrl);
+    }, 60000);
+  };
+
+  iframe.onload = () => {
+    setTimeout(() => {
+      try {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+      } catch (e) {
+        window.open(blobUrl, "_blank");
+      } finally {
+        cleanup();
+      }
+    }, 300);
+  };
+
+  document.body.appendChild(iframe);
 };
 
 export default function FinanceDetailedReport() {
@@ -36,7 +203,7 @@ export default function FinanceDetailedReport() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(null); // null | "download" | "print" | "classes"
   const initialLoad = useRef(true);
   const searchDebounce = useRef(null);
 
@@ -54,7 +221,6 @@ export default function FinanceDetailedReport() {
   const [balanceResult, setBalanceResult] = useState(null);
   const [balanceLoading, setBalanceLoading] = useState(false);
   const [balanceError, setBalanceError] = useState(null);
-  const [downloadingBalancePdf, setDownloadingBalancePdf] = useState(false);
   const balanceInitialLoad = useRef(true);
   const balanceRangeDebounce = useRef(null);
   const balanceSearchDebounce = useRef(null);
@@ -217,312 +383,259 @@ export default function FinanceDetailedReport() {
   const hasActiveBalanceFilters =
     balanceSearchInput || balanceClassroomFilter || balanceStatusFilter || balanceMinInput || balanceMaxInput;
 
-  // Shared helper: load the Masomo logo as a base64 data URL
-  const getImageBase64 = (url) => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.crossOrigin = "Anonymous";
-      img.src = url;
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0);
-        resolve(canvas.toDataURL("image/png"));
-      };
-      img.onerror = () => resolve(null);
+  // ---------------------------------------------------------------------
+  // PDF BUILDER - one portrait A4 layout used by BOTH tabs, and by BOTH
+  // the download and the print button (so they are always identical).
+  // ---------------------------------------------------------------------
+  const buildListPdf = async ({ title, filterLine, head, body, foot, columnStyles }) => {
+    const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const marginX = 10;
+    const base64Logo = await getImageBase64(logoImage);
+
+    autoTable(doc, {
+      startY: 42,
+      head: [head],
+      body,
+      foot: [foot],
+      showFoot: "lastPage",
+      theme: "grid",
+      margin: { top: 42, left: marginX, right: marginX, bottom: 20 },
+      styles: {
+        font: "helvetica",
+        fontSize: 7,
+        cellPadding: 1.2,
+        overflow: "linebreak",
+        lineColor: BORDER,
+        lineWidth: 0.15,
+        textColor: BLACK,
+        valign: "middle",
+      },
+      headStyles: {
+        fillColor: NAVY,
+        textColor: [255, 255, 255],
+        fontStyle: "bold",
+        fontSize: 7.2,
+        lineColor: NAVY,
+      },
+      footStyles: {
+        fillColor: GREY,
+        textColor: NAVY,
+        fontStyle: "bold",
+        fontSize: 7.2,
+      },
+      alternateRowStyles: { fillColor: GREY },
+      columnStyles,
+      didParseCell: (data) => {
+        if (data.section === "body" && data.column.index === head.length - 1) {
+          const val = String(data.cell.raw).toLowerCase();
+          if (val === "paid") data.cell.styles.textColor = [22, 163, 74];
+          else if (val === "partial") data.cell.styles.textColor = [217, 119, 6];
+          else if (val === "unpaid") data.cell.styles.textColor = [220, 38, 38];
+        }
+      },
+      didDrawPage: () => {
+        drawLetterhead(doc, base64Logo, title, filterLine);
+      },
     });
+
+    // Signature block (moves to a new page if there is no room)
+    let finalY = doc.lastAutoTable.finalY + 12;
+    if (finalY > pageHeight - 38) {
+      doc.addPage();
+      drawLetterhead(doc, base64Logo, title, filterLine);
+      finalY = 50;
+    }
+
+    doc.setDrawColor(...BLACK);
+    doc.setLineWidth(0.25);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7.5);
+    doc.setTextColor(...BLACK);
+    doc.text("Finance Officer's Signature:", marginX, finalY);
+    doc.line(marginX, finalY + 8, pageWidth / 2 - 6, finalY + 8);
+    doc.text("Principal's Signature:", pageWidth / 2 + 6, finalY);
+    doc.line(pageWidth / 2 + 6, finalY + 8, pageWidth - marginX, finalY + 8);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.5);
+    doc.setTextColor(100, 100, 100);
+    doc.text("Sign & Official Stamp", marginX, finalY + 12);
+    doc.text("Sign & Official Stamp", pageWidth / 2 + 6, finalY + 12);
+
+    drawFooters(doc);
+    return doc;
   };
 
-  // Professional landscape PDF export with proper column balance, totals row and signature block
-  const handleDownloadPDF = async () => {
-    try {
-      setDownloadingPdf(true);
-      const { data: fullRes } = await financeReportsApi.detailed({
-        academic_year: selectedYear || undefined,
-        term: termFilter || undefined,
-        classroom: classroomFilter || undefined,
-        status: statusFilter || undefined,
-        search: search || undefined,
-        page: 1,
-        page_size: 10000,
-      });
+  // ---- Invoices report ----
+  const buildInvoicesPdf = async () => {
+    const { data: fullRes } = await financeReportsApi.detailed({
+      academic_year: selectedYear || undefined,
+      term: termFilter || undefined,
+      classroom: classroomFilter || undefined,
+      status: statusFilter || undefined,
+      search: search || undefined,
+      page: 1,
+      page_size: 10000,
+    });
 
-      const allRows = fullRes?.results || [];
-      const totalCount = fullRes?.count ?? allRows.length;
+    const allRows = fullRes?.results || [];
+    const totalCount = fullRes?.count ?? allRows.length;
 
-      const doc = new jsPDF("l", "mm", "a4");
-      const pageWidth = doc.internal.pageSize.getWidth();
-      const pageHeight = doc.internal.pageSize.getHeight();
+    const currentYearObj = academicYears.find((ay) => ay.id === selectedYear);
+    const yearLabel = currentYearObj ? currentYearObj.year : "All Years";
+    const termObj = terms.find((t) => String(t.id) === String(termFilter));
+    const termLabel = termObj ? (termObj.term_number ? `Term ${termObj.term_number}` : `Term ${termObj.id}`) : "All Terms";
+    const classObj = classrooms.find((c) => String(c.id) === String(classroomFilter));
+    const classLabel = classObj ? `${classObj.grade_level_name} ${classObj.stream_name || ""}`.trim() : "All Classes";
+    const statusLabel = statusFilter ? statusFilter.toUpperCase() : "ALL STATUSES";
 
-      const base64Logo = await getImageBase64(logoImage);
+    const totals = allRows.reduce(
+      (acc, inv) => {
+        acc.due += Number(inv.due || 0);
+        acc.paid += Number(inv.paid || 0);
+        acc.balance += Number(inv.balance || 0);
+        return acc;
+      },
+      { due: 0, paid: 0, balance: 0 }
+    );
 
-      const currentYearObj = academicYears.find((ay) => ay.id === selectedYear);
-      const yearLabel = currentYearObj ? currentYearObj.year : "All Years";
-      const termObj = terms.find((t) => String(t.id) === String(termFilter));
-      const termLabel = termObj ? (termObj.term_number ? `Term ${termObj.term_number}` : `Term ${termObj.id}`) : "All Terms";
-      const classObj = classrooms.find((c) => String(c.id) === String(classroomFilter));
-      const classLabel = classObj ? `${classObj.grade_level_name} ${classObj.stream_name || ""}`.trim() : "All Classes";
-      const statusLabel = statusFilter ? statusFilter.toUpperCase() : "ALL STATUSES";
-
-      if (base64Logo) {
-        doc.addImage(base64Logo, "PNG", 12, 10, 12, 12);
-      }
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(14);
-      doc.setTextColor(15, 23, 42);
-      doc.text("Junda High School Shanzu", base64Logo ? 28 : 12, 16);
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
-      doc.setTextColor(71, 85, 105);
-      doc.text("Detailed Finance Report", base64Logo ? 28 : 12, 22);
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(8);
-      doc.setTextColor(100, 116, 139);
-      doc.text(
-        `Generated ${new Date().toLocaleDateString("en-KE", { year: "numeric", month: "long", day: "numeric" })}`,
-        pageWidth - 12,
-        16,
-        { align: "right" }
-      );
-
-      doc.setDrawColor(203, 213, 225);
-      doc.setLineWidth(0.3);
-      doc.line(12, 26, pageWidth - 12, 26);
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
-      doc.setTextColor(51, 65, 85);
-      doc.text(
-        `Year: ${yearLabel}   |   Class: ${classLabel}   |   Term: ${termLabel}   |   Status: ${statusLabel}   |   Records: ${totalCount}`,
-        12,
-        32
-      );
-
-      const tableColumn = ["Adm No", "Student Name", "Class", "Term", "Due (KES)", "Paid (KES)", "Balance (KES)", "Status"];
-      const tableRows = allRows.map((inv) => [
+    const doc = await buildListPdf({
+      title: "DETAILED FINANCE REPORT",
+      filterLine: `Year: ${yearLabel}  |  Class: ${classLabel}  |  Term: ${termLabel}  |  Status: ${statusLabel}  |  Records: ${totalCount}`,
+      head: ["Adm No", "Student Name", "Class", "Term", "Due (KES)", "Paid (KES)", "Balance (KES)", "Status"],
+      body: allRows.map((inv) => [
         inv.admission_no,
         inv.student_name,
         inv.classroom,
         inv.term,
-        Number(inv.due || 0).toLocaleString("en-KE"),
-        Number(inv.paid || 0).toLocaleString("en-KE"),
-        Number(inv.balance || 0).toLocaleString("en-KE"),
+        num(inv.due),
+        num(inv.paid),
+        num(inv.balance),
         STATUS_BADGE[inv.status]?.label || inv.status,
-      ]);
+      ]),
+      foot: ["", "", "", "Totals", num(totals.due), num(totals.paid), num(totals.balance), ""],
+      // widths add up to 190mm (A4 portrait minus 10mm margins)
+      columnStyles: {
+        0: { cellWidth: 18, halign: "left" },
+        1: { cellWidth: 44, halign: "left" },
+        2: { cellWidth: 24, halign: "left" },
+        3: { cellWidth: 14, halign: "center" },
+        4: { cellWidth: 24, halign: "right" },
+        5: { cellWidth: 24, halign: "right" },
+        6: { cellWidth: 24, halign: "right" },
+        7: { cellWidth: 18, halign: "center" },
+      },
+    });
 
-      const totals = allRows.reduce(
-        (acc, inv) => {
-          acc.due += Number(inv.due || 0);
-          acc.paid += Number(inv.paid || 0);
-          acc.balance += Number(inv.balance || 0);
-          return acc;
-        },
-        { due: 0, paid: 0, balance: 0 }
-      );
-
-      autoTable(doc, {
-        startY: 37,
-        head: [tableColumn],
-        body: tableRows,
-        foot: [[
-          "",
-          "",
-          "",
-          "Totals",
-          totals.due.toLocaleString("en-KE"),
-          totals.paid.toLocaleString("en-KE"),
-          totals.balance.toLocaleString("en-KE"),
-          "",
-        ]],
-        theme: "grid",
-        styles: {
-          cellWidth: "wrap",
-          overflow: "ellipsize",
-        },
-        headStyles: {
-          fillColor: [15, 23, 42],
-          textColor: [255, 255, 255],
-          fontStyle: "bold",
-          fontSize: 8.5,
-          cellPadding: 2,
-          halign: "left",
-          overflow: "ellipsize",
-        },
-        footStyles: {
-          fillColor: [241, 245, 249],
-          textColor: [15, 23, 42],
-          fontStyle: "bold",
-          fontSize: 8,
-          cellPadding: 2,
-          overflow: "ellipsize",
-        },
-        bodyStyles: {
-          fontSize: 8,
-          textColor: [51, 65, 85],
-          cellPadding: 1.8,
-          valign: "middle",
-          lineWidth: 0.1,
-          lineColor: [226, 232, 240],
-          overflow: "ellipsize",
-        },
-        alternateRowStyles: { fillColor: [248, 250, 252] },
-        columnStyles: {
-          0: { cellWidth: 30, halign: "left",   overflow: "ellipsize" },
-          1: { cellWidth: 54, halign: "left",   overflow: "ellipsize" },
-          2: { cellWidth: 34, halign: "left",   overflow: "ellipsize" },
-          3: { cellWidth: 24, halign: "center", overflow: "ellipsize" },
-          4: { cellWidth: 30, halign: "right",  overflow: "ellipsize" },
-          5: { cellWidth: 30, halign: "right",  overflow: "ellipsize" },
-          6: { cellWidth: 30, halign: "right",  overflow: "ellipsize" },
-          7: { cellWidth: 24, halign: "center", overflow: "ellipsize" },
-        },
-        margin: { left: 12, right: 12 },
-        didParseCell: (data) => {
-          if (data.section === "body" && data.column.index === 7) {
-            const val = String(data.cell.raw).toLowerCase();
-            if (val === "paid") data.cell.styles.textColor = [22, 163, 74];
-            else if (val === "partial") data.cell.styles.textColor = [217, 119, 6];
-            else if (val === "unpaid") data.cell.styles.textColor = [220, 38, 38];
-          }
-        },
-        didDrawPage: () => {
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(7);
-          doc.setTextColor(148, 163, 184);
-          doc.text(
-            `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
-            pageWidth - 12,
-            pageHeight - 6,
-            { align: "right" }
-          );
-          doc.text("Junda High School Shanzu — Finance Department", 12, pageHeight - 6);
-        },
-      });
-
-      let finalY = doc.lastAutoTable.finalY + 14;
-      if (finalY > pageHeight - 28) {
-        doc.addPage();
-        finalY = 24;
-      }
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(9);
-      doc.setTextColor(15, 23, 42);
-      doc.text("Principal's Signature:", 12, finalY);
-      doc.setDrawColor(148, 163, 184);
-      doc.setLineWidth(0.2);
-      doc.line(12, finalY + 10, 90, finalY + 10);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(7.5);
-      doc.setTextColor(100, 116, 139);
-      doc.text("Sign & Official Stamp", 12, finalY + 14);
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(9);
-      doc.setTextColor(15, 23, 42);
-      doc.text("Finance Officer's Signature:", pageWidth - 90, finalY);
-      doc.line(pageWidth - 90, finalY + 10, pageWidth - 12, finalY + 10);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(7.5);
-      doc.setTextColor(100, 116, 139);
-      doc.text("Sign & Official Stamp", pageWidth - 90, finalY + 14);
-
-      doc.save(`Masomo_Finance_Report_${yearLabel}.pdf`);
-    } catch (err) {
-      setError("Could not generate the finance report PDF.");
-    } finally {
-      setDownloadingPdf(false);
-    }
+    return { doc, filename: `Masomo_Finance_Report_${yearLabel}.pdf` };
   };
 
-  // ---- Download the filtered Student Balances list as a landscape PDF ----
-  // Every cell forced onto a single line (no wrapping) via overflow: "ellipsize"
-  // and per-column widths sized so the real values actually fit.
-  const handleDownloadBalancesPDF = async () => {
-    try {
-      setDownloadingBalancePdf(true);
-      const { data: fullRes } = await financeReportsApi.studentBalances({
-        classroom: balanceClassroomFilter || undefined,
-        status: balanceStatusFilter || undefined,
-        min_balance: balanceMin !== "" ? balanceMin : undefined,
-        max_balance: balanceMax !== "" ? balanceMax : undefined,
-        search: balanceSearch || undefined,
-        page: 1,
-        page_size: 10000,
-      });
+  // ---- Student balances report ----
+  const buildBalancesPdf = async () => {
+    const { data: fullRes } = await financeReportsApi.studentBalances({
+      classroom: balanceClassroomFilter || undefined,
+      status: balanceStatusFilter || undefined,
+      min_balance: balanceMin !== "" ? balanceMin : undefined,
+      max_balance: balanceMax !== "" ? balanceMax : undefined,
+      search: balanceSearch || undefined,
+      page: 1,
+      page_size: 10000,
+    });
 
-      const allRows = fullRes?.results || [];
-      const totalCount = fullRes?.count ?? allRows.length;
+    const allRows = fullRes?.results || [];
+    const totalCount = fullRes?.count ?? allRows.length;
 
-      const doc = new jsPDF("l", "mm", "a4");
-      const pageWidth = doc.internal.pageSize.getWidth();
-      const pageHeight = doc.internal.pageSize.getHeight();
+    const classObj = classrooms.find((c) => String(c.id) === String(balanceClassroomFilter));
+    const classLabel = classObj ? `${classObj.grade_level_name} ${classObj.stream_name || ""}`.trim() : "All Classes";
+    const statusLabel = balanceStatusFilter ? balanceStatusFilter.toUpperCase() : "ALL STATUSES";
+    const rangeLabel =
+      balanceMin || balanceMax ? `KES ${balanceMin || "0"} - ${balanceMax || "∞"}` : "No range filter";
 
-      const base64Logo = await getImageBase64(logoImage);
+    const totals = allRows.reduce(
+      (acc, r) => {
+        acc.due += Number(r.total_due || 0);
+        acc.paid += Number(r.total_paid || 0);
+        acc.balance += Number(r.balance || 0);
+        return acc;
+      },
+      { due: 0, paid: 0, balance: 0 }
+    );
 
-      const classObj = classrooms.find((c) => String(c.id) === String(balanceClassroomFilter));
-      const classLabel = classObj ? `${classObj.grade_level_name} ${classObj.stream_name || ""}`.trim() : "All Classes";
-      const statusLabel = balanceStatusFilter ? balanceStatusFilter.toUpperCase() : "ALL STATUSES";
-      const rangeLabel =
-        balanceMin || balanceMax
-          ? `KES ${balanceMin || "0"} - ${balanceMax || "∞"}`
-          : "No range filter";
-
-      if (base64Logo) {
-        doc.addImage(base64Logo, "PNG", 12, 10, 12, 12);
-      }
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(14);
-      doc.setTextColor(15, 23, 42);
-      doc.text("Junda High School Shanzu", base64Logo ? 28 : 12, 16);
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
-      doc.setTextColor(71, 85, 105);
-      doc.text("Student Fee Balances — Master Ledger", base64Logo ? 28 : 12, 22);
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(8);
-      doc.setTextColor(100, 116, 139);
-      doc.text(
-        `Generated ${new Date().toLocaleDateString("en-KE", { year: "numeric", month: "long", day: "numeric" })}`,
-        pageWidth - 12,
-        16,
-        { align: "right" }
-      );
-
-      doc.setDrawColor(203, 213, 225);
-      doc.setLineWidth(0.3);
-      doc.line(12, 26, pageWidth - 12, 26);
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
-      doc.setTextColor(51, 65, 85);
-      doc.text(
-        `Class: ${classLabel}   |   Status: ${statusLabel}   |   Balance Range: ${rangeLabel}   |   Students: ${totalCount}`,
-        12,
-        32
-      );
-
-      const tableColumn = ["Adm No", "Student Name", "Class", "Curriculum", "Total Due", "Total Paid", "Balance", "Status"];
-      const tableRows = allRows.map((r) => [
+    const doc = await buildListPdf({
+      title: "STUDENT FEE BALANCES - MASTER LEDGER",
+      filterLine: `Class: ${classLabel}  |  Status: ${statusLabel}  |  Balance Range: ${rangeLabel}  |  Students: ${totalCount}`,
+      head: ["Adm No", "Student Name", "Class", "Curriculum", "Total Due", "Total Paid", "Balance", "Status"],
+      body: allRows.map((r) => [
         r.admission_no,
         r.student_name,
         r.classroom,
         r.curriculum_type,
-        Number(r.total_due || 0).toLocaleString("en-KE"),
-        Number(r.total_paid || 0).toLocaleString("en-KE"),
-        Number(r.balance || 0).toLocaleString("en-KE"),
+        num(r.total_due),
+        num(r.total_paid),
+        num(r.balance),
         STATUS_BADGE[r.status]?.label || r.status,
-      ]);
+      ]),
+      foot: ["", "", "", "Totals", num(totals.due), num(totals.paid), num(totals.balance), ""],
+      // widths add up to 190mm
+      columnStyles: {
+        0: { cellWidth: 18, halign: "left" },
+        1: { cellWidth: 42, halign: "left" },
+        2: { cellWidth: 24, halign: "left" },
+        3: { cellWidth: 20, halign: "left" },
+        4: { cellWidth: 22, halign: "right" },
+        5: { cellWidth: 22, halign: "right" },
+        6: { cellWidth: 22, halign: "right" },
+        7: { cellWidth: 20, halign: "center" },
+      },
+    });
 
-      const totals = allRows.reduce(
+    return { doc, filename: `Masomo_Student_Balances_${new Date().toISOString().slice(0, 10)}.pdf` };
+  };
+
+  // ---- ALL students' balances, grouped by class - every class starts on a new page ----
+  // Independent of the on-screen filters: it always includes every student.
+  const buildBalancesByClassPdf = async () => {
+    const { data: fullRes } = await financeReportsApi.studentBalances({
+      page: 1,
+      page_size: 10000,
+    });
+    const allRows = fullRes?.results || [];
+    if (!allRows.length) return null;
+
+    const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const marginX = 10;
+    const base64Logo = await getImageBase64(logoImage);
+
+    // Year shown after the class name, e.g. "Form 3 Blue 2026"
+    const yearObj = academicYears.find((ay) => ay.is_current) || academicYears.find((ay) => ay.id === selectedYear);
+    const yearLabel = yearObj ? String(yearObj.year) : "";
+
+    // Group students by class
+    const UNASSIGNED = "Unassigned";
+    const groups = new Map();
+    allRows.forEach((r) => {
+      const raw = r.classroom ? String(r.classroom).trim() : "";
+      const key = raw && raw !== "-" ? raw : UNASSIGNED;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(r);
+    });
+
+    // Natural order: Form 1 Blue, Form 1 Red, Form 2 ... (students without a class go last)
+    const classKeys = [...groups.keys()].sort((a, b) => {
+      if (a === UNASSIGNED) return 1;
+      if (b === UNASSIGNED) return -1;
+      return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+    });
+
+    classKeys.forEach((key, idx) => {
+      const groupRows = groups.get(key);
+      const classTitle =
+        key !== UNASSIGNED && yearLabel && !key.includes(yearLabel) ? `${key} ${yearLabel}` : key;
+
+      const totals = groupRows.reduce(
         (acc, r) => {
           acc.due += Number(r.total_due || 0);
           acc.paid += Number(r.total_paid || 0);
@@ -532,63 +645,64 @@ export default function FinanceDetailedReport() {
         { due: 0, paid: 0, balance: 0 }
       );
 
+      const title = `STUDENT FEE BALANCES - ${classTitle.toUpperCase()}`;
+      const filterLine = `Class: ${classTitle}  |  Students: ${groupRows.length}  |  Total Outstanding: ${formatKES(totals.balance)}`;
+
+      // every class starts on a fresh page
+      if (idx > 0) doc.addPage();
+
       autoTable(doc, {
-        startY: 37,
-        head: [tableColumn],
-        body: tableRows,
-        foot: [[
-          "",
-          "",
-          "",
-          "Totals",
-          totals.due.toLocaleString("en-KE"),
-          totals.paid.toLocaleString("en-KE"),
-          totals.balance.toLocaleString("en-KE"),
-          "",
-        ]],
+        startY: 42,
+        head: [["Adm No", "Student Name", "Class", "Curriculum", "Total Due", "Total Paid", "Balance", "Status"]],
+        body: groupRows.map((r) => [
+          r.admission_no,
+          r.student_name,
+          r.classroom,
+          r.curriculum_type,
+          num(r.total_due),
+          num(r.total_paid),
+          num(r.balance),
+          STATUS_BADGE[r.status]?.label || r.status,
+        ]),
+        foot: [["", "", "", "Totals", num(totals.due), num(totals.paid), num(totals.balance), ""]],
+        showFoot: "lastPage",
         theme: "grid",
+        margin: { top: 42, left: marginX, right: marginX, bottom: 20 },
         styles: {
-          cellWidth: "wrap",
-          overflow: "ellipsize",
+          font: "helvetica",
+          fontSize: 7,
+          cellPadding: 1.2,
+          overflow: "linebreak",
+          lineColor: BORDER,
+          lineWidth: 0.15,
+          textColor: BLACK,
+          valign: "middle",
         },
         headStyles: {
-          fillColor: [15, 23, 42],
+          fillColor: NAVY,
           textColor: [255, 255, 255],
           fontStyle: "bold",
-          fontSize: 8.5,
-          cellPadding: 2,
-          halign: "left",
-          overflow: "ellipsize",
+          fontSize: 7.2,
+          lineColor: NAVY,
         },
         footStyles: {
-          fillColor: [241, 245, 249],
-          textColor: [15, 23, 42],
+          fillColor: GREY,
+          textColor: NAVY,
           fontStyle: "bold",
-          fontSize: 8,
-          cellPadding: 2,
-          overflow: "ellipsize",
+          fontSize: 7.2,
         },
-        bodyStyles: {
-          fontSize: 8,
-          textColor: [51, 65, 85],
-          cellPadding: 1.8,
-          valign: "middle",
-          lineWidth: 0.1,
-          lineColor: [226, 232, 240],
-          overflow: "ellipsize",
-        },
-        alternateRowStyles: { fillColor: [248, 250, 252] },
+        alternateRowStyles: { fillColor: GREY },
+        // widths add up to 190mm
         columnStyles: {
-          0: { cellWidth: 26, halign: "left",   overflow: "ellipsize" },
-          1: { cellWidth: 60, halign: "left",   overflow: "ellipsize" },
-          2: { cellWidth: 40, halign: "left",   overflow: "ellipsize" },
-          3: { cellWidth: 40, halign: "left",   overflow: "ellipsize" },
-          4: { cellWidth: 28, halign: "right",  overflow: "ellipsize" },
-          5: { cellWidth: 28, halign: "right",  overflow: "ellipsize" },
-          6: { cellWidth: 28, halign: "right",  overflow: "ellipsize" },
-          7: { cellWidth: 24, halign: "center", overflow: "ellipsize" },
+          0: { cellWidth: 18, halign: "left" },
+          1: { cellWidth: 42, halign: "left" },
+          2: { cellWidth: 24, halign: "left" },
+          3: { cellWidth: 20, halign: "left" },
+          4: { cellWidth: 22, halign: "right" },
+          5: { cellWidth: 22, halign: "right" },
+          6: { cellWidth: 22, halign: "right" },
+          7: { cellWidth: 20, halign: "center" },
         },
-        margin: { left: 12, right: 12 },
         didParseCell: (data) => {
           if (data.section === "body" && data.column.index === 7) {
             const val = String(data.cell.raw).toLowerCase();
@@ -598,31 +712,80 @@ export default function FinanceDetailedReport() {
           }
         },
         didDrawPage: () => {
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(7);
-          doc.setTextColor(148, 163, 184);
-          doc.text(
-            `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
-            pageWidth - 12,
-            pageHeight - 6,
-            { align: "right" }
-          );
-          doc.text("Junda High School Shanzu — Finance Department", 12, pageHeight - 6);
+          drawLetterhead(doc, base64Logo, title, filterLine);
         },
       });
 
-      doc.save(`Masomo_Student_Balances_${new Date().toISOString().slice(0, 10)}.pdf`);
+      // Signature block at the end of each class (moves to a new page if there is no room)
+      let finalY = doc.lastAutoTable.finalY + 12;
+      if (finalY > pageHeight - 38) {
+        doc.addPage();
+        drawLetterhead(doc, base64Logo, title, filterLine);
+        finalY = 50;
+      }
+
+      doc.setDrawColor(...BLACK);
+      doc.setLineWidth(0.25);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7.5);
+      doc.setTextColor(...BLACK);
+      doc.text("Finance Officer's Signature:", marginX, finalY);
+      doc.line(marginX, finalY + 8, pageWidth / 2 - 6, finalY + 8);
+      doc.text("Principal's Signature:", pageWidth / 2 + 6, finalY);
+      doc.line(pageWidth / 2 + 6, finalY + 8, pageWidth - marginX, finalY + 8);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(6.5);
+      doc.setTextColor(100, 100, 100);
+      doc.text("Sign & Official Stamp", marginX, finalY + 12);
+      doc.text("Sign & Official Stamp", pageWidth / 2 + 6, finalY + 12);
+    });
+
+    drawFooters(doc);
+    return {
+      doc,
+      filename: `Masomo_Student_Balances_By_Class_${new Date().toISOString().slice(0, 10)}.pdf`,
+    };
+  };
+
+  // ---- Download / Print handler used by the buttons (works for both tabs) ----
+  const handleExport = async (mode) => {
+    const onBalances = activeTab === "balances";
+    try {
+      setPdfBusy(mode);
+      const { doc, filename } = onBalances ? await buildBalancesPdf() : await buildInvoicesPdf();
+      if (mode === "print") printPdfDoc(doc);
+      else doc.save(filename);
     } catch (err) {
-      setBalanceError("Could not generate the balances PDF.");
+      const msg =
+        mode === "print"
+          ? "Could not prepare the report for printing."
+          : "Could not generate the report PDF.";
+      if (onBalances) setBalanceError(msg);
+      else setError(msg);
     } finally {
-      setDownloadingBalancePdf(false);
+      setPdfBusy(null);
+    }
+  };
+
+  // ---- Download every student's balance, one class per page ----
+  const handleDownloadByClass = async () => {
+    try {
+      setPdfBusy("classes");
+      const built = await buildBalancesByClassPdf();
+      if (!built) {
+        setBalanceError("There are no student balances to download yet.");
+        return;
+      }
+      built.doc.save(built.filename);
+    } catch (err) {
+      setBalanceError("Could not generate the class-by-class balances PDF.");
+    } finally {
+      setPdfBusy(null);
     }
   };
 
   // ---- Print a single student's balance statement ----
-  // Renders into a hidden iframe so the printed page mirrors the
-  // downloaded PDFs: logo + school header, bordered info table,
-  // and three signature/stamp blocks (Finance, Parent, Principal).
+  // Same letterhead + footer as the PDFs.
   const handlePrintStudentBalance = async (student) => {
     const badge = STATUS_BADGE[student.status] || STATUS_BADGE.unpaid;
     const generatedOn = new Date().toLocaleDateString("en-KE", {
@@ -630,11 +793,12 @@ export default function FinanceDetailedReport() {
       month: "long",
       day: "numeric",
     });
+    const year = new Date().getFullYear();
 
     const base64Logo = await getImageBase64(logoImage);
     const logoTag = base64Logo
       ? `<img src="${base64Logo}" alt="Junda High School Shanzu" class="logo" />`
-      : "";
+      : `<div class="logo"></div>`;
 
     const statusClass =
       student.status === "paid"
@@ -651,98 +815,88 @@ export default function FinanceDetailedReport() {
           <style>
             * { box-sizing: border-box; font-family: Helvetica, Arial, sans-serif; }
             @page { size: A4 portrait; margin: 12mm; }
-            html, body { margin: 0; padding: 0; color: #0f172a; background: #fff; }
-            body { padding: 24px 28px; }
+            html, body { margin: 0; padding: 0; color: #000; background: #fff; }
+            body { padding: 16px 20px; }
 
             .header {
               display: flex;
-              justify-content: space-between;
               align-items: flex-start;
-              padding-bottom: 10px;
-              border-bottom: 2px solid #cbd5e1;
+              justify-content: space-between;
+              padding-bottom: 8px;
+              border-bottom: 2px solid #1f3864;
             }
-            .header-left { display: flex; align-items: center; gap: 12px; }
-            .logo { width: 46px; height: 46px; object-fit: contain; }
-            .school-name { font-size: 18px; font-weight: bold; margin: 0; color: #0f172a; }
-            .subtitle { font-size: 12px; color: #475569; margin: 2px 0 0; }
-            .meta { font-size: 10px; color: #64748b; text-align: right; line-height: 1.5; }
+            .logo { width: 60px; height: 60px; object-fit: contain; }
+            .header-center { flex: 1; text-align: center; }
+            .school-name { font-size: 22px; font-weight: bold; margin: 0; color: #1f3864; }
+            .addr { font-size: 10px; margin: 3px 0 0; color: #000; }
+            .motto { font-size: 10px; margin: 3px 0 0; color: #6e6e6e; font-style: italic; }
+            .meta { width: 90px; font-size: 9px; color: #6e6e6e; text-align: right; }
 
-            .title-block { margin: 20px 0 14px; }
+            .title-block { margin: 18px 0 12px; text-align: center; }
             .title-block h2 {
               font-size: 14px;
               font-weight: bold;
-              color: #0f172a;
+              color: #1f3864;
               margin: 0;
               text-transform: uppercase;
               letter-spacing: 0.5px;
             }
-            .title-block p { margin: 3px 0 0; font-size: 11px; color: #64748b; }
+            .title-block p { margin: 3px 0 0; font-size: 10.5px; color: #6e6e6e; }
 
             table.info { width: 100%; border-collapse: collapse; margin-top: 6px; }
             table.info td {
-              padding: 9px 12px;
-              border: 1px solid #e2e8f0;
+              padding: 8px 12px;
+              border: 1px solid #a6a6a6;
               font-size: 12px;
               text-align: left;
-              vertical-align: middle;
             }
             table.info th {
-              padding: 9px 12px;
-              border: 1px solid #e2e8f0;
+              padding: 8px 12px;
+              border: 1px solid #a6a6a6;
               font-size: 12px;
               text-align: left;
-              background: #f1f5f9;
-              color: #334155;
+              background: #f2f2f2;
               width: 42%;
-              font-weight: 600;
+              font-weight: 700;
             }
-            .balance-row th,
-            .balance-row td { font-size: 14px; font-weight: bold; background: #f8fafc; }
+            .balance-row th, .balance-row td { font-size: 14px; font-weight: bold; }
             .status-paid { color: #16a34a; font-weight: 700; }
             .status-partial { color: #d97706; font-weight: 700; }
             .status-unpaid { color: #dc2626; font-weight: 700; }
 
-            .sign-block {
-              display: flex;
-              justify-content: space-between;
-              gap: 16px;
-              margin-top: 60px;
-            }
+            .sign-block { display: flex; justify-content: space-between; gap: 16px; margin-top: 60px; }
             .sign-line {
               flex: 1;
-              border-top: 1px solid #94a3b8;
+              border-top: 1px solid #000;
               padding-top: 6px;
               font-size: 10.5px;
-              color: #64748b;
+              color: #6e6e6e;
               text-align: center;
             }
-            .sign-role { font-weight: 700; color: #334155; font-size: 11px; }
-            .sign-note { font-size: 9.5px; color: #94a3b8; margin-top: 2px; }
+            .sign-role { font-weight: 700; color: #000; font-size: 11px; }
 
             .footer {
               margin-top: 34px;
-              padding-top: 8px;
-              border-top: 1px solid #e2e8f0;
+              padding-top: 6px;
+              border-top: 1px solid #000;
               font-size: 9px;
-              color: #94a3b8;
-              display: flex;
-              justify-content: space-between;
+              color: #000;
             }
+            .footer-row { display: flex; justify-content: space-between; }
+            .footer-row .powered { font-style: italic; color: #5a5a5a; }
+            .footer .note { margin-top: 3px; font-size: 8px; color: #5a5a5a; }
           </style>
         </head>
         <body>
           <div class="header">
-            <div class="header-left">
-              ${logoTag}
-              <div>
-                <p class="school-name">Junda High School Shanzu</p>
-                <p class="subtitle">Student Fee Balance Statement</p>
-              </div>
+            ${logoTag}
+            <div class="header-center">
+              <p class="school-name">${SCHOOL_NAME}</p>
+              <p class="addr">${ADDRESS_LINE_1}</p>
+              <p class="addr">${ADDRESS_LINE_2}</p>
+              <p class="motto">${MOTTO}</p>
             </div>
-            <div class="meta">
-              Generated ${generatedOn}<br />
-              Ref: ${student.admission_no}
-            </div>
+            <div class="meta">Generated<br />${generatedOn}</div>
           </div>
 
           <div class="title-block">
@@ -777,15 +931,16 @@ export default function FinanceDetailedReport() {
           </div>
 
           <div class="footer">
-            <span>Junda High School Shanzu — Finance Department</span>
-            <span>Official fee balance statement</span>
+            <div class="footer-row">
+              <strong>© ${year} Junda High School Shanzu. All rights reserved.</strong>
+              <span class="powered">Powered by Masomo Portal (www.masomoportal.com)</span>
+            </div>
+            <div class="note">This is an official fee balance statement. Duplication is prohibited.</div>
           </div>
         </body>
       </html>
     `;
 
-    // Render into a hidden iframe so we don't disturb the current page,
-    // then trigger the browser's print dialog (user can Save as PDF).
     const iframe = document.createElement("iframe");
     iframe.style.position = "fixed";
     iframe.style.right = "0";
@@ -818,13 +973,16 @@ export default function FinanceDetailedReport() {
       }
     };
 
-    // Give the iframe a moment to lay out (and load the logo image).
     if (iframe.contentWindow.document.readyState === "complete") {
-      setTimeout(triggerPrint, 120);
+      setTimeout(triggerPrint, 150);
     } else {
-      iframe.onload = () => setTimeout(triggerPrint, 120);
+      iframe.onload = () => setTimeout(triggerPrint, 150);
     }
   };
+
+  const showExportButtons =
+    (activeTab === "invoices" && count > 0 && !loading) ||
+    (activeTab === "balances" && balanceCount > 0 && !balanceLoading);
 
   return (
     <div>
@@ -894,46 +1052,67 @@ export default function FinanceDetailedReport() {
               <i className="bi bi-receipt me-2" style={{ color: "var(--blue-700)" }}></i>
               Detailed Report
             </span>
-            <div className="d-flex align-items-center gap-2">
-              {activeTab === "invoices" && count > 0 && !loading && (
+            <div className="d-flex align-items-center gap-2 flex-wrap">
+              {activeTab === "balances" && (
                 <button
                   type="button"
-                  className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1"
-                  onClick={handleDownloadPDF}
-                  disabled={downloadingPdf}
+                  className="btn btn-sm btn-outline-success d-flex align-items-center gap-1"
+                  onClick={handleDownloadByClass}
+                  disabled={pdfBusy !== null}
+                  title="Download every student's balance, grouped by class (each class starts on a new page)"
                   style={{ fontSize: "var(--fs-xs)" }}
                 >
-                  {downloadingPdf ? (
+                  {pdfBusy === "classes" ? (
                     <>
                       <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                      Generating PDF...
+                      Preparing...
                     </>
                   ) : (
                     <>
-                      <i className="bi bi-file-earmark-pdf"></i> Download PDF Report
+                      <i className="bi bi-files"></i> All Students by Class
                     </>
                   )}
                 </button>
               )}
-              {activeTab === "balances" && balanceCount > 0 && !balanceLoading && (
-                <button
-                  type="button"
-                  className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1"
-                  onClick={handleDownloadBalancesPDF}
-                  disabled={downloadingBalancePdf}
-                  style={{ fontSize: "var(--fs-xs)" }}
-                >
-                  {downloadingBalancePdf ? (
-                    <>
-                      <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                      Generating PDF...
-                    </>
-                  ) : (
-                    <>
-                      <i className="bi bi-file-earmark-pdf"></i> Download Filtered List
-                    </>
-                  )}
-                </button>
+              {showExportButtons && (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1"
+                    onClick={() => handleExport("print")}
+                    disabled={pdfBusy !== null}
+                    style={{ fontSize: "var(--fs-xs)" }}
+                  >
+                    {pdfBusy === "print" ? (
+                      <>
+                        <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        Preparing...
+                      </>
+                    ) : (
+                      <>
+                        <i className="bi bi-printer"></i> Print
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1"
+                    onClick={() => handleExport("download")}
+                    disabled={pdfBusy !== null}
+                    style={{ fontSize: "var(--fs-xs)" }}
+                  >
+                    {pdfBusy === "download" ? (
+                      <>
+                        <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        Generating PDF...
+                      </>
+                    ) : (
+                      <>
+                        <i className="bi bi-file-earmark-pdf"></i> Download PDF
+                      </>
+                    )}
+                  </button>
+                </>
               )}
             </div>
           </div>

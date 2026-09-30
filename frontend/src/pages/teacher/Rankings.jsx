@@ -68,7 +68,7 @@ const SUBJECT_ABBREVIATIONS = {
 // Edit these to match the real school's details - shown centered under the
 // school name in the PDF header.
 const SCHOOL_CONTACT = {
-  poBox: "P.O. Box 1234-00100, Nairobi, Kenya",
+  poBox: "P.O. Box 1234-00100, Nairobi, Mombasa , Nyeri , Kisumu Kenya",
   phone: "+254 712 345 678",
   email: "info@masomoschool.ac.ke",
 };

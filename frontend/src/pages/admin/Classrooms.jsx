@@ -452,6 +452,9 @@ export default function AdminClassrooms() {
   };
 
   // ---- Download the specific classroom's roster as a landscape PDF ----
+  // Header + footer use the same look as the report card: logo left, navy
+  // school name / address / motto centred, navy rule, navy title, a bordered
+  // info table, and a footer with copyright, page numbers and Masomo credit.
   const handleDownloadRosterPdf = async () => {
     if (!viewClassroom || !viewStudents.length) return;
     try {
@@ -460,6 +463,13 @@ export default function AdminClassrooms() {
       const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
+      const M = 12; // page margin
+      const cw = pageWidth - M * 2; // content width
+      const navy = [31, 56, 100];
+      const grey = [242, 242, 242];
+      const border = [166, 166, 166];
+      const black = [0, 0, 0];
+      const footerLineY = pageHeight - 14; // thin line above the footer text
 
       const base64Logo = await getImageBase64(logoImage);
 
@@ -467,52 +477,101 @@ export default function AdminClassrooms() {
         year: "numeric", month: "long", day: "numeric",
       });
 
-      // --- Header: logo (natural width, not squeezed) + school name + report title + generated date ---
-      const { w: logoW } = placeLogo(doc, base64Logo, 12, 10, 14, 30);
-      const textX = base64Logo ? 12 + logoW + 4 : 12;
+      // ---- Header: logo (left), school details (centre), generated date (right) ----
+      placeLogo(doc, base64Logo, M, 9, 21, 34);
 
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(14);
-      doc.setTextColor(15, 23, 42);
-      doc.text("Junda High School Shanzu", textX, 16);
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
-      doc.setTextColor(71, 85, 105);
-      doc.text(
-        viewClassroom.is_promoted ? "Class Student Roster (Historical)" : "Class Student Roster",
-        textX,
-        22
-      );
+      doc.setFontSize(18);
+      doc.setTextColor(...navy);
+      doc.text(SCHOOL_NAME, pageWidth / 2, 17, { align: "center" });
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(8);
-      doc.setTextColor(100, 116, 139);
-      doc.text(`Generated ${generatedOn}`, pageWidth - 12, 16, { align: "right" });
+      doc.setTextColor(...black);
+      doc.text(SCHOOL_ADDRESS, pageWidth / 2, 23, { align: "center" });
 
-      doc.setDrawColor(203, 213, 225);
-      doc.setLineWidth(0.3);
-      doc.line(12, 26, pageWidth - 12, 26);
-
-      // --- Class meta line ---
-      const metaParts = [
-        `Grade: ${viewClassroom.grade_level_name}`,
-        `Stream: ${viewClassroom.stream_name}`,
-        `Year: ${viewClassroom.academic_year_year}${viewClassroom.academic_year_is_current ? " (current)" : ""}`,
-        `Class Teacher: ${viewClassroom.class_teacher_name || "Unassigned"}`,
-        `Students: ${viewStudents.length}`,
-      ];
-      if (viewClassroom.is_promoted) {
-        metaParts.push(
-          `Promoted${viewClassroom.promoted_to_label ? ` to ${viewClassroom.promoted_to_label}` : ""}`
-        );
-      }
-      const metaLine = metaParts.join("   |   ");
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(7.5);
+      doc.setTextColor(110, 110, 110);
+      doc.text(SCHOOL_MOTTO, pageWidth / 2, 27.5, { align: "center" });
 
       doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
-      doc.setTextColor(51, 65, 85);
-      doc.text(metaLine, 12, 32);
+      doc.setFontSize(7);
+      doc.setTextColor(110, 110, 110);
+      doc.text(`Generated ${generatedOn}`, pageWidth - M, 12, { align: "right" });
+
+      doc.setDrawColor(...navy);
+      doc.setLineWidth(0.6);
+      doc.line(M, 34, pageWidth - M, 34);
+
+      // ---- Title ----
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10.5);
+      doc.setTextColor(...navy);
+      doc.text(
+        viewClassroom.is_promoted ? "CLASS STUDENT ROSTER (HISTORICAL)" : "CLASS STUDENT ROSTER",
+        pageWidth / 2,
+        41,
+        { align: "center" }
+      );
+
+      // small helper: one bordered cell with (auto-shrinking) text
+      const drawCell = (x, y, w, h, text, { bold = false, fill = false, align = "left", size = 8.5 } = {}) => {
+        doc.setDrawColor(...border);
+        doc.setLineWidth(0.2);
+        if (fill) {
+          doc.setFillColor(...grey);
+          doc.rect(x, y, w, h, "FD");
+        } else {
+          doc.rect(x, y, w, h, "S");
+        }
+        const str = String(text ?? "-");
+        doc.setFont("helvetica", bold ? "bold" : "normal");
+        doc.setTextColor(...black);
+        let fs = size;
+        doc.setFontSize(fs);
+        while (fs > 5.5 && doc.getTextWidth(str) > w - 4) {
+          fs -= 0.5;
+          doc.setFontSize(fs);
+        }
+        const tx = align === "center" ? x + w / 2 : x + 2;
+        doc.text(str, tx, y + h / 2, { align, baseline: "middle" });
+      };
+
+      // ---- Class info table (3 label/value pairs per row) ----
+      const rowH = 7.5;
+      const labelW = 32;
+      const valW = (cw - labelW * 3) / 3;
+      const statusText = viewClassroom.is_promoted
+        ? `Promoted${viewClassroom.promoted_to_label ? ` to ${viewClassroom.promoted_to_label}` : ""}`
+        : viewClassroom.academic_year_is_current
+        ? "Current year"
+        : "Past/Future year";
+
+      let infoY = 46;
+      const infoRow = (pairs) => {
+        let x = M;
+        pairs.forEach(([label, value]) => {
+          drawCell(x, infoY, labelW, rowH, label, { bold: true, fill: true });
+          x += labelW;
+          drawCell(x, infoY, valW, rowH, value);
+          x += valW;
+        });
+        infoY += rowH;
+      };
+      infoRow([
+        ["Grade", viewClassroom.grade_level_name],
+        ["Stream", viewClassroom.stream_name],
+        [
+          "Academic Year",
+          `${viewClassroom.academic_year_year}${viewClassroom.academic_year_is_current ? " (current)" : ""}`,
+        ],
+      ]);
+      infoRow([
+        ["Class Teacher", viewClassroom.class_teacher_name || "Unassigned"],
+        ["Students", String(viewStudents.length)],
+        ["Status", statusText],
+      ]);
 
       // --- Roster table ---
       const tableColumn = [
@@ -537,7 +596,7 @@ export default function AdminClassrooms() {
       });
 
       autoTable(doc, {
-        startY: 37,
+        startY: infoY + 5,
         head: [tableColumn],
         body: tableRows,
         theme: "grid",
@@ -546,13 +605,14 @@ export default function AdminClassrooms() {
           overflow: "ellipsize",
         },
         headStyles: {
-          fillColor: [15, 23, 42],
+          fillColor: navy,
           textColor: [255, 255, 255],
           fontStyle: "bold",
           fontSize: 8.5,
           cellPadding: 2,
           halign: "left",
           overflow: "ellipsize",
+          lineColor: navy,
         },
         bodyStyles: {
           fontSize: 8,
@@ -563,7 +623,7 @@ export default function AdminClassrooms() {
           lineColor: [226, 232, 240],
           overflow: "ellipsize",
         },
-        alternateRowStyles: { fillColor: [248, 250, 252] },
+        alternateRowStyles: { fillColor: grey },
         columnStyles: {
           0: { cellWidth: 24, halign: "left",   overflow: "ellipsize" }, // Adm No
           1: { cellWidth: 42, halign: "left",   overflow: "ellipsize" }, // Full Name
@@ -576,52 +636,78 @@ export default function AdminClassrooms() {
           8: { cellWidth: 24, halign: "left",   overflow: "ellipsize" }, // Relationship
           9: { cellWidth: 28, halign: "left",   overflow: "ellipsize" }, // Guardian Phone
         },
-        margin: { left: 12, right: 12 },
-        didDrawPage: () => {
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(7);
-          doc.setTextColor(148, 163, 184);
-          doc.text(
-            `Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${doc.internal.getNumberOfPages()}`,
-            pageWidth - 12,
-            pageHeight - 6,
-            { align: "right" }
-          );
-          doc.text("Junda High School Shanzu — Academics Office", 12, pageHeight - 6);
-        },
+        // bottom margin keeps table rows clear of the footer on every page
+        margin: { top: 14, left: M, right: M, bottom: 22 },
       });
 
       // --- Signature / stamp blocks: Class Teacher + Principal ---
       let finalY = doc.lastAutoTable.finalY + 14;
-      if (finalY > pageHeight - 28) {
+      if (finalY > pageHeight - 36) {
         doc.addPage();
         finalY = 24;
       }
 
-      doc.setDrawColor(148, 163, 184);
-      doc.setLineWidth(0.2);
+      doc.setDrawColor(...black);
+      doc.setLineWidth(0.25);
 
       // Class Teacher (left)
       doc.setFont("helvetica", "bold");
       doc.setFontSize(9);
-      doc.setTextColor(15, 23, 42);
-      doc.text("Class Teacher's Signature:", 12, finalY);
-      doc.line(12, finalY + 10, 90, finalY + 10);
+      doc.setTextColor(...black);
+      doc.text("Class Teacher's Signature:", M, finalY);
+      doc.line(M, finalY + 10, 90, finalY + 10);
       doc.setFont("helvetica", "normal");
       doc.setFontSize(7.5);
-      doc.setTextColor(100, 116, 139);
-      doc.text("Sign & Official Stamp", 12, finalY + 14);
+      doc.setTextColor(100, 100, 100);
+      doc.text("Sign & Official Stamp", M, finalY + 14);
 
       // Principal (right)
       doc.setFont("helvetica", "bold");
       doc.setFontSize(9);
-      doc.setTextColor(15, 23, 42);
+      doc.setTextColor(...black);
       doc.text("Principal's Signature:", pageWidth - 90, finalY);
-      doc.line(pageWidth - 90, finalY + 10, pageWidth - 12, finalY + 10);
+      doc.line(pageWidth - 90, finalY + 10, pageWidth - M, finalY + 10);
       doc.setFont("helvetica", "normal");
       doc.setFontSize(7.5);
-      doc.setTextColor(100, 116, 139);
+      doc.setTextColor(100, 100, 100);
       doc.text("Sign & Official Stamp", pageWidth - 90, finalY + 14);
+
+      // ---- FOOTER on every page (same as the report card) ----
+      const totalPages = doc.internal.getNumberOfPages();
+      for (let p = 1; p <= totalPages; p++) {
+        doc.setPage(p);
+
+        doc.setDrawColor(...black);
+        doc.setLineWidth(0.15);
+        doc.line(M, footerLineY, pageWidth - M, footerLineY);
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(6);
+        doc.setTextColor(...black);
+        doc.text("© Junda High School. All rights reserved.", M, footerLineY + 4);
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(6);
+        doc.text(`Page ${p} of ${totalPages}`, pageWidth / 2, footerLineY + 4, { align: "center" });
+
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(5.5);
+        doc.setTextColor(90, 90, 90);
+        doc.text(
+          " Powered by Masomo Portal (www.masomoportal.com).",
+          pageWidth - M,
+          footerLineY + 4,
+          { align: "right" }
+        );
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(5.2);
+        doc.text(
+          "This document is the property of Junda High School. It contains confidential student information. Duplication or unauthorized printing is prohibited.",
+          M,
+          footerLineY + 7.5
+        );
+      }
 
       const filename = `${viewClassroom.grade_level_name}_${viewClassroom.stream_name}_${viewClassroom.academic_year_year}_students.pdf`
         .replace(/\s+/g, "_");
