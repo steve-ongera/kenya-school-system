@@ -1095,8 +1095,8 @@ class ReportCardQrView(APIView):
     Staff-only. Renders the QR image on demand - only when a report card
     is actually being printed - rather than baking a QR into every row of
     the (potentially large) ranking table response.
-    """
-    permission_classes = [utils.IsAdminOrTeacher]
+    """ 
+    permission_classes = [utils.IsStaffMember]
 
     def get(self, request, token):
         if not services.read_report_card_token(token):

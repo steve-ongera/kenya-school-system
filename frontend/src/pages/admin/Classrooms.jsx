@@ -1145,17 +1145,39 @@ export default function AdminClassrooms() {
     }
   };
 
-  // Fetches the QR image for one report card's verification token. Only
-  // called at print time (not on every ranking-table load), since the
-  // backend renders the actual QR image on demand.
+  // ---- Verification QR ----
+  // Fetches the QR image for one report card's verification token (backend
+  // renders it). Only called at print time. Returns { qr, reason } so the
+  // caller can tell the user WHY a card has no QR instead of failing silently:
+  //   no_token        -> the results payload had no verification_token for this user
+  //   http_403 / 401  -> the QR endpoint refused this account's role
+  //   empty_response  -> endpoint answered but sent no image
+  //   network_error   -> request never completed
   const fetchReportCardQr = async (token) => {
-    if (!token) return null;
+    if (!token) return { qr: null, reason: "no_token" };
     try {
       const { data } = await reportCardsApi.qrCode(token);
-      return data.qr_code_base64 || null;
+      if (data?.qr_code_base64) return { qr: data.qr_code_base64, reason: null };
+      return { qr: null, reason: "empty_response" };
     } catch (err) {
-      console.error("Could not fetch report card verification QR:", err);
-      return null;
+      const status = err?.response?.status;
+      console.error("Could not fetch report card verification QR:", status || err);
+      return { qr: null, reason: status ? `http_${status}` : "network_error" };
+    }
+  };
+
+  const describeQrFailure = (reason) => {
+    switch (reason) {
+      case "no_token":
+        return "the results data did not include a verification token for this account";
+      case "http_403":
+        return "the QR endpoint refused this account (403 permission denied)";
+      case "http_401":
+        return "the QR endpoint rejected the login session (401)";
+      case "empty_response":
+        return "the QR endpoint returned no image";
+      default:
+        return "the QR request failed (" + reason + ")";
     }
   };
 
@@ -1164,7 +1186,7 @@ export default function AdminClassrooms() {
     setPrintingReportCard(resultRow.enrollment_id);
     try {
       const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-      const [logoBase64, qrCodeBase64, teacherMap] = await Promise.all([
+      const [logoBase64, qrResult, teacherMap] = await Promise.all([
         getImageBase64(logoImage),
         fetchReportCardQr(resultRow.verification_token),
         loadSubjectTeachers(viewClassroom),
@@ -1177,11 +1199,18 @@ export default function AdminClassrooms() {
         titleText,
         resultRow: { ...resultRow, class_size: currentClassSize() },
         logoBase64,
-        qrCodeBase64,
+        qrCodeBase64: qrResult.qr,
         teacherMap,
         isFirstPage: true,
       });
       doc.save(`${resultRow.admission_no}_report_card.pdf`.replace(/\s+/g, "_"));
+
+      if (!qrResult.qr) {
+        setMessage(
+          `Report card printed WITHOUT a verification QR code: ${describeQrFailure(qrResult.reason)}. Please contact the administrator.`
+        );
+        setMessageType("warning");
+      }
     } catch (err) {
       console.error("Failed to generate report card:", err);
       setMessage("Could not generate the report card.");
@@ -1213,14 +1242,22 @@ export default function AdminClassrooms() {
         ),
       ]);
 
+      let missingQrCount = 0;
+      const failureReasons = new Set();
       viewResults.results.forEach((row, idx) => {
+        const result = qrByEnrollment[row.enrollment_id] || { qr: null, reason: "network_error" };
+        const qr = result.qr;
+        if (!qr) {
+          missingQrCount += 1;
+          failureReasons.add(result.reason);
+        }
         drawReportCardPage(doc, {
           classroom: viewClassroom,
           termLabel,
           titleText,
           resultRow: { ...row, class_size: classSize },
           logoBase64,
-          qrCodeBase64: qrByEnrollment[row.enrollment_id] || null,
+          qrCodeBase64: qr,
           teacherMap,
           isFirstPage: idx === 0,
         });
@@ -1228,6 +1265,14 @@ export default function AdminClassrooms() {
       const filename = `${viewClassroom.grade_level_name}_${viewClassroom.stream_name}_${viewClassroom.academic_year_year}_report_cards.pdf`
         .replace(/\s+/g, "_");
       doc.save(filename);
+
+      if (missingQrCount > 0) {
+        const why = [...failureReasons].map(describeQrFailure).join("; ");
+        setMessage(
+          `${missingQrCount} report card(s) were printed WITHOUT a verification QR code: ${why}. Please contact the administrator.`
+        );
+        setMessageType("warning");
+      }
     } catch (err) {
       console.error("Failed to generate bulk report cards:", err);
       setMessage("Could not generate the bulk report cards.");
