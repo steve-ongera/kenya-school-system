@@ -132,11 +132,11 @@ export const NAV_BY_ROLE = {
 
   // -----------------------------------------------------------------
   // SECRETARY — front-office role: admitting/managing student records,
-  // guardians, clearance desk, timetable & teacher-allocation reference,
-  // Mark Entry, Exams, Rankings, Promotions, a full Finance slice
-  // (expenses, invoices, payments, verify receipt, fee update cards,
-  // Student Balance & Reports), announcements and letters. Reuses the
-  // ADMIN/FINANCE page components under /secretary/* routes.
+  // clearance desk, a full Finance slice (payments, student balance &
+  // reports, expenses, invoices, verify receipt, fee update cards),
+  // then Mark Entry, Exams, Rankings, Promotions, timetable &
+  // teacher-allocation reference, announcements and letters. Reuses
+  // the ADMIN/FINANCE page components under /secretary/* routes.
   // -----------------------------------------------------------------
   SECRETARY: [
     {
@@ -150,8 +150,19 @@ export const NAV_BY_ROLE = {
       label: "Student Records",
       items: [
         { to: "/secretary/students", icon: "bi-people", label: "Students (Admit & Mng)" },
-        { to: "/secretary/parents", icon: "bi-person-hearts", label: "Parents & Guardians" },
         { to: "/secretary/clearance", icon: "bi-patch-check", label: "Student Clearance" },
+      ],
+    },
+    {
+      label: "Finance",
+      items: [
+        { to: "/secretary/payments", icon: "bi-cash-coin", label: "Payments" },
+        { to: "/secretary/finance-reports/detailed", icon: "bi-table", label: "Student Balance & Reports" },
+        { to: "/secretary/expenses", icon: "bi-wallet2", label: "Expenses" },
+        { to: "/secretary/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
+        { to: "/secretary/verify-receipt", icon: "bi-qr-code-scan", label: "Verify Receipt" },
+        { to: "/secretary/fee-cards", icon: "bi-credit-card-2-front", label: "Fee Update Cards" },
+        { to: "/verify-gatepass", icon: "bi-shield-check", label: "Verify Gatepass" },
       ],
     },
     {
@@ -164,18 +175,6 @@ export const NAV_BY_ROLE = {
         { to: "/secretary/classrooms", icon: "bi-door-open", label: "Classes & Streams" },
         { to: "/secretary/timetable", icon: "bi-grid-3x3", label: "Timetable Management" },
         { to: "/secretary/teachers", icon: "bi-person-workspace", label: "Teacher Allocation" },
-      ],
-    },
-    {
-      label: "Finance",
-      items: [
-        { to: "/secretary/expenses", icon: "bi-wallet2", label: "Expenses" },
-        { to: "/secretary/invoices", icon: "bi-file-earmark-text", label: "Invoices" },
-        { to: "/secretary/payments", icon: "bi-cash-coin", label: "Payments" },
-        { to: "/secretary/verify-receipt", icon: "bi-qr-code-scan", label: "Verify Receipt" },
-        { to: "/secretary/fee-cards", icon: "bi-credit-card-2-front", label: "Fee Update Cards" },
-        { to: "/verify-gatepass", icon: "bi-shield-check", label: "Verify Gatepass" },
-        { to: "/secretary/finance-reports/detailed", icon: "bi-table", label: "Student Balance & Reports" },
       ],
     },
     {

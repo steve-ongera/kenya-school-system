@@ -48,8 +48,9 @@ export default function AdminStudents() {
   const [messageType, setMessageType] = useState("info");
 
   // ---- Current logged-in user's role — controls which action icons show
-  // (e.g. only an Admin gets the Edit pencil). Backend permissions are
-  // the real enforcement; this just keeps the UI honest for non-admins.
+  // (e.g. only an Admin or Secretary gets the Edit pencil). Backend
+  // permissions are the real enforcement; this just keeps the UI honest
+  // for other roles.
   const [currentUserRole, setCurrentUserRole] = useState(null);
 
   useEffect(() => {
@@ -57,6 +58,9 @@ export default function AdminStudents() {
   }, []);
 
   const isAdmin = currentUserRole === "ADMIN";
+  // Admin AND Secretary may edit a student's record (the backend's
+  // StudentProfileViewSet allows both for retrieve/update).
+  const canEditStudents = currentUserRole === "ADMIN" || currentUserRole === "SECRETARY";
 
   // ---- Add modal ----
   const [showAddModal, setShowAddModal] = useState(false);
@@ -601,7 +605,7 @@ export default function AdminStudents() {
                         <button className="btn btn-sm btn-outline-primary btn-icon" title="View" onClick={() => openView(s)}>
                           <i className="bi bi-eye"></i>
                         </button>
-                        {isAdmin && (
+                        {canEditStudents && (
                           <button className="btn btn-sm btn-outline-secondary btn-icon" title="Edit" onClick={() => openEdit(s)}>
                             <i className="bi bi-pencil"></i>
                           </button>
