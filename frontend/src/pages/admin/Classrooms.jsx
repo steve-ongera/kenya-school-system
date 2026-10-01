@@ -195,6 +195,12 @@ export default function AdminClassrooms() {
   const [viewResultsLoading, setViewResultsLoading] = useState(false);
   const [printingReportCard, setPrintingReportCard] = useState(null); // enrollment_id or "ALL"
 
+  // ---- Next-term fee prompt (applies only to downloaded report cards) ----
+  const [showFeeModal, setShowFeeModal] = useState(false);
+  const [feePrintTarget, setFeePrintTarget] = useState(null); // resultRow or "ALL"
+  const [nextTermFee, setNextTermFee] = useState("");
+  const [nextTermFeeError, setNextTermFeeError] = useState("");
+
   // ---- Assign Teacher modal ----
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [assignTarget, setAssignTarget] = useState(null);
@@ -725,7 +731,8 @@ export default function AdminClassrooms() {
   // REPORT CARD PDF - exactly ONE A4 page per student:
   //   TOP     : logo, school name/address/motto, verification QR, title
   //   MIDDLE  : student info, subject table, summary (total/mean/grade/
-  //             position), FEE STATEMENT, class teacher + principal remarks
+  //             class position + overall position), FEE STATEMENT
+  //             (balance + next-term fee), class teacher + principal remarks
   //   BOTTOM  : [Class Teacher signature] [Official Stamp] [Principal signature]
   //   FOOTER  : note + copyright line pinned to the bottom of the page
   // The subject table's row height is calculated from the space left over,
@@ -734,7 +741,10 @@ export default function AdminClassrooms() {
   // ================================================================
   const drawReportCardPage = (
     doc,
-    { classroom, termLabel, titleText, resultRow, logoBase64, qrCodeBase64, teacherMap, isFirstPage }
+    {
+      classroom, termLabel, titleText, resultRow, logoBase64, qrCodeBase64, teacherMap, isFirstPage,
+      nextFee = null, nextFeeLabel = "Next Term",
+    }
   ) => {
     if (!isFirstPage) doc.addPage();
     const pageWidth = doc.internal.pageSize.getWidth();
@@ -926,7 +936,7 @@ export default function AdminClassrooms() {
 
     y = doc.lastAutoTable.finalY + 6;
 
-    // ---- Summary: Total Marks / Mean Score / Mean Grade / Position ----
+    // ---- Summary: Total Marks / Mean Score / Mean Grade ----
     const w1 = 28, v1 = 66, w2 = 28, v2 = 22, w3 = 26;
     const v3 = cw - w1 - v1 - w2 - v2 - w3;
     let x = M;
@@ -937,7 +947,9 @@ export default function AdminClassrooms() {
     drawCell(x, y, w3, sumH, "Mean Grade", { bold: true, fill: true }); x += w3;
     drawCell(x, y, v3, sumH, resultRow.overall_grade || "-", { align: "center", bold: true });
     y += sumH;
-    drawCell(M, y, w1, sumH, "Position", { bold: true, fill: true });
+
+    // ---- Second summary row: Class Position + Overall (grade-wide) Position ----
+    drawCell(M, y, w1, sumH, "Class Position", { bold: true, fill: true });
     drawCell(
       M + w1, y, v1, sumH,
       resultRow.class_position != null
@@ -945,33 +957,45 @@ export default function AdminClassrooms() {
         : "-",
       { align: "center" }
     );
+    drawCell(M + w1 + v1, y, w2, sumH, "Overall Position", { bold: true, fill: true });
+    drawCell(
+      M + w1 + v1 + w2, y, cw - w1 - v1 - w2, sumH,
+      resultRow.overall_position != null
+        ? `${resultRow.overall_position} out of ${resultRow.overall_size ?? "-"} (${classroom.grade_level_name}, all streams)`
+        : "-",
+      { align: "center" }
+    );
     y += sumH + 5;
 
-    // ---- FEE STATEMENT (one compact strip) ----
+    // ---- FEE STATEMENT: balance + next-term fee only ----
     const feeLabelW = 30;
-    if (hasFeeRecords) {
-      const fw = (cw - feeLabelW) / 3;
-      const balanceLabel =
-        balance > 0 ? "Outstanding Balance" : balance < 0 ? "Credit (Prepaid)" : "Balance";
-      const balanceValue = balance === 0 ? "Fully cleared" : KES(Math.abs(balance));
-      let fx = M;
-      drawCell(fx, y, feeLabelW, 8, "Fee Statement", { bold: true, fill: true }); fx += feeLabelW;
-      drawCell(fx, y, fw, 8, `Total Billed: ${KES(resultRow.fee_total_charged)}`, { size: 8 }); fx += fw;
-      drawCell(fx, y, fw, 8, `Total Paid: ${KES(resultRow.fee_total_paid)}`, { size: 8 }); fx += fw;
-      drawCell(fx, y, fw, 8, `${balanceLabel}: ${balanceValue}`, { bold: true, size: 8 });
-      if (balance < 0) {
-        doc.setFont("helvetica", "italic");
-        doc.setFontSize(5.8);
-        doc.setTextColor(110, 110, 110);
-        doc.text(
-          "This credit carries forward to next term's invoice automatically.",
-          M + feeLabelW + 2,
-          y + 8 + 3
-        );
-      }
+    const restW = cw - feeLabelW;
+    const hasNextFee = nextFee !== null && nextFee !== undefined && !Number.isNaN(Number(nextFee));
+
+    const balanceText = hasFeeRecords
+      ? balance === 0
+        ? "Balance: Fully cleared"
+        : `${balance > 0 ? "Outstanding Balance" : "Credit (Prepaid)"}: ${KES(Math.abs(balance))}`
+      : "No invoices raised for this student yet.";
+
+    drawCell(M, y, feeLabelW, 8, "Fee Statement", { bold: true, fill: true });
+    if (hasNextFee) {
+      const half = restW / 2;
+      drawCell(M + feeLabelW, y, half, 8, balanceText, { bold: hasFeeRecords, size: 8 });
+      drawCell(M + feeLabelW + half, y, half, 8, `Fee for ${nextFeeLabel}: ${KES(nextFee)}`, { bold: true, size: 8 });
     } else {
-      drawCell(M, y, feeLabelW, 8, "Fee Statement", { bold: true, fill: true });
-      drawCell(M + feeLabelW, y, cw - feeLabelW, 8, "No invoices raised for this student yet.", { size: 8 });
+      drawCell(M + feeLabelW, y, restW, 8, balanceText, { bold: hasFeeRecords, size: 8 });
+    }
+
+    if (hasFeeRecords && balance < 0) {
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(5.8);
+      doc.setTextColor(110, 110, 110);
+      doc.text(
+        "This credit carries forward to next term's invoice automatically.",
+        M + feeLabelW + 2,
+        y + 8 + 3
+      );
     }
     y += feeH + 5;
 
@@ -1090,6 +1114,10 @@ export default function AdminClassrooms() {
     viewResults?.class_size ??
     (viewResults?.results?.filter((r) => r.class_position != null).length || 0);
 
+  // Size of the grade-wide pool (every stream of this grade in this year),
+  // used for the "Overall Position: X out of N" line on the report card.
+  const currentOverallSize = () => viewResults?.overall_size ?? 0;
+
   // "Term 2, 2026" + "TERM 2, 2026 END OF TERM EXAMINATION REPORT" for the card header.
   const reportCardMeta = () => {
     const term = viewTerms.find((t) => String(t.id) === String(viewResults?.term_id));
@@ -1103,6 +1131,37 @@ export default function AdminClassrooms() {
       termLabel,
       titleText: `${termLabel.toUpperCase()} ${examWording} EXAMINATION REPORT`,
     };
+  };
+
+  // Works out the label of the term AFTER the one being printed,
+  // e.g. Term 2, 2026 -> "Term 3, 2026"; Term 3, 2026 -> "Term 1, 2027".
+  const nextTermLabel = () => {
+    const term = viewTerms.find((t) => String(t.id) === String(viewResults?.term_id));
+    const year = parseInt(viewClassroom?.academic_year_year, 10);
+    const num = Number(term?.term_number);
+    if (!term || !num || !year) return "Next Term";
+    return num >= 3 ? `Term 1, ${year + 1}` : `Term ${num + 1}, ${year}`;
+  };
+
+  // Opens the next-term fee prompt before any report card is downloaded.
+  const requestPrint = (target) => {
+    setFeePrintTarget(target);
+    setNextTermFee("");
+    setNextTermFeeError("");
+    setShowFeeModal(true);
+  };
+
+  const confirmFeePrint = async () => {
+    const raw = String(nextTermFee).trim();
+    const fee = raw === "" ? null : Number(raw);
+    if (fee !== null && (Number.isNaN(fee) || fee < 0)) {
+      setNextTermFeeError("Enter a valid amount, e.g. 15400.");
+      return;
+    }
+    const target = feePrintTarget;
+    setShowFeeModal(false);
+    if (target === "ALL") await handleBulkPrintReportCards(fee);
+    else if (target) await handlePrintReportCard(target, fee);
   };
 
   // Subject -> teacher name(s) for this classroom, from teacher allocations.
@@ -1181,7 +1240,7 @@ export default function AdminClassrooms() {
     }
   };
 
-  const handlePrintReportCard = async (resultRow) => {
+  const handlePrintReportCard = async (resultRow, nextFee = null) => {
     if (!viewClassroom || !viewResults) return;
     setPrintingReportCard(resultRow.enrollment_id);
     try {
@@ -1197,11 +1256,13 @@ export default function AdminClassrooms() {
         classroom: viewClassroom,
         termLabel,
         titleText,
-        resultRow: { ...resultRow, class_size: currentClassSize() },
+        resultRow: { ...resultRow, class_size: currentClassSize(), overall_size: currentOverallSize() },
         logoBase64,
         qrCodeBase64: qrResult.qr,
         teacherMap,
         isFirstPage: true,
+        nextFee,
+        nextFeeLabel: nextTermLabel(),
       });
       doc.save(`${resultRow.admission_no}_report_card.pdf`.replace(/\s+/g, "_"));
 
@@ -1220,13 +1281,15 @@ export default function AdminClassrooms() {
     }
   };
 
-  const handleBulkPrintReportCards = async () => {
+  const handleBulkPrintReportCards = async (nextFee = null) => {
     if (!viewClassroom || !viewResults || !viewResults.results?.length) return;
     setPrintingReportCard("ALL");
     try {
       const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
       const classSize = currentClassSize();
+      const overallSize = currentOverallSize();
       const { termLabel, titleText } = reportCardMeta();
+      const feeLabelForNextTerm = nextTermLabel();
 
       // Fetch the logo, the subject teachers and every student's verification
       // QR up front, in parallel, so the page-drawing loop below doesn't
@@ -1255,11 +1318,13 @@ export default function AdminClassrooms() {
           classroom: viewClassroom,
           termLabel,
           titleText,
-          resultRow: { ...row, class_size: classSize },
+          resultRow: { ...row, class_size: classSize, overall_size: overallSize },
           logoBase64,
           qrCodeBase64: qr,
           teacherMap,
           isFirstPage: idx === 0,
+          nextFee,
+          nextFeeLabel: feeLabelForNextTerm,
         });
       });
       const filename = `${viewClassroom.grade_level_name}_${viewClassroom.stream_name}_${viewClassroom.academic_year_year}_report_cards.pdf`
@@ -2037,7 +2102,7 @@ export default function AdminClassrooms() {
                 </select>
                 <button
                   className="btn btn-sm btn-outline-primary"
-                  onClick={handleBulkPrintReportCards}
+                  onClick={() => requestPrint("ALL")}
                   disabled={!viewResults || !viewResults.results?.length || printingReportCard === "ALL"}
                 >
                   {printingReportCard === "ALL" ? (
@@ -2061,6 +2126,9 @@ export default function AdminClassrooms() {
                 {viewExams.length === 0 && " — no exams configured yet for this grade/term."}
                 {viewClassroom.is_promoted && viewExams.length > 0 &&
                   ` — showing the ${viewClassroom.academic_year_year} cohort, including students since promoted.`}
+                {viewResults?.overall_size
+                  ? ` Overall position is across all ${viewClassroom.grade_level_name} streams (${viewResults.overall_size} students).`
+                  : ""}
               </p>
             )}
 
@@ -2078,7 +2146,8 @@ export default function AdminClassrooms() {
                 <table className="table table-sm table-hover mb-0">
                   <thead>
                     <tr>
-                      <th style={{ width: "60px" }}>Pos</th>
+                      <th style={{ width: "60px" }}>Class Pos</th>
+                      <th style={{ width: "70px" }}>Overall Pos</th>
                       <th>Admission No</th>
                       <th>Name</th>
                       <th>Status</th>
@@ -2095,6 +2164,7 @@ export default function AdminClassrooms() {
                     {viewResults.results.map((r) => (
                       <tr key={r.enrollment_id}>
                         <td style={{ fontWeight: 700 }}>{r.class_position ?? "-"}</td>
+                        <td style={{ fontWeight: 700 }}>{r.overall_position ?? "-"}</td>
                         <td>{r.admission_no}</td>
                         <td>{r.full_name}</td>
                         <td>
@@ -2124,7 +2194,7 @@ export default function AdminClassrooms() {
                           <button
                             className="btn btn-sm btn-outline-secondary btn-icon"
                             title="Print report card"
-                            onClick={() => handlePrintReportCard(r)}
+                            onClick={() => requestPrint(r)}
                             disabled={printingReportCard === r.enrollment_id || printingReportCard === "ALL"}
                           >
                             {printingReportCard === r.enrollment_id ? (
@@ -2142,6 +2212,41 @@ export default function AdminClassrooms() {
             )}
           </div>
         )}
+      </Modal>
+
+      {/* ---------------- NEXT TERM FEE PROMPT ---------------- */}
+      <Modal
+        show={showFeeModal}
+        onClose={() => setShowFeeModal(false)}
+        title="Next Term Fee Structure"
+      >
+        <p className="text-muted-soft" style={{ fontSize: "var(--fs-xs)" }}>
+          This amount will appear on the downloaded report card
+          {feePrintTarget === "ALL" ? "s" : ""} only.
+        </p>
+        <label className="form-label">
+          Fee for <strong>{nextTermLabel()}</strong> (KES)
+        </label>
+        <input
+          type="number"
+          min="0"
+          className={`form-control${nextTermFeeError ? " is-invalid" : ""}`}
+          placeholder="e.g. 15400"
+          value={nextTermFee}
+          autoFocus
+          onChange={(e) => { setNextTermFee(e.target.value); setNextTermFeeError(""); }}
+          onKeyDown={(e) => { if (e.key === "Enter") confirmFeePrint(); }}
+        />
+        {nextTermFeeError && <div className="invalid-feedback">{nextTermFeeError}</div>}
+        <div className="mt-3 d-flex gap-2 justify-content-end">
+          <button type="button" className="btn btn-secondary" onClick={() => setShowFeeModal(false)}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-primary" onClick={confirmFeePrint}>
+            <i className="bi bi-printer me-1"></i>
+            {feePrintTarget === "ALL" ? "Print All" : "Print"}
+          </button>
+        </div>
       </Modal>
 
       {/* ---------------- ASSIGN TEACHER MODAL ---------------- */}

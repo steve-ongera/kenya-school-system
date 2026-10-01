@@ -26,6 +26,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+from collections import defaultdict
 
 # Local
 from . import models, serializers, services, utils
@@ -558,23 +559,24 @@ class StreamViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet):
     permission_classes = [utils.ReadOnlyOrAdmin]
 
 
+
 class ClassRoomPagination(PageNumberPagination):
     page_size = 12
     page_size_query_param = "page_size"
     max_page_size = 200
-
-
+ 
+ 
 RANKABLE_ENROLLMENT_STATUSES = (
     models.Enrollment.Status.ACTIVE,
     models.Enrollment.Status.PROMOTED,
     models.Enrollment.Status.GRADUATED,
     models.Enrollment.Status.REPEATED,
 )
-
-
+ 
+ 
 class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet):
     """Deleting a classroom is guarded: requires IsSuperAdmin on top of ReadOnlyOrAdmin (see utils.py)."""
-
+ 
     queryset = (
         models.ClassRoom.objects.select_related("grade_level", "stream", "academic_year", "class_teacher")
         .all()
@@ -586,7 +588,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
     filterset_fields = ["grade_level", "academic_year", "stream", "class_teacher"]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     search_fields = ["grade_level__name", "stream__name", "class_teacher__first_name", "class_teacher__last_name"]
-
+ 
     def create(self, request, *args, **kwargs):
         school = models.School.objects.first()
         academic_year_id = request.data.get("academic_year")
@@ -596,7 +598,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
         except services.LicenseLimitExceeded as exc:
             return Response({"detail": str(exc)}, status=403)
         return super().create(request, *args, **kwargs)
-
+ 
     def destroy(self, request, *args, **kwargs):
         """
         Blocks deleting a classroom that still has active students in it -
@@ -612,7 +614,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return super().destroy(request, *args, **kwargs)
-
+ 
     @action(detail=False, methods=["get"], url_path="all", permission_classes=[utils.ReadOnlyOrAdmin])
     def all(self, request):
         """
@@ -625,13 +627,13 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
         """
         qs = self.filter_queryset(self.get_queryset())
         return Response(serializers.ClassRoomSerializer(qs, many=True).data)
-
+ 
     @action(detail=True, methods=["get"], url_path="students")
     def students(self, request, pk=None):
         """
         Full roster for this classroom, across EVERY enrollment status -
         not just ACTIVE.
-
+ 
         Once a class is bulk-promoted (or a student is promoted, graduated,
         transferred, or dropped individually), their Enrollment row for
         THIS classroom flips to PROMOTED/GRADUATED/TRANSFERRED_OUT/DROPPED
@@ -651,13 +653,13 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             row["enrollment_status_display"] = e.get_status_display()
             students.append(row)
         return Response(students)
-
+ 
     @action(detail=False, methods=["post"], url_path="bulk_create")
     def bulk_create(self, request):
         """
         POST /classrooms/bulk_create/
         body: { academic_year, grade_level_ids: [...], stream_ids: [...] }
-
+ 
         Enforces the license's classrooms_per_year limit BEFORE writing
         anything. Only combos that don't already exist for this academic
         year count against the limit - services.bulk_create_classrooms()
@@ -668,11 +670,11 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
         """
         serializer = serializers.BulkCreateClassroomsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
+ 
         academic_year = serializer.validated_data["academic_year"]
         grade_levels = serializer.validated_data["grade_level_ids"]
         streams = serializer.validated_data["stream_ids"]
-
+ 
         existing_combo_count = models.ClassRoom.objects.filter(
             academic_year=academic_year,
             grade_level__in=grade_levels,
@@ -680,7 +682,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
         ).count()
         requested_combo_count = len(set(grade_levels)) * len(set(streams))
         new_combo_count = max(requested_combo_count - existing_combo_count, 0)
-
+ 
         school = models.School.objects.first()
         current_count = models.ClassRoom.objects.filter(academic_year=academic_year).count()
         try:
@@ -689,7 +691,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             )
         except services.LicenseLimitExceeded as exc:
             return Response({"detail": str(exc)}, status=403)
-
+ 
         result = serializer.save()
         return Response(
             {
@@ -699,52 +701,63 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             },
             status=status.HTTP_201_CREATED,
         )
-
+ 
     @action(detail=True, methods=["get"], url_path="results")
     def results(self, request, pk=None):
         """
         GET /classrooms/{id}/results/?term=<id>&exam=<id>&include_left=1
-
+ 
         Ranked results for the cohort that sat in this classroom, for one
         term: overall average/position, per-subject average %, grade
         letter and points, overall grade/points, enrollment status, the
         student's live fee balance, and a signed verification_token used
         to generate this student's report-card QR code on demand.
-
+ 
+        TWO POSITIONS PER STUDENT:
+          - class_position   : rank inside THIS classroom (this stream).
+          - overall_position : rank across EVERY stream of this grade in
+                               this academic year (e.g. Form 3 Red + Blue +
+                               Green for 2026). Same scoring (average of
+                               subject averages), same tie rule (ties share
+                               a rank, then admission number), and it
+                               follows the same `exam` filter, so it always
+                               matches the class ranking's scope.
+        The response also carries class_size and overall_size.
+ 
         ACCESS: Admin/Finance/superuser see any classroom. A Teacher may
         only view a classroom they are the class_teacher of - subject
         allocation (TeacherSubjectAllocation) does NOT grant access here;
         that's a separate thing from being the class teacher.
-
+ 
         Enrollment scope: see RANKABLE_ENROLLMENT_STATUSES above. A student
         promoted out of Grade 9 Blue (2026) into Grade 10 Blue (2027) still
         appears in Grade 9 Blue's 2026 ranking with their 2026 marks.
         Pass include_left=1 to also append TRANSFERRED_OUT / DROPPED
         students, unranked (class_position = None).
-
+ 
         Omit `exam` to combine every exam in the term. Pass
         `exam=<Exam id>` to scope subjects/averages/ranking/remarks to
         that one exam.
-
+ 
         Students with marks are ranked by average % (ties share a rank,
         broken by admission number). Students with no marks follow,
         ordered by admission number.
-
+ 
         Subjects are the union of what the grade officially offers
         (GradeSubject) and anything that actually has marks in scope.
-
+ 
         GRADING: services.grade_for_percentage() looks up the school's own
         GradingScale first, and falls back to a standard 12-point
         high-school scale (A/A-/B+.../E) whenever nothing is configured -
         so grade_letter/points are never null on a report card.
-
+ 
         FEE BALANCE: services.get_ledger_totals_bulk - opening balance
         (earliest invoice's brought_forward) + each invoice's own term
         charge - everything paid. Positive = owes, negative = prepaid
         credit, 0 = cleared, None = no invoice ever raised. Identical to
         services.get_outstanding_balance, the student portal and the
         Student Balances report.
-
+ 
         VERIFICATION: each row carries `verification_token` - a signed,
         stateless token (services.generate_report_card_token) encoding
         (enrollment_id, term_id, exam_id). Scanning the QR hits the
@@ -753,7 +766,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
         snapshot.
         """
         classroom = self.get_object()
-
+ 
         # A Teacher only gets to see rankings for a classroom they are
         # actually the class teacher of, in ANY academic year (current or
         # past) - being allocated to teach a SUBJECT in this classroom
@@ -763,7 +776,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             return Response(
                 {"detail": "You are not the class teacher for this classroom."}, status=403
             )
-
+ 
         term_id = request.query_params.get("term")
         term = (
             generics.get_object_or_404(models.Term, pk=term_id) if term_id
@@ -773,18 +786,18 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             return Response(
                 {"detail": "No term specified and no current term is configured."}, status=400
             )
-
+ 
         available_exams = models.Exam.objects.filter(
             term=term, grade_level=classroom.grade_level
         ).select_related("exam_type").order_by("exam_type__order")
-
+ 
         exam_id = request.query_params.get("exam")
         selected_exam = None
         if exam_id:
             selected_exam = generics.get_object_or_404(
                 models.Exam, pk=exam_id, term=term, grade_level=classroom.grade_level
             )
-
+ 
         def result_filter(**extra):
             base = {"exam__term": term, **extra}
             if selected_exam:
@@ -792,9 +805,9 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             return models.ExamResult.objects.filter(
                 is_absent=False, marks_obtained__isnull=False, max_marks__gt=0, **base
             )
-
+ 
         include_left = request.query_params.get("include_left") in ("1", "true", "True")
-
+ 
         enrollments = (
             classroom.enrollments.filter(status__in=RANKABLE_ENROLLMENT_STATUSES)
             .select_related("student__user")
@@ -807,13 +820,13 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             if include_left
             else classroom.enrollments.none()
         )
-
+ 
         # ---- fee balances: ONE ledger query for the whole class ----
         # Uses the same ledger as the student portal and finance pages:
         # balance = opening balance + term charges - payments.
         student_ids = [e.student_id for e in enrollments] + [e.student_id for e in left_enrollments]
         ledger = services.get_ledger_totals_bulk(student_ids)
-
+ 
         def fee_block(student_id):
             t = ledger.get(student_id)
             if not t:
@@ -825,7 +838,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
                 "fee_total_paid": round(paid, 2),
                 "fee_balance": round(float(t["balance"]), 2),
             }
-
+ 
         offered_subject_ids = set(
             models.Subject.objects.filter(grade_subjects__grade_level=classroom.grade_level)
             .values_list("id", flat=True)
@@ -838,7 +851,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             .distinct()
             .order_by("name")
         )
-
+ 
         def remark_for(avg):
             if avg is None:
                 return "No marks recorded"
@@ -851,7 +864,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             if avg >= 30:
                 return "Below Average"
             return "Needs Improvement"
-
+ 
         def score_enrollment(enrollment):
             subject_marks = []
             pct_values = []
@@ -878,7 +891,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
                     subject_marks.append({
                         "subject": subject.name, "average": None, "grade": None, "points": None,
                     })
-
+ 
             has_marks = len(pct_values) > 0
             average = round(sum(pct_values) / len(pct_values), 1) if has_marks else None
             overall_grade = (
@@ -895,7 +908,45 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
                 "total_points": round(sum(points_values), 1) if points_values else None,
                 "average_points": round(sum(points_values) / len(points_values), 2) if points_values else None,
             }
-
+ 
+        # ---- grade-wide ("overall") ranking: every stream of this grade, same academic year ----
+        # Same maths as the class ranking (per-subject average %, then the
+        # mean of those subject averages) and the same exam/term filter, but
+        # pooled across all streams. Uses ONE query for the whole grade.
+        grade_enrollments = list(
+            models.Enrollment.objects.filter(
+                classroom__grade_level=classroom.grade_level,
+                classroom__academic_year=classroom.academic_year,
+                status__in=RANKABLE_ENROLLMENT_STATUSES,
+            ).select_related("student")
+        )
+        admission_by_enrollment = {e.id: e.student.admission_no for e in grade_enrollments}
+        ranked_subject_ids = {s.id for s in subjects}
+ 
+        # enrollment_id -> subject_id -> [percentages]
+        grade_pcts = defaultdict(lambda: defaultdict(list))
+        for enr_id, subj_id, marks, max_m in result_filter(
+            enrollment_id__in=list(admission_by_enrollment),
+            subject_id__in=ranked_subject_ids,
+        ).values_list("enrollment_id", "subject_id", "marks_obtained", "max_marks"):
+            grade_pcts[enr_id][subj_id].append(float(marks) / float(max_m) * 100)
+ 
+        overall_avgs = {}
+        for enr_id, by_subject in grade_pcts.items():
+            subject_avgs = [round(sum(v) / len(v), 1) for v in by_subject.values()]
+            overall_avgs[enr_id] = round(sum(subject_avgs) / len(subject_avgs), 1)
+ 
+        overall_ranks, prev_overall_avg, overall_rank = {}, None, 0
+        ordered_overall = sorted(
+            overall_avgs.items(), key=lambda kv: (-kv[1], admission_by_enrollment[kv[0]])
+        )
+        for idx, (enr_id, avg) in enumerate(ordered_overall, start=1):
+            if avg != prev_overall_avg:
+                overall_rank = idx
+            prev_overall_avg = avg
+            overall_ranks[enr_id] = overall_rank
+        overall_size = len(grade_enrollments)
+ 
         def build_row(row, position):
             enrollment = row["enrollment"]
             payload = {
@@ -906,6 +957,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
                 "enrollment_status": enrollment.status,
                 "enrollment_status_display": enrollment.get_status_display(),
                 "class_position": position,
+                "overall_position": overall_ranks.get(enrollment.id),
                 "average_marks": row["average"],
                 "total_marks": row["total"],
                 "overall_grade": row["overall_grade"],
@@ -920,9 +972,9 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             }
             payload.update(fee_block(enrollment.student_id))
             return payload
-
+ 
         scored = [score_enrollment(e) for e in enrollments]
-
+ 
         with_marks = sorted(
             (s for s in scored if s["has_marks"]),
             key=lambda s: (-s["average"], s["enrollment"].student.admission_no),
@@ -931,7 +983,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             (s for s in scored if not s["has_marks"]),
             key=lambda s: s["enrollment"].student.admission_no,
         )
-
+ 
         results_payload = []
         prev_avg, rank = None, 0
         for idx, row in enumerate(with_marks, start=1):
@@ -939,14 +991,14 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
                 rank = idx
             prev_avg = row["average"]
             results_payload.append(build_row(row, rank))
-
+ 
         next_rank = len(with_marks) + 1
         for offset, row in enumerate(without_marks):
             results_payload.append(build_row(row, next_rank + offset))
-
+ 
         for enrollment in left_enrollments:
             results_payload.append(build_row(score_enrollment(enrollment), None))
-
+ 
         return Response({
             "classroom": str(classroom),
             "academic_year": classroom.academic_year.year,
@@ -954,6 +1006,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             "term_id": term.id,
             "selected_exam_id": selected_exam.id if selected_exam else None,
             "class_size": len(scored),
+            "overall_size": overall_size,
             "is_promoted": hasattr(classroom, "promotion_record"),
             "subjects": [s.name for s in subjects],
             "results": results_payload,
@@ -967,7 +1020,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
                 for ex in available_exams
             ],
         })
-
+ 
     @action(detail=True, methods=["get"], url_path="promotion_preview", permission_classes=[utils.IsAdminOrSecretary])
     def promotion_preview(self, request, pk=None):
         """
@@ -976,12 +1029,12 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
         active student in it, unpaginated. Returns already_promoted
         instead if a ClassroomPromotion record already exists. Works the
         same for CBC and legacy 8-4-4 - see services.resolve_next_classroom_target.
-
+ 
         Permission widened from IsAdmin to IsAdminOrSecretary so the
         front-office Secretary role can review/prepare promotions.
         """
         classroom = self.get_object()
-
+ 
         existing = models.ClassroomPromotion.objects.select_related("target_classroom", "promoted_by").filter(
             source_classroom=classroom
         ).first()
@@ -997,12 +1050,12 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
                 "promoted_at": existing.promoted_at,
                 "student_count": existing.student_count,
             }, status=400)
-
+ 
         try:
             info = services.resolve_next_classroom_target(classroom)
         except ValueError as exc:
             return Response({"already_promoted": False, "detail": str(exc)}, status=400)
-
+ 
         enrollments = (
             classroom.enrollments.filter(status=models.Enrollment.Status.ACTIVE)
             .select_related("student__user")
@@ -1018,7 +1071,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             }
             for e in enrollments
         ]
-
+ 
         if info["graduating"]:
             return Response({
                 "already_promoted": False,
@@ -1028,7 +1081,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
                 "students": students_data,
                 "detail": "This is the final grade - promoting will GRADUATE these students instead of moving them to a new class.",
             })
-
+ 
         return Response({
             "already_promoted": False,
             "graduating": False,
@@ -1040,12 +1093,12 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             "student_count": len(students_data),
             "students": students_data,
         })
-
+ 
     @action(detail=True, methods=["post"], url_path="bulk_promote", permission_classes=[utils.IsAdminOrSecretary])
     def bulk_promote(self, request, pk=None):
         """
         POST /classrooms/{id}/bulk_promote/  body: { force?: bool }
-
+ 
         Permission widened from IsAdmin to IsAdminOrSecretary so the
         front-office Secretary role can carry out bulk promotions.
         """
@@ -1056,12 +1109,12 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
         return Response(result)
-
+ 
     @action(detail=True, methods=["get"], url_path="exam_spreadsheet", permission_classes=[utils.IsAdminOrSecretary])
     def exam_spreadsheet(self, request, pk=None):
         """
         GET /classrooms/{id}/exam_spreadsheet/?exam=<Exam id>
-
+ 
         Permission widened from IsAdmin to IsAdminOrSecretary so the
         front-office Secretary role can view/enter marks via the Mark
         Entry (All Subjects) page.
@@ -1072,12 +1125,12 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             return Response({"detail": "exam is required."}, status=400)
         exam = generics.get_object_or_404(models.Exam, pk=exam_id)
         return Response(services.get_admin_exam_spreadsheet(classroom, exam))
-
+ 
     @action(detail=True, methods=["post"], url_path="save_exam_spreadsheet", permission_classes=[utils.IsAdminOrSecretary])
     def save_exam_spreadsheet(self, request, pk=None):
         """
         POST /classrooms/{id}/save_exam_spreadsheet/  body: { exam_id, entries: [...] }
-
+ 
         Permission widened from IsAdmin to IsAdminOrSecretary so the
         front-office Secretary role can save marks via the Mark Entry
         (All Subjects) page.
